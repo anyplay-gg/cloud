@@ -15,7 +15,7 @@ anyplay-api = { path = "../network/crates/api" }
 anyplay-ticket = { path = "crates/ticket" }
 async-nats = { version = "0.50", default-features = false, features = ["ring"] }
 anyhow = "1"
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "ws", "query"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "ws", "query", "matched-path"] }
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 ed25519-dalek = "3"
@@ -34,7 +34,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 tokio-tungstenite = "0.30"
 toml = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Dependencies run at a usable speed in debug builds. It also keeps windows-gnu able to link
 # iroh-relay, which is a cdylib as well: unoptimized, it would export more symbols than a DLL holds.

@@ -630,6 +630,7 @@ async fn shutting_down_closes_event_connections_and_stops_serving() {
     let dir = tempfile::tempdir().unwrap();
     let config = anyplay_cloud::Config {
         data_dir: dir.path().to_path_buf(),
+        drain_seconds: 0,
         ..Default::default()
     };
     let mail = std::sync::Arc::new(anyplay_cloud::mail::MemoryMailer::default());
@@ -677,6 +678,127 @@ async fn shutting_down_closes_event_connections_and_stops_serving() {
 
     stop.send(()).unwrap();
     assert_eq!(events.close_code().await, Some(1001));
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("the server stops")
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn health_and_readiness_answer_and_metrics_count_requests_by_route() {
+    let cloud = TestCloud::start().await;
+    let health = cloud
+        .http
+        .get(format!("http://{}/healthz", cloud.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+    let ready = cloud
+        .http
+        .get(format!("http://{}/readyz", cloud.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ready.status(), 200);
+    let alec = cloud.sign_up("Alec").await;
+    let _events = cloud.events(alec.token()).await;
+    cloud.get("/v1/me", alec.token()).await.ok(200);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let metrics = listener.local_addr().unwrap();
+    tokio::spawn(anyplay_cloud::serve_metrics(listener, cloud.state.clone()));
+    let text = cloud
+        .http
+        .get(format!("http://{metrics}/metrics"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(text.contains("anyplay_cloud_http_requests_total{route=\"/v1/me\",status=\"200\"} 1"));
+    assert!(
+        text.contains("anyplay_cloud_http_requests_total{route=\"/healthz\",status=\"200\"} 1")
+    );
+    assert!(text.contains("anyplay_cloud_event_connections 1"));
+    // The metrics stay off the public port.
+    cloud
+        .get("/metrics", alec.token())
+        .await
+        .is_error("not_found", 404);
+}
+
+#[tokio::test]
+async fn a_node_told_to_stop_reports_itself_not_ready_and_closes_connections_after_the_drain() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let dir = tempfile::tempdir().unwrap();
+    let config = anyplay_cloud::Config {
+        data_dir: dir.path().to_path_buf(),
+        drain_seconds: 1,
+        ..Default::default()
+    };
+    let mail = std::sync::Arc::new(anyplay_cloud::mail::MemoryMailer::default());
+    let state = anyplay_cloud::open(config, common::fast_tuning(), mail.clone())
+        .await
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(anyplay_cloud::serve(listener, state.clone(), async move {
+        let _ = stopped.await;
+    }));
+    let http = reqwest::Client::new();
+    let challenge: Value = http
+        .post(format!("http://{base}/v1/auth/email"))
+        .json(&json!({"email": "a@example.com"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let code = mail.last_code("a@example.com").unwrap();
+    let answer: Value = http
+        .post(format!("http://{base}/v1/auth/code"))
+        .json(&json!({"challenge": challenge["challenge"], "code": code,
+                      "device": {"name": "pc", "platform": "linux"}}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let signed: Value = http
+        .post(format!("http://{base}/v1/auth/signup"))
+        .json(
+            &json!({"signup": answer["signup"], "handle": "Alec", "age_confirmed": true,
+                      "device": {"name": "pc", "platform": "linux"}}),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mut events = Events::connect(&base, signed["tokens"]["access"].as_str().unwrap())
+        .await
+        .unwrap();
+
+    stop.send(()).unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let ready = http
+        .get(format!("http://{base}/readyz"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ready.status(), 503, "a draining node takes no new players");
+    assert!(
+        !events.ends_within(Duration::from_millis(500)).await,
+        "players keep their connection during the drain"
+    );
+    assert_eq!(events.close_code().await, Some(close::GOING_AWAY));
     tokio::time::timeout(Duration::from_secs(5), server)
         .await
         .expect("the server stops")

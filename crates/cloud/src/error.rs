@@ -76,6 +76,7 @@ impl AppError {
 impl From<sqlx::Error> for AppError {
     fn from(error: sqlx::Error) -> Self {
         tracing::error!(%error, "database error");
+        crate::metrics::STORE_ERRORS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Self::internal()
     }
 }

@@ -668,7 +668,7 @@ async fn limits_on_sessions_and_input_are_enforced() {
 
 #[tokio::test]
 async fn a_member_that_stays_disconnected_leaves_its_sessions() {
-    let cloud = TestCloud::start().await;
+    let cloud = TestCloud::with(|_| {}, |t| t.session_grace = Duration::from_millis(900)).await;
     let (a, b) = cloud.friends("Alec", "Sam").await;
     let session = create(&cloud, &a, 1, 4, "friends").await;
     let mut ea = cloud.events(a.token()).await;
@@ -697,7 +697,7 @@ async fn a_member_that_stays_disconnected_leaves_its_sessions() {
 
 #[tokio::test]
 async fn an_account_that_never_connects_does_not_stay_in_a_session() {
-    let cloud = TestCloud::start().await;
+    let cloud = TestCloud::with(|_| {}, |t| t.session_grace = Duration::from_millis(900)).await;
     let a = cloud.sign_up("Alec").await;
     let session = create(&cloud, &a, 1, 4, "friends").await;
     tokio::time::sleep(Duration::from_millis(1500)).await;

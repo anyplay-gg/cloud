@@ -22,6 +22,17 @@ pub enum MailMode {
     Smtp,
 }
 
+/// How the log is written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    /// Lines for people.
+    #[default]
+    Text,
+    /// One JSON object per line, for log collectors.
+    Json,
+}
+
 /// How the connection to the SMTP server is secured.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -39,6 +50,13 @@ pub enum SmtpTls {
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub listen: SocketAddr,
+    /// Where `/metrics` is served, apart from the API. Without it there are no metrics.
+    pub metrics_listen: Option<SocketAddr>,
+    /// How long a node that is told to stop keeps its connections while it reports itself not
+    /// ready.
+    pub drain_seconds: u64,
+    /// `text` or `json`.
+    pub log_format: LogFormat,
     pub data_dir: PathBuf,
     /// A `postgres://` URL. Without it the store is a SQLite file in `data_dir`.
     pub database_url: Option<String>,
@@ -67,6 +85,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             listen: ([0, 0, 0, 0], 8080).into(),
+            metrics_listen: None,
+            drain_seconds: 5,
+            log_format: LogFormat::Text,
             data_dir: PathBuf::from("data"),
             database_url: None,
             database_connections: 16,
@@ -124,6 +145,15 @@ impl Config {
         let get = |name: &str| get(name).filter(|value| !value.trim().is_empty());
         if let Some(v) = get("LISTEN") {
             self.listen = parse("LISTEN", &v)?;
+        }
+        if let Some(v) = get("METRICS_LISTEN") {
+            self.metrics_listen = Some(parse("METRICS_LISTEN", &v)?);
+        }
+        if let Some(v) = get("DRAIN_SECONDS") {
+            self.drain_seconds = parse("DRAIN_SECONDS", &v)?;
+        }
+        if let Some(v) = get("LOG_FORMAT") {
+            self.log_format = parse_word("LOG_FORMAT", &v)?;
         }
         if let Some(v) = get("DATA_DIR") {
             self.data_dir = v.into();

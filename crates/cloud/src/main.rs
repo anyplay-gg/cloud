@@ -3,22 +3,26 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use anyplay_cloud::cli::{Cli, Command};
-use anyplay_cloud::{Config, Tuning, config, load_signing_key, mail, open, serve, shutdown_signal};
+use anyplay_cloud::{
+    Config, Tuning, config, load_signing_key, mail, open, serve, serve_metrics, shutdown_signal,
+};
 use clap::Parser as _;
 use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,sqlx=warn".into()),
-        )
-        .init();
-
     let cli = Cli::parse();
     let config = Config::load(cli.config.as_deref())?;
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info,sqlx=warn".into());
+    match config.log_format {
+        config::LogFormat::Text => tracing_subscriber::fmt().with_env_filter(filter).init(),
+        config::LogFormat::Json => tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(filter)
+            .init(),
+    }
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => run(config).await,
         Command::Keygen => {
@@ -54,10 +58,19 @@ async fn run(config: Config) -> Result<()> {
     if config.admin_token.is_none() {
         tracing::info!("admin_token is not set: the admin routes are off");
     }
+    let metrics_listen = config.metrics_listen;
+    let drain = Duration::from_secs(config.drain_seconds);
     let state = open(config, Tuning::default(), Arc::clone(&mailer)).await?;
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("cannot listen on {listen}"))?;
+    if let Some(address) = metrics_listen {
+        let metrics = TcpListener::bind(address)
+            .await
+            .with_context(|| format!("cannot listen on {address} for metrics"))?;
+        tokio::spawn(serve_metrics(metrics, state.clone()));
+        tracing::info!(%address, "metrics served");
+    }
     tracing::info!(%listen, name = %state.config.name, "cloud running");
 
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
@@ -72,7 +85,7 @@ async fn run(config: Config) -> Result<()> {
         _ = shutdown_signal() => tracing::info!("shutting down"),
     }
     let _ = stop.send(());
-    match tokio::time::timeout(Duration::from_secs(10), server).await {
+    match tokio::time::timeout(drain + Duration::from_secs(10), server).await {
         Ok(result) => result.context("the server task failed")??,
         Err(_) => tracing::warn!("some connections did not close in time; stopping anyway"),
     }

@@ -121,7 +121,9 @@ pub async fn postgres_database() -> Option<String> {
 pub fn fast_tuning() -> Tuning {
     Tuning {
         offline_grace: Duration::from_millis(300),
-        session_grace: Duration::from_millis(900),
+        // Long, so that a test whose players hold no event connection keeps its sessions however
+        // slowly it runs; the tests of the grace itself shorten it.
+        session_grace: Duration::from_secs(30),
         lease_ttl: Duration::from_secs(30),
         sweep_interval: Duration::from_millis(100),
         rates: Rates {

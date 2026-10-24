@@ -1,13 +1,18 @@
 //! The HTTP routes. Paths and their `{id}` placeholders come from `anyplay_api::path`.
 
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
 use anyplay_api::path;
 use axum::Router;
-use axum::extract::Request;
+use axum::extract::{MatchedPath, Request, State};
+use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 
 use crate::error::AppError;
+use crate::metrics::Snapshot;
 use crate::state::AppState;
 
 pub mod accounts;
@@ -18,8 +23,16 @@ pub mod friends;
 pub mod misc;
 pub mod sessions;
 
+/// Answers while the process runs.
+pub const HEALTH: &str = "/healthz";
+/// Answers while the node can take players: its store answers, NATS is connected when it has
+/// one, and it is not draining.
+pub const READY: &str = "/readyz";
+
 pub fn router(state: AppState) -> Router {
     let mut router = Router::new()
+        .route(HEALTH, get(|| async { "ok" }))
+        .route(READY, get(ready))
         .route(path::INFO, get(misc::info))
         .route(path::AUTH_EMAIL, post(auth::email))
         .route(path::AUTH_CODE, post(auth::code))
@@ -62,22 +75,69 @@ pub fn router(state: AppState) -> Router {
             );
             (axum::http::StatusCode::METHOD_NOT_ALLOWED, axum::Json(body))
         })
-        .layer(middleware::from_fn(log_requests))
+        .layer(middleware::from_fn_with_state(state.clone(), log_requests))
         .with_state(state)
 }
 
-/// Logs each request's method, path, status and time. Query strings and bodies are left out.
-async fn log_requests(request: Request, next: Next) -> Response {
+/// `/metrics`, for the listener of its own.
+pub fn metrics_router(state: AppState) -> Router {
+    Router::new()
+        .route("/metrics", get(metrics))
+        .with_state(state)
+}
+
+/// Logs each request's method, path, status and time, and counts it by route. Query strings and
+/// bodies are left out.
+async fn log_requests(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
+    // The route template, such as `/v1/sessions/{id}`, so the metrics keep few labels.
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|m| m.as_str().to_owned())
+        .unwrap_or_else(|| "unmatched".to_owned());
     let started = std::time::Instant::now();
     let response = next.run(request).await;
+    let took = started.elapsed();
+    state
+        .metrics
+        .request(&route, response.status().as_u16(), took);
     tracing::debug!(
         %method,
         %path,
         status = response.status().as_u16(),
-        ms = started.elapsed().as_millis() as u64,
+        ms = took.as_millis() as u64,
         "request"
     );
     response
+}
+
+async fn ready(State(state): State<AppState>) -> Response {
+    if state.draining.load(Ordering::Relaxed) {
+        return (StatusCode::SERVICE_UNAVAILABLE, "draining").into_response();
+    }
+    let store = tokio::time::timeout(
+        Duration::from_secs(2),
+        sqlx::query("SELECT 1").execute(&state.db),
+    )
+    .await;
+    if !matches!(store, Ok(Ok(_))) {
+        return (StatusCode::SERVICE_UNAVAILABLE, "the store does not answer").into_response();
+    }
+    if state.news.nats_connected() == Some(false) {
+        return (StatusCode::SERVICE_UNAVAILABLE, "NATS is not connected").into_response();
+    }
+    "ready".into_response()
+}
+
+async fn metrics(State(state): State<AppState>) -> Response {
+    let (connections, news_sent, news_received) = state.news.counts();
+    let text = state.metrics.render(&Snapshot {
+        node: &state.node,
+        connections,
+        news_sent,
+        news_received,
+    });
+    ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], text).into_response()
 }

@@ -11,7 +11,10 @@ Without a file, the defaults apply. The cloud runs that way for development: sig
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `listen` | `0.0.0.0:8080` | The address the HTTP server binds. It speaks plain HTTP; put a TLS proxy such as Caddy in front. |
+| `listen` | `0.0.0.0:8080` | The address the HTTP server binds. It speaks plain HTTP; put a TLS proxy such as Caddy in front. It also answers `/healthz` (the process runs) and `/readyz` (the node can take players: its store answers, NATS is connected when it has one, and it is not draining). |
+| `metrics_listen` | none | An address such as `0.0.0.0:9090` where `/metrics` answers in the Prometheus text format: event connections, requests by route and status with their time, news between nodes, sweeps and store errors. Keep it off the internet. |
+| `drain_seconds` | `5` | When told to stop, the node reports itself not ready for this long, so a load balancer stops sending players, then closes its event connections with 1001; clients come back spread over ten seconds. |
+| `log_format` | `text` | `json` writes one JSON object per line, for log collectors. |
 | `data_dir` | `data` | The folder with the database (`anyplay-cloud.db`) and the signing key (`signing.key`, with the public half in `signing.pub`). The key is created on first start. Back this folder up. |
 | `database_url` | none | A PostgreSQL database instead of the file in `data_dir`, such as `postgres://cloud:secret@db.internal/cloud`. Add `?sslmode=verify-full&sslrootcert=<file>` to check the server's certificate. The cloud creates its tables on the first start. A cloud needs Postgres only when it runs as several nodes ([ADR 0003](adr/0003-postgres-for-a-cluster.md)). |
 | `database_connections` | `16` | The most connections the cloud keeps open to its database. |
