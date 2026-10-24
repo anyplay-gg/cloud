@@ -838,28 +838,26 @@ pub async fn may_write_to_strangers(state: &crate::state::Inner, account: u64) -
     ensure_not_muted(state, account).await
 }
 
-/// The rules for one more friend request by an account, read before the request's transaction
-/// (which must not wait for a second store connection while it holds one) and applied inside it
-/// by [`FriendRequestRules::check`]. A muted account sends none; a new account sends
-/// `new_account_friend_requests_per_day` while it is new.
+/// The rules for one more friend request by an account, applied by [`FriendRequestRules::check`]
+/// in the request's transaction. A muted account sends none; a new account sends
+/// `new_account_friend_requests_per_day` while it is new. Whether the account is new is read
+/// here, before the transaction, which must not wait for a second store connection while it
+/// holds one; it changes only with time. The mute and the count are read in the transaction.
 pub async fn friend_request_rules(
     state: &crate::state::Inner,
     account: u64,
 ) -> Result<FriendRequestRules> {
-    let mute = store::active_mute(&mut *state.db.acquire().await?, account, now()).await?;
     let new = new_until(state, account).await?.map(|until| NewAccount {
         until,
         since: until.saturating_sub(state.config.new_account_hours * 60 * 60),
         per_day: state.config.new_account_friend_requests_per_day,
     });
-    Ok(FriendRequestRules { account, mute, new })
+    Ok(FriendRequestRules { account, new })
 }
 
 /// What [`friend_request_rules`] read.
 pub struct FriendRequestRules {
     account: u64,
-    /// A running mute, and its end if it has one.
-    mute: Option<Option<u64>>,
     new: Option<NewAccount>,
 }
 
@@ -873,7 +871,7 @@ impl FriendRequestRules {
     /// Fails when a mute runs or a new account used up its allowance. Call it in the transaction
     /// that holds the account, so that two requests at once cannot both take the last one.
     pub async fn check(&self, conn: &mut sqlx::AnyConnection) -> Result<()> {
-        if let Some(until) = self.mute {
+        if let Some(until) = store::active_mute(conn, self.account, now()).await? {
             return Err(AppError::restricted(
                 Restriction::Muted,
                 until,
