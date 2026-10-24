@@ -46,7 +46,11 @@ export function Field({
 				</BaseField.Description>
 			) : null}
 			{error ? (
-				<BaseField.Error match className="flex items-start gap-1.5 text-small text-danger-text">
+				<BaseField.Error
+					match
+					data-field-error=""
+					className="flex items-start gap-1.5 text-small text-danger-text"
+				>
 					<CircleAlert aria-hidden className="mt-px size-3.5 shrink-0" />
 					<span>{error}</span>
 				</BaseField.Error>

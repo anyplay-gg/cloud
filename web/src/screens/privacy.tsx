@@ -1,36 +1,61 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { usePageTitle } from "@/lib/use-page-title";
 import { useEffect, useState } from "react";
 import { useApi } from "@/api/context";
 import { qk, usePrivacy } from "@/api/queries";
-import type { Audience, FriendRequestPolicy, PrivacySettings, ProfileField } from "@/api/types";
+import type { Audience, Privacy as PrivacySettings, ProfilePart } from "@/api/types";
 import { Page, PageHeader, Row, Section } from "@/components/layout";
 import { QueryView } from "@/components/query-state";
 import { m } from "@/i18n";
+import { usePageTitle } from "@/lib/use-page-title";
 import { useSaveState } from "@/lib/use-save-state";
 import { Skeleton } from "@/ui/feedback";
 import { SaveStatus } from "@/ui/save-status";
 import { Select } from "@/ui/select";
 import { toast } from "@/ui/toast";
 
-const FIELDS: { field: ProfileField; title: () => string; text: () => string }[] = [
-	{ field: "about", title: () => m.privacy_field_about(), text: () => m.privacy_field_about_text() },
-	{ field: "friends", title: () => m.privacy_field_friends(), text: () => m.privacy_field_friends_text() },
-	{ field: "trophies", title: () => m.privacy_field_trophies(), text: () => m.privacy_field_trophies_text() },
-	{ field: "activity", title: () => m.privacy_field_activity(), text: () => m.privacy_field_activity_text() },
+const PARTS: { part: ProfilePart; title: () => string; text: () => string }[] = [
+	{ part: "about", title: () => m.privacy_field_about(), text: () => m.privacy_field_about_text() },
+	{
+		part: "favourites",
+		title: () => m.privacy_field_favourites(),
+		text: () => m.privacy_field_favourites_text(),
+	},
+	{
+		part: "avatar",
+		title: () => m.privacy_field_avatar(),
+		text: () => m.privacy_field_avatar_text(),
+	},
+	{
+		part: "playtime",
+		title: () => m.privacy_field_playtime(),
+		text: () => m.privacy_field_playtime_text(),
+	},
+	{
+		part: "trophies",
+		title: () => m.privacy_field_trophies(),
+		text: () => m.privacy_field_trophies_text(),
+	},
 ];
 
 const audienceOptions = (): { value: Audience; label: string; description: string }[] => [
-	{ value: "everyone", label: m.privacy_audience_everyone(), description: m.privacy_audience_everyone_text() },
-	{ value: "friends", label: m.privacy_audience_friends(), description: m.privacy_audience_friends_text() },
-	{ value: "me", label: m.privacy_audience_me(), description: m.privacy_audience_me_text() },
+	{
+		value: "friends",
+		label: m.privacy_audience_friends(),
+		description: m.privacy_audience_friends_text(),
+	},
+	{
+		value: "everyone",
+		label: m.privacy_audience_everyone(),
+		description: m.privacy_audience_everyone_text(),
+	},
+	{
+		value: "nobody",
+		label: m.privacy_audience_nobody(),
+		description: m.privacy_audience_nobody_text(),
+	},
 ];
 
-const requestOptions = (): { value: FriendRequestPolicy; label: string; description: string }[] => [
-	{ value: "everyone", label: m.privacy_requests_everyone(), description: m.privacy_requests_everyone_text() },
-	{ value: "friends_of_friends", label: m.privacy_requests_fof(), description: m.privacy_requests_fof_text() },
-	{ value: "nobody", label: m.privacy_requests_nobody(), description: m.privacy_requests_nobody_text() },
-];
+const SKELETON_ROWS = ["a", "b", "c", "d", "e"];
 
 export function Privacy() {
 	usePageTitle(m.nav_privacy());
@@ -43,18 +68,17 @@ export function Privacy() {
 				loadingLabel={m.privacy_loading()}
 				errorTitle={m.privacy_error()}
 				loading={
-					<div className="flex flex-col gap-8">
-						{[4, 1].map((rows) => (
-							<div key={rows} className="overflow-hidden rounded-xl bg-surface shadow-card">
-								{Array.from({ length: rows }, (_, i) => (
-									<div key={`r${i}`} className="flex items-center justify-between gap-6 border-t border-line px-5 py-4 first:border-t-0">
-										<div className="space-y-2">
-											<Skeleton className="h-4 w-32" />
-											<Skeleton className="h-3 w-56" />
-										</div>
-										<Skeleton className="h-9 w-36" />
-									</div>
-								))}
+					<div className="overflow-hidden rounded-xl bg-surface shadow-card">
+						{SKELETON_ROWS.map((id) => (
+							<div
+								key={id}
+								className="flex items-center justify-between gap-6 border-t border-line px-5 py-4 first:border-t-0"
+							>
+								<div className="space-y-2">
+									<Skeleton className="h-4 w-32" />
+									<Skeleton className="h-3 w-56" />
+								</div>
+								<Skeleton className="h-9 w-36" />
 							</div>
 						))}
 					</div>
@@ -80,7 +104,7 @@ function PrivacyForm({ initial }: { initial: PrivacySettings }) {
 		setSettings(next);
 		save.saving();
 		try {
-			const stored = await api.privacy.update(next);
+			const stored = await api.account.updatePrivacy(next);
 			qc.setQueryData(qk.privacy, stored);
 			save.saved();
 		} catch {
@@ -91,50 +115,32 @@ function PrivacyForm({ initial }: { initial: PrivacySettings }) {
 	};
 
 	return (
-		<>
-			<Section
-				id="profile-visibility"
-				title={m.privacy_profile_title()}
-				description={m.privacy_profile_lead()}
-				flush
-				actions={<SaveStatus state={save.state} />}
-			>
-				<ul className="divide-y divide-line">
-					{FIELDS.map((f) => (
-						<Row
-							as="li"
-							key={f.field}
-							title={<label htmlFor={`aud-${f.field}`}>{f.title()}</label>}
-							description={f.text()}
-							control={
-								<Select
-									id={`aud-${f.field}`}
-									className="w-44"
-									value={settings.fields[f.field]}
-									options={audienceOptions()}
-									onValueChange={(v) =>
-										void commit({ ...settings, fields: { ...settings.fields, [f.field]: v } })
-									}
-								/>
-							}
-						/>
-					))}
-				</ul>
-			</Section>
-			<Section id="friend-requests" title={m.privacy_requests_title()} description={m.privacy_requests_lead()} flush>
-				<Row
-					title={<label htmlFor="friend-requests-select">{m.privacy_requests_label()}</label>}
-					control={
-						<Select
-							id="friend-requests-select"
-							className="w-52"
-							value={settings.friendRequests}
-							options={requestOptions()}
-							onValueChange={(v) => void commit({ ...settings, friendRequests: v })}
-						/>
-					}
-				/>
-			</Section>
-		</>
+		<Section
+			id="profile-visibility"
+			title={m.privacy_profile_title()}
+			description={m.privacy_profile_lead()}
+			flush
+			actions={<SaveStatus state={save.state} />}
+		>
+			<ul className="divide-y divide-line">
+				{PARTS.map((f) => (
+					<Row
+						as="li"
+						key={f.part}
+						title={<label htmlFor={`aud-${f.part}`}>{f.title()}</label>}
+						description={f.text()}
+						control={
+							<Select
+								id={`aud-${f.part}`}
+								className="w-44"
+								value={settings[f.part]}
+								options={audienceOptions()}
+								onValueChange={(v) => void commit({ ...settings, [f.part]: v })}
+							/>
+						}
+					/>
+				))}
+			</ul>
+		</Section>
 	);
 }

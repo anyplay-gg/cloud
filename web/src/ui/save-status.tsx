@@ -12,7 +12,11 @@ export type SaveState = "idle" | "saving" | "saved";
  */
 export function SaveStatus({ state }: { state: SaveState }) {
 	return (
-		<span role="status" aria-live="polite" className="flex h-5 min-w-24 items-center gap-1.5 text-small text-fg-muted">
+		<span
+			role="status"
+			aria-live="polite"
+			className="flex h-5 min-w-24 items-center gap-1.5 text-small text-fg-muted"
+		>
 			<AnimatePresence mode="popLayout" initial={false}>
 				{state === "saving" ? (
 					<motion.span

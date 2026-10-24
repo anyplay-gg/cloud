@@ -1,29 +1,32 @@
-import { emptyCounts, percentOf } from "@/lib/trophies";
 import { ApiError } from "../errors";
 import type { PortalApi } from "../portal-api";
 import type {
-	ActivityEvent,
-	ActivityKind,
-	Audience,
-	CodeChallenge,
-	DeviceSession,
+	Account,
+	AccountView,
+	BanStatement,
+	BrowserSession,
+	Device,
+	Flow,
 	Friend,
+	FriendLists,
 	FriendRequest,
-	FriendsOverview,
+	GradeCounts,
 	Me,
 	Passkey,
-	PrivacySettings,
-	PublicProfile,
-	SessionInfo,
+	Privacy,
+	Profile,
+	PublicUser,
+	SessionView,
 	StepUpMethod,
 	TrophySummary,
+	Viewer,
 } from "../types";
 import {
 	defaultPrivacy,
-	iso,
-	type MockPlayer,
+	ownPlaytime,
 	players,
-	seedActivity,
+	presenceFor,
+	seedDevices,
 	seedFriends,
 	seedIncoming,
 	seedMe,
@@ -31,11 +34,18 @@ import {
 	seedPasskeys,
 	seedSessions,
 	seedTrophies,
-	toPerson,
+	toAccount,
 } from "./seed";
 
 /** What the mock pretends is going on. `?mock=empty` and friends pick one in the browser. */
-export type MockScenario = "default" | "empty" | "error" | "slow" | "signedout";
+export type MockScenario =
+	| "default"
+	| "empty"
+	| "error"
+	| "slow"
+	| "signedout"
+	| "banned"
+	| "handoff";
 
 export interface MockOptions {
 	scenario?: MockScenario;
@@ -44,48 +54,58 @@ export interface MockOptions {
 	/** Start with a recent sign-in, so the first sensitive write needs no step-up. */
 	fresh?: boolean;
 	now?: () => number;
-	/** The address a sign-in code "arrives" at. */
-	email?: string;
 }
 
-const FRESH_FOR = 10 * 60_000;
+const FRESH_FOR = 15 * 60;
+const GRACE = 30 * 86_400;
 const TAKEN = new Set(["admin", "root", "anyplay", ...players.map((p) => p.handle)]);
+const SCENARIOS: MockScenario[] = ["empty", "error", "slow", "signedout", "banned", "handoff"];
 
 export function parseScenario(search: string): MockScenario {
-	const v = new URLSearchParams(search).get("mock");
-	return v === "empty" || v === "error" || v === "slow" || v === "signedout" ? v : "default";
+	const v = new URLSearchParams(search).get("mock") as MockScenario | null;
+	return v && SCENARIOS.includes(v) ? v : "default";
 }
+
+const zero = (): GradeCounts => ({ platinum: 0, gold: 0, silver: 0, bronze: 0 });
 
 export function createMockApi(options: MockOptions = {}): PortalApi {
 	const scenario = options.scenario ?? "default";
-	const now = options.now ?? (() => Date.now());
+	const nowMs = options.now ?? (() => Date.now());
+	const now = () => Math.floor(nowMs() / 1000);
 	const latency = options.latency ?? [160, 340];
 	const t0 = now();
 
-	let signedIn = scenario !== "signedout";
+	const empty = scenario === "empty";
+	let signedIn = scenario !== "signedout" && scenario !== "handoff";
 	let me: Me = seedMe(t0);
 	let freshUntil = options.fresh ? t0 + FRESH_FOR : 0;
-	let passkeys: Passkey[] = scenario === "empty" ? [] : seedPasskeys(t0);
-	let sessions: DeviceSession[] =
-		scenario === "empty" ? seedSessions(t0).slice(0, 1) : seedSessions(t0);
-	let activity: ActivityEvent[] =
-		scenario === "empty" ? seedActivity(t0).slice(0, 1) : seedActivity(t0);
-	let privacy: PrivacySettings = defaultPrivacy();
-	let friends: Friend[] = scenario === "empty" ? [] : seedFriends(t0);
-	let incoming: FriendRequest[] = scenario === "empty" ? [] : seedIncoming(t0);
-	let outgoing: FriendRequest[] = scenario === "empty" ? [] : seedOutgoing(t0);
-	const trophyData: TrophySummary =
-		scenario === "empty"
-			? { titles: [], earned: emptyCounts(), total: emptyCounts(), percent: 0 }
-			: seedTrophies(t0);
-
-	// the sign-in in progress
-	let flow: { email: string; intent: "sign_in" | "create"; codeSentAt: number } | null = null;
-	let pendingDetails: { handle: string; displayName: string } | null = null;
+	let passkeys: Passkey[] = empty ? [] : seedPasskeys(t0);
+	let devices: Device[] = empty ? [] : seedDevices(t0);
+	let sessions: BrowserSession[] = empty ? seedSessions(t0).slice(0, 1) : seedSessions(t0);
+	let privacy: Privacy = defaultPrivacy();
+	let profile = {
+		about: empty ? "" : "Co-op when I can, solo when I can't. Always up for a rematch.",
+		favourites: empty ? [] : ["GAME01234", "GAME04550"],
+		avatar: null as string | null,
+	};
+	let friends: Friend[] = empty ? [] : seedFriends(t0);
+	let incoming: FriendRequest[] = empty ? [] : seedIncoming(t0);
+	let outgoing: FriendRequest[] = empty ? [] : seedOutgoing(t0);
+	let blocked: Account[] = [];
+	const trophyData: TrophySummary = empty ? { counts: zero(), titles: [] } : seedTrophies(t0);
+	let deletion: { at: number } | null = null;
+	let pendingEmail: string | null = null;
+	let flow: Flow =
+		scenario === "banned" ? { step: "banned" } : signedIn ? { step: "done" } : { step: "email" };
+	const authorize = scenario === "handoff" ? { device: "Riley's desktop", create: false } : null;
+	let notice: string | null = null;
+	let pendingDetails: { handle: string } | null = null;
 	let stepUpCodeSent = false;
+	let appealFiled = false;
 
-	const wait = async (): Promise<void> => {
-		if (scenario === "slow") await new Promise<void>(() => {});
+	const wait = async (keepGoing = false): Promise<void> => {
+		// "slow" holds every read so the loading states can be seen; the session still answers
+		if (scenario === "slow" && !keepGoing) await new Promise<void>(() => {});
 		const ms = Array.isArray(latency)
 			? latency[0] + Math.random() * (latency[1] - latency[0])
 			: latency;
@@ -95,26 +115,20 @@ export function createMockApi(options: MockOptions = {}): PortalApi {
 	/** Wraps a handler: waits like a network, and makes reads fail in the "error" scenario. */
 	const call = async <T>(fn: () => T, { read = false, auth = true } = {}): Promise<T> => {
 		await wait();
-		if (scenario === "error" && read)
-			throw new ApiError("server", "The mock is set to fail.", { status: 500 });
+		if (scenario === "error" && read) {
+			throw new ApiError("internal", "The mock is set to fail.", { status: 500 });
+		}
 		if (auth && !signedIn) throw new ApiError("unauthorized", "Sign in first.", { status: 401 });
 		return fn();
 	};
 
-	const log = (kind: ActivityKind, detail: string | null = null) => {
-		activity = [
-			{ id: `ev_${activity.length + 1}_${now()}`, kind, at: iso(now(), 0), detail },
-			...activity,
-		];
-	};
-
+	const methods = (): StepUpMethod[] =>
+		passkeys.length > 0 ? ["passkey", "email_code"] : ["email_code"];
 	const requireFresh = () => {
 		if (now() > freshUntil) {
-			const methods: StepUpMethod[] =
-				passkeys.length > 0 ? ["passkey", "email_code"] : ["email_code"];
-			throw new ApiError("step_up_required", "Confirm it's you to do this.", {
+			throw new ApiError("step_up_required", "Confirm that it is you to do this.", {
 				status: 403,
-				methods,
+				methods: methods(),
 			});
 		}
 	};
@@ -122,119 +136,100 @@ export function createMockApi(options: MockOptions = {}): PortalApi {
 		freshUntil = now() + FRESH_FOR;
 	};
 
-	const codeChallenge = (email: string): CodeChallenge => ({
-		emailHint: hideEmail(email),
-		resendAfter: 30,
+	const view = (): SessionView => ({
+		csrf: "mock-csrf",
+		signedIn,
+		account: signedIn ? me : null,
+		freshUntil: signedIn ? freshUntil : null,
+		flow,
+		authorize,
+		notice,
+		cloud: {
+			name: "AnyPlay",
+			signup: "open",
+			privacyUrl: null,
+			termsUrl: "https://anyplaynet.com/terms",
+		},
 	});
 
-	function requireOk(code: string) {
-		if (!/^\d{6}$/.test(code) || code === "000000") {
-			throw new ApiError("invalid", "That code is wrong or has expired.", {
-				status: 422,
-				fields: { code: "That code is wrong or has expired. Request a new one." },
+	const finishSignIn = () => {
+		signedIn = true;
+		markFresh();
+		flow = authorize ? { step: "handoff", redirect: "/return" } : { step: "done" };
+	};
+
+	const badCode = (code: string) => {
+		if (code === "000000") {
+			throw new ApiError("code_wrong", "That code is wrong. Check it and try again.", {
+				status: 400,
+				fields: { code: "That code is wrong. Check it and try again." },
 			});
 		}
-	}
-
-	function viewerCan(audience: Audience, relation: PublicProfile["relation"]) {
-		if (audience === "everyone") return true;
-		if (audience === "friends") return relation === "friend" || relation === "self";
-		return relation === "self";
-	}
-
-	function profileOf(p: MockPlayer, relation: PublicProfile["relation"]): PublicProfile {
-		const base = {
-			handle: p.handle,
-			displayName: p.displayName,
-			accent: p.accent,
-			theme: p.theme,
-			joinedAt: iso(t0, p.joinedDaysAgo * 86_400_000),
-			relation,
-		};
-		const request: PublicProfile["request"] = outgoing.some((r) => r.person.id === p.id)
-			? "outgoing"
-			: incoming.some((r) => r.person.id === p.id)
-				? "incoming"
-				: "none";
-		if (p.locked && relation !== "friend") {
-			return {
-				...base,
-				visible: false,
-				about: null,
-				friendCount: null,
-				trophies: null,
-				status: null,
-				hidden: [],
-				request,
-			};
+		if (!/^\d{6}$/.test(code)) {
+			throw new ApiError("bad_request", "Enter the 6 digits.", { status: 400 });
 		}
-		const hidden: PublicProfile["hidden"] = [];
-		const show = (f: keyof MockPlayer["fields"]) => {
-			const ok = viewerCan(p.fields[f], relation);
-			if (!ok) hidden.push({ field: f, audience: p.fields[f] });
-			return ok;
-		};
-		const total = p.trophies.total;
-		return {
-			...base,
-			visible: true,
-			about: show("about") ? p.about : null,
-			friendCount: show("friends") ? p.friendCount : null,
-			trophies: show("trophies")
-				? {
-						earned: p.trophies.earned,
-						total,
-						percent: percentOf(p.trophies.earned, total),
-					}
-				: null,
-			status: show("activity") ? p.status : null,
-			hidden,
-			request,
-		};
+	};
+
+	const hide = (email: string) => {
+		const [user = "", domain = ""] = email.split("@");
+		const head = user.slice(0, Math.min(2, user.length));
+		return `${head}${"*".repeat(Math.max(3, user.length - head.length))}@${domain}`;
+	};
+
+	function can(audience: Privacy["about"], viewer: Viewer["relation"]) {
+		if (audience === "everyone") return true;
+		if (audience === "friends") return viewer === "friend" || viewer === "self";
+		return viewer === "self";
 	}
 
 	const api: PortalApi = {
 		mode: "mock",
 
 		async session() {
-			await wait();
-			const info: SessionInfo = {
-				signedIn,
-				terms: { url: "https://anyplaynet.com/terms", version: "2026-10" },
-				csrf: "mock-csrf",
-				account: signedIn ? me : null,
-			};
-			return info;
+			await wait(true);
+			return view();
 		},
 
 		auth: {
 			start: (input) =>
 				call(
 					() => {
-						flow = { email: input.email, intent: input.intent, codeSentAt: now() };
-						return codeChallenge(input.email);
+						flow = { step: "code", email: input.email, create: input.intent === "create" };
+						notice = null;
+						return view();
 					},
 					{ auth: false },
 				),
 			resendCode: () =>
 				call(
 					() => {
-						if (!flow) throw new ApiError("unauthorized", "Start again.", { status: 401 });
-						flow.codeSentAt = now();
-						return codeChallenge(flow.email);
+						notice = "We sent a new code.";
+						return view();
 					},
 					{ auth: false },
 				),
 			verifyCode: (code) =>
 				call(
 					() => {
-						if (!flow) throw new ApiError("unauthorized", "Start again.", { status: 401 });
-						requireOk(code);
-						if (flow.intent === "create") return { next: "details" as const };
-						signedIn = true;
-						freshUntil = now() + FRESH_FOR;
-						log("sign_in", "Chrome on Windows");
-						return { next: "done" as const };
+						if (flow.step !== "code")
+							throw new ApiError("unauthorized", "Start again.", { status: 401 });
+						badCode(code);
+						notice = null;
+						if (flow.create) {
+							flow = {
+								step: "details",
+								email: flow.email,
+								terms: { version: "2026-10", url: "https://anyplaynet.com/terms" },
+							};
+							return view();
+						}
+						if (scenario === "banned") {
+							flow = { step: "banned" };
+							signedIn = true;
+							return view();
+						}
+						finishSignIn();
+						return view();
 					},
 					{ auth: false },
 				),
@@ -243,47 +238,55 @@ export function createMockApi(options: MockOptions = {}): PortalApi {
 					() => {
 						const handle = input.handle.trim().toLowerCase();
 						if (!/^[a-z][a-z0-9_-]{2,15}$/.test(handle)) {
-							throw new ApiError("invalid", "Invalid handle.", {
-								status: 422,
-								fields: {
-									handle:
-										"Use 3 to 16 letters, digits, hyphens or underscores. Start with a letter.",
+							throw new ApiError(
+								"handle_invalid",
+								"Use 3 to 16 letters, digits, hyphens or underscores. Start with a letter.",
+								{
+									status: 400,
+									fields: {
+										handle:
+											"Use 3 to 16 letters, digits, hyphens or underscores. Start with a letter.",
+									},
 								},
-							});
+							);
 						}
 						if (TAKEN.has(handle)) {
-							throw new ApiError("invalid", "Handle taken.", {
-								status: 422,
+							throw new ApiError("handle_taken", "That handle is taken. Try another.", {
+								status: 409,
 								fields: { handle: "That handle is taken. Try another." },
 							});
 						}
-						pendingDetails = { handle, displayName: input.displayName.trim() || handle };
-						return { next: "terms" as const };
+						if (!input.ageConfirmed) {
+							throw new ApiError("bad_request", "Confirm that you are old enough.", {
+								status: 400,
+								fields: { age_confirmed: "Confirm that you are old enough." },
+							});
+						}
+						if (!input.termsAccepted) {
+							throw new ApiError("bad_request", "Accept the terms to continue.", {
+								status: 400,
+								fields: { terms_accepted: "Accept the terms to continue." },
+							});
+						}
+						pendingDetails = { handle };
+						me = { id: 900, handle, email: flow.email ?? "new@example.com", created: now() };
+						passkeys = [];
+						friends = [];
+						incoming = [];
+						outgoing = [];
+						devices = [];
+						sessions = seedSessions(t0).slice(0, 1);
+						profile = { about: "", favourites: [], avatar: null };
+						finishSignIn();
+						return view();
 					},
 					{ auth: false },
 				),
 			acceptTerms: () =>
 				call(
 					() => {
-						if (!flow || !pendingDetails)
-							throw new ApiError("unauthorized", "Start again.", { status: 401 });
-						me = {
-							...seedMe(t0),
-							id: "acc_new",
-							handle: pendingDetails.handle,
-							displayName: pendingDetails.displayName,
-							email: flow.email,
-							about: "",
-							createdAt: iso(now(), 0),
-						};
-						passkeys = [];
-						friends = [];
-						incoming = [];
-						outgoing = [];
-						sessions = seedSessions(t0).slice(0, 1);
-						signedIn = true;
-						freshUntil = now() + FRESH_FOR;
-						return { next: "done" as const };
+						finishSignIn();
+						return view();
 					},
 					{ auth: false },
 				),
@@ -299,10 +302,8 @@ export function createMockApi(options: MockOptions = {}): PortalApi {
 					}
 					call(
 						() => {
-							signedIn = true;
-							freshUntil = now() + FRESH_FOR;
-							log("sign_in", "Chrome on Windows (passkey)");
-							return { next: "done" as const };
+							finishSignIn();
+							return view();
 						},
 						{ auth: false },
 					).then(resolve, reject);
@@ -311,99 +312,188 @@ export function createMockApi(options: MockOptions = {}): PortalApi {
 				call(
 					() => {
 						signedIn = false;
-						flow = null;
+						flow = { step: "email" };
+					},
+					{ auth: false },
+				),
+			ban: () =>
+				call(
+					(): BanStatement => ({
+						until: now() + 12 * 86_400,
+						rule: "Harassment",
+						reason: "Repeated abusive messages to other players in a party.",
+						decided: now() - 2 * 86_400,
+						appeal: appealFiled
+							? { state: "filed", status: "open", answer: null }
+							: { state: "open", deadline: now() + 12 * 86_400 },
+					}),
+					{ auth: false },
+				),
+			appeal: (text) =>
+				call(
+					() => {
+						if (text.trim().length < 1 || text.length > 1000) {
+							throw new ApiError("bad_request", "Write between 1 and 1,000 characters.", {
+								status: 400,
+								fields: { text: "Write between 1 and 1,000 characters." },
+							});
+						}
+						appealFiled = true;
 					},
 					{ auth: false },
 				),
 		},
 
 		account: {
-			updateProfile: (input) =>
+			get: () =>
+				call(
+					(): AccountView => ({
+						account: me,
+						passkeys,
+						maxPasskeys: 10,
+						devices,
+						sessions,
+						deletion,
+						pendingEmail,
+						freshUntil: freshUntil || null,
+					}),
+					{ read: true },
+				),
+			changeEmail: (email) =>
 				call(() => {
-					if (input.about.length > 160) {
-						throw new ApiError("invalid", "Too long.", {
-							status: 422,
-							fields: { about: "Keep it to 160 characters." },
+					requireFresh();
+					if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || email === me.email) {
+						throw new ApiError("bad_request", "Enter a different, valid address.", {
+							status: 400,
+							fields: { email: "Enter a different, valid address." },
 						});
 					}
-					me = { ...me, ...input };
-					log("profile_updated");
-					return me;
+					pendingEmail = email;
 				}),
-			activity: () => call(() => activity, { read: true }),
+			confirmEmail: (code) =>
+				call(() => {
+					requireFresh();
+					if (!pendingEmail)
+						throw new ApiError("bad_request", "Ask for a code first.", { status: 400 });
+					badCode(code);
+					me = { ...me, email: pendingEmail };
+					pendingEmail = null;
+					return me.email;
+				}),
+			profile: () =>
+				call(
+					(): Profile => ({
+						account: toAccount(me),
+						about: profile.about,
+						favourites: profile.favourites,
+						avatar: profile.avatar,
+						playtime: ownPlaytime,
+					}),
+					{ read: true },
+				),
+			updateProfile: (input) =>
+				call((): Profile => {
+					if (input.about !== undefined) {
+						if (input.about.length > 160) {
+							throw new ApiError("bad_request", "Keep it to 160 characters.", {
+								status: 400,
+								fields: { about: "Keep it to 160 characters." },
+							});
+						}
+						profile = { ...profile, about: input.about };
+					}
+					if (input.favourites !== undefined)
+						profile = { ...profile, favourites: input.favourites.slice(0, 3) };
+					return { account: toAccount(me), ...profile, playtime: ownPlaytime };
+				}),
+			setAvatar: (file) =>
+				call(() => {
+					if (file.size > 1_000_000)
+						throw new ApiError("too_large", "Pictures can be 1 MB at most.", { status: 413 });
+					profile = { ...profile, avatar: "mock-avatar" };
+					return "mock-avatar";
+				}),
+			removeAvatar: () =>
+				call(() => {
+					profile = { ...profile, avatar: null };
+				}),
+			privacy: () => call(() => privacy, { read: true }),
+			updatePrivacy: (input) =>
+				call(() => {
+					privacy = input;
+					return privacy;
+				}),
 		},
 
 		security: {
-			passkeys: () => call(() => passkeys, { read: true }),
 			addPasskey: (name) =>
-				call(() => {
+				call((): Passkey => {
 					requireFresh();
-					if (passkeys.length >= 10) {
-						throw new ApiError("conflict", "Limit reached.", { status: 409 });
-					}
+					if (passkeys.length >= 10)
+						throw new ApiError("limit", "You have 10 passkeys already.", { status: 409 });
 					const key: Passkey = {
-						id: `pk_${passkeys.length + 1}_${now()}`,
-						name: name.trim() || "Passkey",
-						createdAt: iso(now(), 0),
-						lastUsedAt: null,
-						synced: false,
+						id: `pk-${passkeys.length + 1}-${now()}`,
+						name: name.trim() || `Passkey ${passkeys.length + 1}`,
+						created: now(),
+						lastUsed: null,
 					};
 					passkeys = [...passkeys, key];
-					log("passkey_added", key.name);
 					return key;
+				}),
+			renamePasskey: (id, name) =>
+				call(() => {
+					if (!passkeys.some((k) => k.id === id))
+						throw new ApiError("not_found", "Not found.", { status: 404 });
+					passkeys = passkeys.map((k) => (k.id === id ? { ...k, name: name.trim() || k.name } : k));
 				}),
 			removePasskey: (id) =>
 				call(() => {
 					requireFresh();
-					const key = passkeys.find((k) => k.id === id);
-					if (!key) throw new ApiError("not_found", "Not found.", { status: 404 });
+					if (!passkeys.some((k) => k.id === id))
+						throw new ApiError("not_found", "Not found.", { status: 404 });
 					passkeys = passkeys.filter((k) => k.id !== id);
-					log("passkey_removed", key.name);
 				}),
-			sessions: () => call(() => sessions, { read: true }),
+			removeDevice: (id) =>
+				call(() => {
+					if (!devices.some((d) => d.id === id))
+						throw new ApiError("not_found", "Not found.", { status: 404 });
+					devices = devices.filter((d) => d.id !== id);
+				}),
 			revokeSession: (id) =>
 				call(() => {
 					const s = sessions.find((x) => x.id === id);
 					if (!s) throw new ApiError("not_found", "Not found.", { status: 404 });
-					if (s.current)
-						throw new ApiError("conflict", "Use sign out for this browser.", { status: 409 });
 					sessions = sessions.filter((x) => x.id !== id);
-					log("device_signed_out", s.name);
+					if (s.current) {
+						signedIn = false;
+						flow = { step: "email" };
+					}
+					return { signedOut: s.current };
 				}),
 			signOutEverywhere: () =>
 				call(() => {
 					requireFresh();
-					sessions = sessions.filter((x) => x.current);
-					log("signed_out_everywhere");
+					devices = [];
+					sessions = [];
+					signedIn = false;
+					flow = { step: "email" };
 				}),
 		},
 
 		stepUp: {
-			methods: () =>
-				call((): StepUpMethod[] =>
-					passkeys.length > 0 ? ["passkey", "email_code"] : ["email_code"],
-				),
+			methods: () => call(methods),
 			withPasskey: () => call(() => markFresh()),
 			sendEmailCode: () =>
 				call(() => {
 					stepUpCodeSent = true;
-					return codeChallenge(me.email);
+					return hide(me.email);
 				}),
 			verifyEmailCode: (code) =>
 				call(() => {
 					if (!stepUpCodeSent)
-						throw new ApiError("conflict", "Send a code first.", { status: 409 });
-					requireOk(code);
+						throw new ApiError("bad_request", "Ask for a code first.", { status: 400 });
+					badCode(code);
 					markFresh();
-				}),
-		},
-
-		privacy: {
-			get: () => call(() => privacy, { read: true }),
-			update: (input) =>
-				call(() => {
-					privacy = input;
-					return privacy;
 				}),
 		},
 
@@ -413,11 +503,11 @@ export function createMockApi(options: MockOptions = {}): PortalApi {
 					requireFresh();
 					const body = JSON.stringify(
 						{
-							account: { handle: me.handle, email: me.email, created: me.createdAt },
-							passkeys: passkeys.map((k) => ({ name: k.name, created: k.createdAt })),
-							friends: friends.map((f) => f.handle),
+							account: { handle: me.handle, email: me.email, created: me.created },
+							passkeys: passkeys.map((k) => ({ name: k.name, created: k.created })),
+							friends: friends.map((f) => f.account.handle),
 							privacy,
-							trophies: trophyData.titles.map((t) => ({ title: t.titleId, percent: t.percent })),
+							trophies: trophyData.titles.map((t) => ({ title: t.titleId, earned: t.earned })),
 						},
 						null,
 						2,
@@ -427,142 +517,145 @@ export function createMockApi(options: MockOptions = {}): PortalApi {
 						blob: new Blob([body], { type: "application/json" }),
 					};
 				}),
-			requestDeletion: ({ handle }) =>
+			requestDeletion: (handle) =>
 				call(() => {
 					requireFresh();
 					if (handle.trim().toLowerCase() !== me.handle) {
-						throw new ApiError("invalid", "Wrong handle.", {
-							status: 422,
-							fields: { handle: "That is not your handle. Type it exactly to confirm." },
-						});
+						throw new ApiError(
+							"bad_request",
+							"That is not your handle. Type it exactly to confirm.",
+							{
+								status: 400,
+								fields: { handle: "That is not your handle. Type it exactly to confirm." },
+							},
+						);
 					}
-					me = {
-						...me,
-						deletion: {
-							requestedAt: iso(now(), 0),
-							scheduledFor: iso(now(), -30 * 86_400_000),
-						},
-					};
-					return me;
+					deletion = deletion ?? { at: now() + GRACE };
+					return deletion;
 				}),
 			cancelDeletion: () =>
 				call(() => {
-					me = { ...me, deletion: null };
-					return me;
+					deletion = null;
 				}),
 		},
 
 		friends: {
-			overview: () =>
-				call((): FriendsOverview => ({ friends, incoming, outgoing }), { read: true }),
+			lists: () =>
+				call((): FriendLists => ({ friends, incoming, outgoing, blocked }), { read: true }),
 			sendRequest: (handle) =>
 				call(() => {
 					const h = handle.trim().replace(/^@/, "").toLowerCase();
 					const p = players.find((x) => x.handle === h);
 					if (!p) {
-						throw new ApiError("not_found", "No player with that handle.", {
+						throw new ApiError("not_found", "No player has that handle. Check the spelling.", {
 							status: 404,
 							fields: { handle: "No player has that handle. Check the spelling." },
 						});
 					}
-					if (friends.some((f) => f.id === p.id)) {
-						throw new ApiError("conflict", "Already friends.", {
-							status: 409,
-							fields: { handle: `You and ${p.displayName} are already friends.` },
+					if (friends.some((f) => f.account.id === p.id)) {
+						throw new ApiError("bad_request", `You and @${p.handle} are already friends.`, {
+							status: 400,
+							fields: { handle: `You and @${p.handle} are already friends.` },
 						});
 					}
-					if (outgoing.some((r) => r.person.id === p.id)) {
-						throw new ApiError("conflict", "Already sent.", {
-							status: 409,
-							fields: { handle: "You already sent this request." },
-						});
-					}
-					const inc = incoming.find((r) => r.person.id === p.id);
+					const inc = incoming.find((r) => r.account.id === p.id);
 					if (inc) {
-						incoming = incoming.filter((r) => r.id !== inc.id);
+						incoming = incoming.filter((r) => r !== inc);
 						friends = [
 							...friends,
-							{ ...toPerson(p), status: p.status, activity: p.activity, since: iso(now(), 0) },
+							{ account: toAccount(p), since: now(), presence: presenceFor(p) },
 						];
-						return;
+						return "friends" as const;
 					}
-					outgoing = [
-						{ id: `fr_out_${p.handle}`, person: toPerson(p), createdAt: iso(now(), 0) },
-						...outgoing,
-					];
+					if (!outgoing.some((r) => r.account.id === p.id)) {
+						outgoing = [{ account: toAccount(p), since: now() }, ...outgoing];
+					}
+					return "requested" as const;
 				}),
 			accept: (id) =>
 				call(() => {
-					const r = incoming.find((x) => x.id === id);
-					if (!r) throw new ApiError("not_found", "Not found.", { status: 404 });
-					const p = players.find((x) => x.id === r.person.id) as MockPlayer;
-					incoming = incoming.filter((x) => x.id !== id);
-					friends = [
-						...friends,
-						{ ...toPerson(p), status: p.status, activity: p.activity, since: iso(now(), 0) },
-					];
+					const r = incoming.find((x) => x.account.id === id);
+					const p = players.find((x) => x.id === id);
+					if (!r || !p) throw new ApiError("not_found", "Not found.", { status: 404 });
+					incoming = incoming.filter((x) => x !== r);
+					friends = [...friends, { account: toAccount(p), since: now(), presence: presenceFor(p) }];
 				}),
-			decline: (id) =>
+			dropRequest: (id) =>
 				call(() => {
-					incoming = incoming.filter((x) => x.id !== id);
-				}),
-			cancel: (id) =>
-				call(() => {
-					outgoing = outgoing.filter((x) => x.id !== id);
+					incoming = incoming.filter((x) => x.account.id !== id);
+					outgoing = outgoing.filter((x) => x.account.id !== id);
 				}),
 			remove: (id) =>
 				call(() => {
-					friends = friends.filter((x) => x.id !== id);
+					friends = friends.filter((x) => x.account.id !== id);
+				}),
+			block: (id) =>
+				call(() => {
+					const p = players.find((x) => x.id === id);
+					friends = friends.filter((x) => x.account.id !== id);
+					incoming = incoming.filter((x) => x.account.id !== id);
+					outgoing = outgoing.filter((x) => x.account.id !== id);
+					if (p && !blocked.some((b) => b.id === id)) blocked = [...blocked, toAccount(p)];
+				}),
+			unblock: (id) =>
+				call(() => {
+					blocked = blocked.filter((b) => b.id !== id);
 				}),
 		},
 
 		trophies: {
-			summary: () => call(() => trophyData, { read: true }),
+			mine: () => call(() => trophyData, { read: true }),
 		},
 
-		profiles: {
+		users: {
 			get: async (handle) => {
 				await wait();
 				if (scenario === "error")
-					throw new ApiError("server", "The mock is set to fail.", { status: 500 });
+					throw new ApiError("internal", "The mock is set to fail.", { status: 500 });
 				const h = handle.toLowerCase();
 				if (signedIn && h === me.handle) {
 					return {
-						handle: me.handle,
-						displayName: me.displayName,
-						accent: me.accent,
-						theme: me.theme,
-						joinedAt: me.createdAt,
-						relation: "self",
-						visible: true,
-						about: me.about || null,
-						friendCount: friends.length,
-						trophies: {
-							earned: trophyData.earned,
-							total: trophyData.total,
-							percent: trophyData.percent,
-						},
-						status: "online",
-						hidden: [],
-						request: "none",
-					} satisfies PublicProfile;
+						account: toAccount(me),
+						about: profile.about || null,
+						favourites: profile.favourites.length ? profile.favourites : null,
+						avatar: profile.avatar,
+						playtime: ownPlaytime,
+						trophies: trophyData.counts,
+						viewer: { relation: "self", requested: null, blocked: false },
+					} satisfies PublicUser;
 				}
 				const p = players.find((x) => x.handle === h);
 				if (!p) throw new ApiError("not_found", "No such player.", { status: 404 });
-				const relation: PublicProfile["relation"] = !signedIn
-					? "signed_out"
-					: friends.some((f) => f.id === p.id)
-						? "friend"
-						: "stranger";
-				return profileOf(p, relation);
+				const isBlocked = blocked.some((b) => b.id === p.id);
+				const relation: Viewer["relation"] = friends.some((f) => f.account.id === p.id)
+					? "friend"
+					: "none";
+				const viewer: Viewer | null = signedIn
+					? {
+							relation,
+							requested: outgoing.some((r) => r.account.id === p.id)
+								? "outgoing"
+								: incoming.some((r) => r.account.id === p.id)
+									? "incoming"
+									: null,
+							blocked: isBlocked,
+						}
+					: null;
+				const seeAs = signedIn ? relation : "none";
+				const part = <T>(k: keyof Privacy, v: T, empty: boolean): T | null =>
+					isBlocked || !can(p.privacy[k], seeAs) || empty ? null : v;
+				return {
+					account: toAccount(p),
+					about: part("about", p.about, !p.about),
+					favourites: part("favourites", p.favourites, p.favourites.length === 0),
+					avatar: part("avatar", p.avatar, !p.avatar),
+					playtime: part("playtime", p.playtime, p.playtime.length === 0),
+					trophies: part("trophies", p.trophies, false),
+					viewer,
+				};
 			},
 		},
 	};
+	void pendingDetails;
 	return api;
-}
-
-function hideEmail(email: string): string {
-	const [user = "", domain = ""] = email.split("@");
-	const head = user.slice(0, Math.min(2, user.length));
-	return `${head}${"*".repeat(Math.max(3, user.length - head.length))}@${domain}`;
 }

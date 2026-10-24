@@ -1,31 +1,50 @@
 import { Download } from "lucide-react";
-import { usePageTitle } from "@/lib/use-page-title";
 import { useState } from "react";
 import { isApiError } from "@/api/errors";
-import { qk, useAction, useSession } from "@/api/queries";
+import { qk, useAccountView, useAction, useSession } from "@/api/queries";
 import { Page, PageHeader, Section } from "@/components/layout";
 import { m } from "@/i18n";
 import { daysUntil, formatDate } from "@/lib/format";
+import { usePageTitle } from "@/lib/use-page-title";
 import { Button } from "@/ui/button";
+import { CopyField } from "@/ui/copy-field";
 import { ConfirmDialog } from "@/ui/dialog";
+import { Skeleton } from "@/ui/feedback";
 import { Field } from "@/ui/field";
 import { Input } from "@/ui/input";
 
 export function DataPage() {
 	usePageTitle(m.nav_data());
-	const me = useSession().data?.account;
+	const account = useAccountView();
+	const deletion = account.data?.deletion;
 	return (
 		<Page>
 			<PageHeader title={m.data_title()} description={m.data_lead()} />
+			<AccountSection />
 			<ExportSection />
-			{me?.deletion ? <PendingDeletion scheduledFor={me.deletion.scheduledFor} /> : <DeleteSection />}
+			{deletion ? <PendingDeletion at={deletion.at} /> : <DeleteSection />}
 		</Page>
+	);
+}
+
+function AccountSection() {
+	const me = useSession().data?.account;
+	return (
+		<Section title={m.data_account_title()} description={m.data_account_id_text()}>
+			<Field label={m.data_account_id()}>
+				{me ? (
+					<CopyField value={String(me.id)} label={m.data_account_id()} />
+				) : (
+					<Skeleton className="h-9 w-full" />
+				)}
+			</Field>
+		</Section>
 	);
 }
 
 function ExportSection() {
 	const exporter = useAction(
-		async (_: void, api) => {
+		async (_: undefined, api) => {
 			const file = await api.data.exportData();
 			const url = URL.createObjectURL(file.blob);
 			const a = document.createElement("a");
@@ -45,7 +64,7 @@ function ExportSection() {
 				<Button
 					variant="secondary"
 					className="shrink-0"
-					onClick={() => exporter.mutate()}
+					onClick={() => exporter.mutate(undefined)}
 					loading={exporter.isPending}
 				>
 					{exporter.isPending ? null : <Download aria-hidden />}
@@ -61,15 +80,15 @@ function DeleteSection() {
 	const [open, setOpen] = useState(false);
 	const [typed, setTyped] = useState("");
 	const [error, setError] = useState<string | null>(null);
-	const del = useAction((handle: string, api) => api.data.requestDeletion({ handle }), {
+	const del = useAction((handle: string, api) => api.data.requestDeletion(handle), {
 		success: m.toast_deletion_scheduled(),
-		invalidate: [qk.session],
+		invalidate: [qk.account],
 		toastErrors: false,
 		onSuccess: () => setOpen(false),
 	});
 	if (!me) return null;
 	const matches = typed.trim().toLowerCase() === me.handle.toLowerCase();
-	const thirty = new Date(Date.now() + 30 * 86_400_000).toISOString();
+	const thirty = Math.floor(Date.now() / 1000) + 30 * 86_400;
 
 	return (
 		<Section
@@ -141,18 +160,23 @@ function DeleteSection() {
 	);
 }
 
-function PendingDeletion({ scheduledFor }: { scheduledFor: string }) {
-	const cancel = useAction((_: void, api) => api.data.cancelDeletion(), {
+function PendingDeletion({ at }: { at: number }) {
+	const cancel = useAction((_: undefined, api) => api.data.cancelDeletion(), {
 		success: m.toast_deletion_cancelled(),
-		invalidate: [qk.session],
+		invalidate: [qk.account],
 	});
 	return (
-		<Section tone="danger" title={m.data_pending_title({ date: formatDate(scheduledFor) })} className="mt-4">
+		<Section tone="danger" title={m.data_pending_title({ date: formatDate(at) })} className="mt-4">
 			<div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
 				<p className="max-w-[52ch] text-body text-fg-muted">
-					{m.data_pending_text()} {m.deletion_banner_body({ days: daysUntil(scheduledFor) })}
+					{m.data_pending_text()} {m.deletion_banner_body({ days: daysUntil(at) })}
 				</p>
-				<Button variant="primary" className="shrink-0" onClick={() => cancel.mutate()} loading={cancel.isPending}>
+				<Button
+					variant="primary"
+					className="shrink-0"
+					onClick={() => cancel.mutate(undefined)}
+					loading={cancel.isPending}
+				>
 					{m.deletion_cancel()}
 				</Button>
 			</div>

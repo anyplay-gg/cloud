@@ -10,6 +10,7 @@ export const Route = createFileRoute("/account")({
 			staleTime: 60_000,
 		});
 		if (!s.signedIn) throw redirect({ to: "/sign-in", search: { next: location.href } });
+		if (s.flow.step === "banned") throw redirect({ to: "/banned" });
 	},
 	component: () => (
 		<AppShell>

@@ -10,6 +10,8 @@
 			"!src/paraglide",
 			"!src/routeTree.gen.ts",
 			"!src/styles/tokens.generated.css",
+			"!project.inlang/cache",
+			"!public/favicon.svg",
 			"!pnpm-lock.yaml"
 		]
 	},
@@ -21,6 +23,7 @@
 		"rules": {
 			"recommended": true,
 			"a11y": { "recommended": true },
+			"complexity": { "noImportantStyles": "off" },
 			"correctness": { "useExhaustiveDependencies": "error", "noUnusedImports": "error" },
 			"style": { "useConst": "error" },
 			"suspicious": { "noExplicitAny": "error" }

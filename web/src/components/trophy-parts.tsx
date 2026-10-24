@@ -3,6 +3,7 @@ import { m } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { formatNumber } from "@/lib/format";
 import { GRADE_LABEL, GRADES, type Grade } from "@/lib/trophies";
+import { RollingNumber } from "@/ui/rolling-number";
 
 const FILL: Record<Grade, string> = {
 	platinum: "bg-platinum",
@@ -29,8 +30,13 @@ export function GradeDot({ grade, className }: { grade: Grade; className?: strin
 export function GradeLine({ counts, className }: { counts: GradeCounts; className?: string }) {
 	return (
 		<ul
-			aria-label={GRADES.map((g) => m.trophies_grade_count({ count: counts[g], grade: GRADE_LABEL[g].toLowerCase() })).join(", ")}
-			className={cn("flex flex-wrap items-center gap-x-4 gap-y-1 text-small text-fg-muted", className)}
+			aria-label={GRADES.map((g) =>
+				m.trophies_grade_count({ count: counts[g], grade: GRADE_LABEL[g].toLowerCase() }),
+			).join(", ")}
+			className={cn(
+				"flex flex-wrap items-center gap-x-4 gap-y-1 text-small text-fg-muted",
+				className,
+			)}
 		>
 			{GRADES.map((g) => (
 				<li key={g} aria-hidden className="flex items-center gap-1.5">
@@ -43,8 +49,8 @@ export function GradeLine({ counts, className }: { counts: GradeCounts; classNam
 	);
 }
 
-/** Four tiles: how many of each grade are earned, out of how many exist. */
-export function GradeTiles({ earned, total }: { earned: GradeCounts; total: GradeCounts }) {
+/** Four tiles: how many of each grade are earned. */
+export function GradeTiles({ counts }: { counts: GradeCounts }) {
 	return (
 		<ul className="grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-line sm:grid-cols-4">
 			{GRADES.map((g) => (
@@ -53,9 +59,8 @@ export function GradeTiles({ earned, total }: { earned: GradeCounts; total: Grad
 						<GradeDot grade={g} />
 						{GRADE_LABEL[g]}
 					</span>
-					<span className="nums text-heading font-semibold text-fg">
-						{formatNumber(earned[g])}
-						<span className="ms-1 text-body font-normal text-fg-muted">/ {formatNumber(total[g])}</span>
+					<span className="text-heading font-semibold text-fg">
+						<RollingNumber value={counts[g]} />
 					</span>
 				</li>
 			))}

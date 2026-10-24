@@ -1,27 +1,29 @@
 import { Link } from "@tanstack/react-router";
-import { Check, Lock, PencilLine, UserMinus, UserPlus, UserRoundX } from "lucide-react";
+import { Ban, Check, Lock, PencilLine, UserMinus, UserPlus, UserRoundX } from "lucide-react";
 import { useState } from "react";
 import { describeError, isApiError } from "@/api/errors";
-import { qk, useAction, usePublicProfile, useSession } from "@/api/queries";
-import type { Audience, ProfileField, PublicProfile } from "@/api/types";
+import { qk, useAction, usePublicUser, useSession } from "@/api/queries";
+import type { PublicUser } from "@/api/types";
 import { AppearanceMenu } from "@/components/app-shell";
 import { Wordmark } from "@/components/logo";
 import { ProfileBanner } from "@/components/profile-banner";
 import { GradeTiles } from "@/components/trophy-parts";
 import { m } from "@/i18n";
-import { formatMonthYear, formatNumber } from "@/lib/format";
+import { formatPlaytime } from "@/lib/format";
+import { accentFor, avatarUrl, themeFor } from "@/lib/identity";
+import { total } from "@/lib/trophies";
 import { usePageTitle } from "@/lib/use-page-title";
-import { Avatar, PresenceDot } from "@/ui/avatar";
+import { Avatar } from "@/ui/avatar";
 import { Button, buttonClass } from "@/ui/button";
 import { ConfirmDialog } from "@/ui/dialog";
-import { ErrorState, LoadingRegion, ProgressBar, Skeleton } from "@/ui/feedback";
+import { ErrorState, LoadingRegion, Skeleton } from "@/ui/feedback";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/ui/menu";
 
 export function PublicProfileScreen({ name }: { name: string }) {
-	const profile = usePublicProfile(name);
+	const user = usePublicUser(name);
 	const session = useSession();
 	const signedIn = session.data?.signedIn ?? false;
-	usePageTitle(profile.data ? `${profile.data.displayName} (@${profile.data.handle})` : `@${name}`);
+	usePageTitle(`@${user.data?.account.handle ?? name}`);
 
 	return (
 		<div className="min-h-dvh">
@@ -56,23 +58,23 @@ export function PublicProfileScreen({ name }: { name: string }) {
 				</div>
 			</header>
 			<main id="main" className="mx-auto max-w-[44rem] px-4 pb-20 pt-2 sm:px-0">
-				{profile.isPending ? (
+				{user.isPending ? (
 					<ProfileSkeleton />
-				) : profile.isError ? (
-					isApiError(profile.error) && profile.error.code === "not_found" ? (
+				) : user.isError ? (
+					isApiError(user.error) && user.error.code === "not_found" ? (
 						<NotFound name={name} />
 					) : (
 						<div className="rounded-xl bg-surface shadow-card">
 							<ErrorState
 								title={m.public_error_title()}
-								description={describeError(profile.error)}
-								onRetry={() => void profile.refetch()}
-								retrying={profile.isFetching}
+								description={describeError(user.error)}
+								onRetry={() => void user.refetch()}
+								retrying={user.isFetching}
 							/>
 						</div>
 					)
 				) : (
-					<ProfileView profile={profile.data} />
+					<ProfileView user={user.data} />
 				)}
 			</main>
 		</div>
@@ -109,211 +111,214 @@ function NotFound({ name }: { name: string }) {
 	);
 }
 
-const AUDIENCE_TEXT: Record<Exclude<Audience, "everyone">, (what: string, name: string) => string> = {
-	friends: (what, name) => m.public_hidden_friends({ what, name }),
-	me: (what, name) => m.public_hidden_me({ what, name }),
-};
-const FIELD_NAME: Record<ProfileField, () => string> = {
-	about: () => m.public_field_about(),
-	friends: () => m.public_field_friends(),
-	trophies: () => m.public_field_trophies(),
-	activity: () => m.public_field_activity(),
-};
-
-function ProfileView({ profile }: { profile: PublicProfile }) {
-	const first = profile.displayName.split(" ")[0] ?? profile.displayName;
-	const status = profile.status;
+function ProfileView({ user }: { user: PublicUser }) {
+	const handle = user.account.handle;
+	const relation = user.viewer?.relation ?? "none";
+	const hasAnything = Boolean(
+		user.about || user.favourites || user.playtime || user.trophies || user.avatar,
+	);
 	return (
-		<article className="flex flex-col gap-6" aria-label={profile.displayName}>
+		<article className="flex flex-col gap-6" aria-label={`@${handle}`}>
 			<div className="overflow-hidden rounded-2xl bg-surface shadow-card">
-				<ProfileBanner theme={profile.theme} className="h-40 sm:h-48" />
+				<ProfileBanner theme={themeFor(handle)} className="h-40 sm:h-48" />
 				<div className="px-5 pb-6 sm:px-6">
 					<div className="flex items-start justify-between gap-4">
 						<Avatar
-							name={profile.displayName}
-							accent={profile.accent}
+							name={handle}
+							accent={accentFor(handle)}
+							src={avatarUrl(user.avatar)}
 							size="xl"
 							className="-mt-12 rounded-full ring-4 ring-surface"
 						/>
 						<div className="pt-3">
-							<FriendAction profile={profile} />
+							<FriendAction user={user} />
 						</div>
 					</div>
-					<h1 className="mt-4 text-display font-semibold text-fg">{profile.displayName}</h1>
-					<p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-body text-fg-muted">
-						<span className="font-mono">@{profile.handle}</span>
-						{status ? (
-							<span className="flex items-center gap-1.5">
-								<PresenceDot status={status} />
-								{status === "online"
-									? m.status_online()
-									: status === "away"
-										? m.status_away()
-										: m.status_offline()}
-							</span>
-						) : null}
-						<span>{m.public_joined({ date: formatMonthYear(profile.joinedAt) })}</span>
-					</p>
-					{profile.visible && profile.about ? (
-						<p className="mt-4 max-w-[56ch] text-prose text-fg">{profile.about}</p>
-					) : null}
+					<h1 className="mt-4 font-mono text-display font-semibold text-fg">@{handle}</h1>
+					{user.about ? <p className="mt-3 max-w-[56ch] text-prose text-fg">{user.about}</p> : null}
 				</div>
 			</div>
 
-			{!profile.visible ? (
-				<div className="flex items-start gap-4 rounded-xl bg-surface p-5 shadow-card">
-					<Lock aria-hidden strokeWidth={1.75} className="mt-0.5 size-5 shrink-0 text-fg-muted" />
-					<div>
-						<h2 className="text-body font-semibold text-fg">{m.public_private_title()}</h2>
-						<p className="mt-1 max-w-[52ch] text-body text-fg-muted">
-							{profile.relation === "signed_out"
-								? m.public_private_signed_out({ name: first })
-								: m.public_private_text({ name: first })}
-						</p>
-					</div>
-				</div>
-			) : (
-				<>
-					{profile.friendCount !== null || profile.trophies ? (
-						<ul className="grid grid-cols-2 gap-px overflow-hidden rounded-xl bg-line shadow-card">
-							{profile.friendCount !== null ? (
-								<li className="bg-surface p-5">
-									<p className="text-small font-medium text-fg-muted">{m.nav_friends()}</p>
-									<p className="nums mt-1 text-display font-semibold">{formatNumber(profile.friendCount)}</p>
-								</li>
-							) : null}
-							{profile.trophies ? (
-								<li className="bg-surface p-5">
-									<p className="text-small font-medium text-fg-muted">{m.nav_trophies()}</p>
-									<p className="nums mt-1 text-display font-semibold">{profile.trophies.percent}%</p>
-								</li>
-							) : null}
-						</ul>
-					) : null}
-					{profile.trophies ? (
-						<section aria-labelledby="pp-trophies" className="flex flex-col gap-3">
-							<h2 id="pp-trophies" className="text-prose font-semibold">
-								{m.public_trophies_title()}
-							</h2>
-							<div className="flex flex-col gap-5 rounded-xl bg-surface p-5 shadow-card">
-								<ProgressBar
-									value={profile.trophies.percent}
-									label={m.public_trophies_progress({ name: first })}
-								/>
-								<GradeTiles earned={profile.trophies.earned} total={profile.trophies.total} />
-							</div>
-						</section>
-					) : null}
-					{profile.hidden.length > 0 ? (
-						<ul className="flex flex-col gap-2">
-							{profile.hidden
-								.filter((h): h is { field: ProfileField; audience: Exclude<Audience, "everyone"> } => h.audience !== "everyone")
-								.map((h) => (
-									<li key={h.field} className="flex items-center gap-2.5 text-body text-fg-muted">
-										<Lock aria-hidden strokeWidth={1.75} className="size-4 shrink-0" />
-										{AUDIENCE_TEXT[h.audience](FIELD_NAME[h.field](), first)}
-									</li>
-								))}
-						</ul>
-					) : null}
-				</>
-			)}
+			{user.favourites && user.favourites.length > 0 ? (
+				<section aria-labelledby="pp-fav" className="flex flex-col gap-3">
+					<h2 id="pp-fav" className="text-prose font-semibold">
+						{m.public_favourites()}
+					</h2>
+					<ul className="flex flex-wrap gap-2">
+						{user.favourites.map((t) => (
+							<li
+								key={t}
+								className="rounded-full bg-raised px-3 py-1.5 font-mono text-small text-fg shadow-[inset_0_0_0_1px_var(--line-strong)]"
+							>
+								{t}
+							</li>
+						))}
+					</ul>
+				</section>
+			) : null}
+
+			{user.trophies ? (
+				<section aria-labelledby="pp-trophies" className="flex flex-col gap-3">
+					<h2 id="pp-trophies" className="text-prose font-semibold">
+						{m.public_trophies_title()}
+						<span className="ms-2 text-body font-normal text-fg-muted">
+							{m.public_trophies_total({ count: total(user.trophies) })}
+						</span>
+					</h2>
+					<GradeTiles counts={user.trophies} />
+				</section>
+			) : null}
+
+			{user.playtime && user.playtime.length > 0 ? (
+				<section aria-labelledby="pp-play" className="flex flex-col gap-3">
+					<h2 id="pp-play" className="text-prose font-semibold">
+						{m.profile_playtime()}
+					</h2>
+					<ul className="divide-y divide-line overflow-hidden rounded-xl bg-surface shadow-card">
+						{user.playtime.map((p) => (
+							<li key={p.titleId} className="flex items-center justify-between gap-4 px-5 py-3.5">
+								<span className="font-mono text-small text-fg">{p.titleId}</span>
+								<span className="nums text-body text-fg-muted">{formatPlaytime(p.minutes)}</span>
+							</li>
+						))}
+					</ul>
+				</section>
+			) : null}
+
+			{relation !== "self" ? (
+				<p className="flex items-start gap-2.5 text-body text-fg-muted">
+					<Lock aria-hidden strokeWidth={1.75} className="mt-0.5 size-4 shrink-0" />
+					{hasAnything
+						? user.viewer
+							? m.public_more_friends({ name: `@${handle}` })
+							: m.public_more_signed_out({ name: `@${handle}` })
+						: user.viewer
+							? m.public_nothing_shared({ name: `@${handle}` })
+							: m.public_nothing_shared_signed_out({ name: `@${handle}` })}
+				</p>
+			) : null}
 		</article>
 	);
 }
 
-function FriendAction({ profile }: { profile: PublicProfile }) {
+function FriendAction({ user }: { user: PublicUser }) {
+	const handle = user.account.handle;
 	const [removing, setRemoving] = useState(false);
+	const [blocking, setBlocking] = useState(false);
+	const refresh = [qk.user(handle), qk.friends];
 	const add = useAction((h: string, api) => api.friends.sendRequest(h), {
-		success: m.toast_request_sent({ handle: profile.handle }),
-		invalidate: [qk.profile(profile.handle), qk.friends],
+		success: (state) =>
+			state === "friends" ? m.toast_now_friends({ handle }) : m.toast_request_sent({ handle }),
+		invalidate: refresh,
 	});
-	const remove = useAction(
-		async (_: void, api) => {
-			const overview = await api.friends.overview();
-			const f = overview.friends.find((x) => x.handle === profile.handle);
-			if (f) await api.friends.remove(f.id);
-		},
-		{
-			success: m.toast_friend_removed(),
-			invalidate: [qk.profile(profile.handle), qk.friends],
-			onSuccess: () => setRemoving(false),
-		},
-	);
+	const remove = useAction((_: undefined, api) => api.friends.remove(user.account.id), {
+		success: m.toast_friend_removed(),
+		invalidate: refresh,
+		onSuccess: () => setRemoving(false),
+	});
+	const block = useAction((_: undefined, api) => api.friends.block(user.account.id), {
+		success: m.toast_blocked(),
+		invalidate: refresh,
+		onSuccess: () => setBlocking(false),
+	});
+	const unblock = useAction((_: undefined, api) => api.friends.unblock(user.account.id), {
+		success: m.toast_unblocked(),
+		invalidate: refresh,
+	});
 
-	switch (profile.relation) {
-		case "self":
-			return (
-				<Link to="/account/profile" className={buttonClass({ variant: "secondary" })}>
-					<PencilLine aria-hidden />
-					{m.overview_edit_profile()}
-				</Link>
-			);
-		case "signed_out":
-			return (
-				<Link
-					to="/sign-in"
-					search={{ next: `/u/${profile.handle}` }}
-					className={buttonClass({ variant: "primary" })}
-				>
-					<UserPlus aria-hidden />
-					{m.public_signin_to_add()}
-				</Link>
-			);
-		case "friend":
-			return (
-				<>
-					<Menu>
-						<MenuTrigger
-							className={buttonClass({ variant: "secondary" })}
-							aria-label={m.public_friends_menu({ name: profile.displayName })}
-						>
-							<Check aria-hidden />
-							{m.public_friends()}
-						</MenuTrigger>
-						<MenuContent>
-							<MenuItem onClick={() => setRemoving(true)}>
-								<UserMinus aria-hidden strokeWidth={1.75} />
-								{m.friends_remove()}
-							</MenuItem>
-						</MenuContent>
-					</Menu>
-					<ConfirmDialog
-						open={removing}
-						onOpenChange={setRemoving}
-						title={m.friends_remove_title()}
-						description={m.friends_remove_text({ name: profile.displayName })}
-						confirmLabel={m.friends_remove_confirm()}
-						pending={remove.isPending}
-						onConfirm={() => remove.mutate()}
-					/>
-				</>
-			);
-		case "stranger":
-			if (profile.request === "outgoing") {
-				return (
-					<Button variant="secondary" disabled>
-						<Check aria-hidden />
-						{m.public_request_sent()}
-					</Button>
-				);
-			}
-			if (profile.request === "incoming") {
-				return (
-					<Link to="/account/friends" className={buttonClass({ variant: "primary" })}>
-						{m.public_answer_request()}
-					</Link>
-				);
-			}
-			return (
-				<Button
-					variant="primary"
-					onClick={() => add.mutate(profile.handle)}
-					loading={add.isPending}
-				>
-					<UserPlus aria-hidden />
-					{m.public_add_friend()}
-				</Button>
-			);
+	const viewer = user.viewer;
+	if (!viewer) {
+		return (
+			<Link
+				to="/sign-in"
+				search={{ next: `/u/${handle}` }}
+				className={buttonClass({ variant: "primary" })}
+			>
+				<UserPlus aria-hidden />
+				{m.public_signin_to_add()}
+			</Link>
+		);
 	}
+	if (viewer.relation === "self") {
+		return (
+			<Link to="/account/profile" className={buttonClass({ variant: "secondary" })}>
+				<PencilLine aria-hidden />
+				{m.overview_edit_profile()}
+			</Link>
+		);
+	}
+	if (viewer.blocked) {
+		return (
+			<Button
+				variant="secondary"
+				onClick={() => unblock.mutate(undefined)}
+				loading={unblock.isPending}
+			>
+				<Ban aria-hidden />
+				{m.blocked_unblock()}
+			</Button>
+		);
+	}
+	if (viewer.relation === "friend") {
+		return (
+			<>
+				<Menu>
+					<MenuTrigger className={buttonClass({ variant: "secondary" })}>
+						<Check aria-hidden />
+						{m.public_friends()}
+						<span className="sr-only"> {m.public_friends_with({ name: `@${handle}` })}</span>
+					</MenuTrigger>
+					<MenuContent>
+						<MenuItem onClick={() => setRemoving(true)}>
+							<UserMinus aria-hidden strokeWidth={1.75} />
+							{m.friends_remove()}
+						</MenuItem>
+						<MenuItem onClick={() => setBlocking(true)}>
+							<Ban aria-hidden strokeWidth={1.75} />
+							{m.friends_block()}
+						</MenuItem>
+					</MenuContent>
+				</Menu>
+				<ConfirmDialog
+					open={removing}
+					onOpenChange={setRemoving}
+					title={m.friends_remove_title()}
+					description={m.friends_remove_text({ name: `@${handle}` })}
+					confirmLabel={m.friends_remove_confirm()}
+					pending={remove.isPending}
+					onConfirm={() => remove.mutate(undefined)}
+				/>
+				<ConfirmDialog
+					open={blocking}
+					onOpenChange={setBlocking}
+					title={m.friends_block_title()}
+					description={m.friends_block_text({ name: `@${handle}` })}
+					confirmLabel={m.friends_block_confirm()}
+					pending={block.isPending}
+					onConfirm={() => block.mutate(undefined)}
+				/>
+			</>
+		);
+	}
+	if (viewer.requested === "outgoing") {
+		return (
+			<Button variant="secondary" disabled>
+				<Check aria-hidden />
+				{m.public_request_sent()}
+			</Button>
+		);
+	}
+	if (viewer.requested === "incoming") {
+		return (
+			<Link to="/account/friends" className={buttonClass({ variant: "primary" })}>
+				{m.public_answer_request()}
+			</Link>
+		);
+	}
+	return (
+		<Button variant="primary" onClick={() => add.mutate(handle)} loading={add.isPending}>
+			<UserPlus aria-hidden />
+			{m.public_add_friend()}
+		</Button>
+	);
 }

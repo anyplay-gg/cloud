@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AccountRouteImport } from './routes/account'
+import { Route as BannedRouteImport } from './routes/banned'
 import { Route as CreateRouteImport } from './routes/create'
 import { Route as ReturnRouteImport } from './routes/return'
 import { Route as SignInRouteImport } from './routes/sign-in'
@@ -31,6 +32,11 @@ const IndexRoute = IndexRouteImport.update({
 const AccountRoute = AccountRouteImport.update({
   id: '/account',
   path: '/account',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BannedRoute = BannedRouteImport.update({
+  id: '/banned',
+  path: '/banned',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CreateRoute = CreateRouteImport.update({
@@ -92,6 +98,7 @@ const UNameRoute = UNameRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/account': typeof AccountRouteWithChildren
+  '/banned': typeof BannedRoute
   '/create': typeof CreateRoute
   '/return': typeof ReturnRoute
   '/sign-in': typeof SignInRoute
@@ -106,6 +113,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/banned': typeof BannedRoute
   '/create': typeof CreateRoute
   '/return': typeof ReturnRoute
   '/sign-in': typeof SignInRoute
@@ -122,6 +130,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/account': typeof AccountRouteWithChildren
+  '/banned': typeof BannedRoute
   '/create': typeof CreateRoute
   '/return': typeof ReturnRoute
   '/sign-in': typeof SignInRoute
@@ -139,6 +148,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/account'
+    | '/banned'
     | '/create'
     | '/return'
     | '/sign-in'
@@ -153,6 +163,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/banned'
     | '/create'
     | '/return'
     | '/sign-in'
@@ -168,6 +179,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/account'
+    | '/banned'
     | '/create'
     | '/return'
     | '/sign-in'
@@ -184,6 +196,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AccountRoute: typeof AccountRouteWithChildren
+  BannedRoute: typeof BannedRoute
   CreateRoute: typeof CreateRoute
   ReturnRoute: typeof ReturnRoute
   SignInRoute: typeof SignInRoute
@@ -204,6 +217,13 @@ declare module '@tanstack/react-router' {
       path: '/account'
       fullPath: '/account'
       preLoaderRoute: typeof AccountRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/banned': {
+      id: '/banned'
+      path: '/banned'
+      fullPath: '/banned'
+      preLoaderRoute: typeof BannedRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/create': {
@@ -312,6 +332,7 @@ const AccountRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AccountRoute: AccountRouteWithChildren,
+  BannedRoute: BannedRoute,
   CreateRoute: CreateRoute,
   ReturnRoute: ReturnRoute,
   SignInRoute: SignInRoute,

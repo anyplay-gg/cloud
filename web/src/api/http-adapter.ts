@@ -1,17 +1,15 @@
 import { camelize, snakeize } from "./case";
-import { ApiError, type ApiErrorCode } from "./errors";
+import { ApiError, asErrorCode } from "./errors";
 import type { PortalApi } from "./portal-api";
 import type {
-	ActivityEvent,
-	AuthProgress,
-	CodeChallenge,
-	DeviceSession,
-	FriendsOverview,
-	Me,
+	AccountView,
+	BanStatement,
+	FriendLists,
 	Passkey,
-	PrivacySettings,
-	PublicProfile,
-	SessionInfo,
+	Privacy,
+	Profile,
+	PublicUser,
+	SessionView,
 	StepUpMethod,
 	TrophySummary,
 } from "./types";
@@ -30,34 +28,30 @@ export interface HttpApiOptions {
 }
 
 interface ErrorBody {
-	error?: {
-		code?: string;
-		message?: string;
-		fields?: Record<string, string>;
-		methods?: StepUpMethod[];
-		retry_after?: number;
-	};
+	error?: string;
+	message?: string;
+	field?: string;
 }
 
-const CODE_BY_STATUS: Record<number, ApiErrorCode> = {
-	401: "unauthorized",
-	403: "forbidden",
-	404: "not_found",
-	409: "conflict",
-	400: "invalid",
-	422: "invalid",
-	429: "rate_limited",
-};
+const JSON_TYPE = "application/json";
 
 export function createHttpApi(options: HttpApiOptions = {}): PortalApi {
 	const base = `${options.baseUrl ?? ""}/web/api/v1`;
 	const doFetch: typeof fetch = options.fetch ?? ((...a) => fetch(...a));
 	let csrf: string | null = null;
+	let passkeyCount = 0;
 
-	async function raw(method: string, path: string, body?: unknown, signal?: AbortSignal) {
-		const headers: Record<string, string> = { Accept: "application/json" };
-		if (body !== undefined) headers["Content-Type"] = "application/json";
-		if (method !== "GET") {
+	async function raw(
+		method: string,
+		path: string,
+		body?: unknown,
+		extra: { signal?: AbortSignal; contentType?: string; rawBody?: BodyInit } = {},
+	) {
+		const headers: Record<string, string> = { Accept: JSON_TYPE };
+		const write = method !== "GET";
+		if (write) {
+			// every write is JSON, even an empty one: the cloud refuses anything else
+			headers["Content-Type"] = extra.contentType ?? JSON_TYPE;
 			if (csrf === null) await session();
 			if (csrf) headers["X-CSRF-Token"] = csrf;
 		}
@@ -67,8 +61,8 @@ export function createHttpApi(options: HttpApiOptions = {}): PortalApi {
 				method,
 				headers,
 				credentials: "same-origin",
-				body: body === undefined ? undefined : JSON.stringify(body),
-				signal,
+				body: extra.rawBody ?? (write ? JSON.stringify(body ?? {}) : undefined),
+				signal: extra.signal,
 			});
 		} catch (e) {
 			if (e instanceof DOMException && e.name === "AbortError") {
@@ -82,61 +76,76 @@ export function createHttpApi(options: HttpApiOptions = {}): PortalApi {
 		try {
 			parsed = (await res.json()) as ErrorBody;
 		} catch {
-			// not JSON; the status is all we have
+			// not JSON (an origin-guard refusal is HTML); the status is all we have
 		}
-		const e = parsed.error ?? {};
-		let code: ApiErrorCode =
-			res.status >= 500 ? "server" : (CODE_BY_STATUS[res.status] ?? "unknown");
-		if (e.code === "step_up_required") code = "step_up_required";
-		throw new ApiError(code, e.message ?? "The request failed.", {
+		const code = asErrorCode(parsed.error, res.status);
+		const retry = Number(res.headers.get("retry-after"));
+		throw new ApiError(code, parsed.message ?? "The request failed.", {
 			status: res.status,
-			fields: e.fields,
-			methods: e.methods,
-			retryAfter: e.retry_after ?? null,
+			fields: parsed.field && parsed.message ? { [parsed.field]: parsed.message } : {},
+			methods: code === "step_up_required" ? stepUpMethods() : [],
+			retryAfter: Number.isFinite(retry) && retry > 0 ? retry : null,
 		});
 	}
+
+	const stepUpMethods = (): StepUpMethod[] =>
+		passkeyCount > 0 ? ["passkey", "email_code"] : ["email_code"];
 
 	async function json<T>(
 		method: string,
 		path: string,
 		body?: unknown,
-		signal?: AbortSignal,
+		extra?: { signal?: AbortSignal },
 	): Promise<T> {
-		const res = await raw(method, path, body, signal);
+		const res = await raw(method, path, body, extra);
 		if (res.status === 204) return undefined as T;
 		return camelize<T>(await res.json());
 	}
 
-	async function session(): Promise<SessionInfo> {
+	async function session(): Promise<SessionView> {
 		let res: Response;
 		try {
 			res = await doFetch(`${base}/session`, {
-				headers: { Accept: "application/json" },
+				headers: { Accept: JSON_TYPE },
 				credentials: "same-origin",
 			});
 		} catch {
 			throw new ApiError("network", "Can't reach AnyPlay.");
 		}
 		if (!res.ok)
-			throw new ApiError(res.status >= 500 ? "server" : "unknown", "Session check failed.", {
+			throw new ApiError(asErrorCode(undefined, res.status), "Session check failed.", {
 				status: res.status,
 			});
-		const info = camelize<SessionInfo>(await res.json());
-		csrf = info.csrf;
-		return info;
+		let view: SessionView;
+		try {
+			view = camelize<SessionView>(await res.json());
+		} catch {
+			// something answered, but not the API (static files with no cloud behind them)
+			throw new ApiError("network", "That is not the AnyPlay API.", { status: res.status });
+		}
+		csrf = view.csrf;
+		return view;
 	}
 
+	/** A step answers with the session view; a handoff or sign-in changes the session's token. */
+	const step = async (path: string, body?: unknown): Promise<SessionView> => {
+		const view = await json<SessionView>("POST", path, body);
+		csrf = view.csrf;
+		return view;
+	};
+
 	const passkeyRound = async (
-		optionsPath: string,
 		verifyPath: string,
 		{ conditional, signal }: { conditional: boolean; signal?: AbortSignal },
 	) => {
 		const { options, id } = await json<{ options: RequestOptionsJSON; id: string }>(
 			"POST",
-			optionsPath,
+			"/passkey/sign-in/start",
+			{},
+			{ signal },
 		);
 		const credential: CredentialJSON = await getAssertion(options, { conditional, signal });
-		return json<AuthProgress>("POST", verifyPath, { id, credential }, signal);
+		return { verifyPath, body: { id, credential } };
 	};
 
 	return {
@@ -144,56 +153,94 @@ export function createHttpApi(options: HttpApiOptions = {}): PortalApi {
 		session,
 
 		auth: {
-			start: (input) => json<CodeChallenge>("POST", "/auth/email", input),
-			resendCode: () => json<CodeChallenge>("POST", "/auth/code/resend"),
-			verifyCode: (code) => json<AuthProgress>("POST", "/auth/code", { code }),
-			submitDetails: (input) => json<AuthProgress>("POST", "/auth/details", snakeize(input)),
-			acceptTerms: () => json<AuthProgress>("POST", "/auth/terms", { accept: true }),
+			start: (input) => step("/sign-in/email", input),
+			resendCode: () => step("/sign-in/code/resend"),
+			verifyCode: (code) => step("/sign-in/code", { code }),
+			submitDetails: (input) => step("/sign-up/details", snakeize(input)),
+			acceptTerms: () => step("/terms", { accept: true }),
 			passkeySupport,
-			signInWithPasskey: (opts) =>
-				passkeyRound("/auth/passkey/options", "/auth/passkey/verify", opts),
+			signInWithPasskey: async (opts) => {
+				const { verifyPath, body } = await passkeyRound("/passkey/sign-in/finish", opts);
+				return step(verifyPath, body);
+			},
 			signOut: async () => {
-				await json<void>("POST", "/auth/sign-out");
+				await json("POST", "/sign-out");
 				csrf = null;
+			},
+			ban: () => json<BanStatement>("GET", "/ban"),
+			appeal: async (text) => {
+				await json("POST", "/ban/appeal", { text });
 			},
 		},
 
 		account: {
-			updateProfile: (input) => json<Me>("PUT", "/account/profile", snakeize(input)),
-			activity: () => json<ActivityEvent[]>("GET", "/account/activity"),
+			get: async () => {
+				const view = await json<AccountView>("GET", "/account");
+				passkeyCount = view.passkeys.length;
+				return view;
+			},
+			changeEmail: async (email) => {
+				await json("POST", "/account/email", { email });
+			},
+			confirmEmail: async (code) =>
+				(await json<{ email: string }>("POST", "/account/email/confirm", { code })).email,
+			profile: () => json<Profile>("GET", "/me/profile"),
+			updateProfile: (input) => json<Profile>("PATCH", "/me/profile", input),
+			setAvatar: async (file) => {
+				const type = file.type === "image/png" ? "image/png" : "image/jpeg";
+				const res = await raw("PUT", "/me/avatar", undefined, { contentType: type, rawBody: file });
+				return camelize<{ avatar: string }>(await res.json()).avatar;
+			},
+			removeAvatar: async () => {
+				await json("DELETE", "/me/avatar");
+			},
+			privacy: () => json<Privacy>("GET", "/me/privacy"),
+			updatePrivacy: (input) => json<Privacy>("PUT", "/me/privacy", input),
 		},
 
 		security: {
-			passkeys: () => json<Passkey[]>("GET", "/account/passkeys"),
 			addPasskey: async (name) => {
 				const { options, id } = await json<{ options: Record<string, unknown>; id: string }>(
 					"POST",
-					"/account/passkeys/options",
+					"/account/passkeys/start",
 				);
 				const credential = await createCredential(options);
-				return json<Passkey>("POST", "/account/passkeys", { id, name, credential });
+				const { passkey } = await json<{ passkey: Passkey }>("POST", "/account/passkeys/finish", {
+					id,
+					name,
+					credential,
+				});
+				return passkey;
 			},
-			removePasskey: (id) => json<void>("DELETE", `/account/passkeys/${encodeURIComponent(id)}`),
-			sessions: () => json<DeviceSession[]>("GET", "/account/sessions"),
-			revokeSession: (id) => json<void>("DELETE", `/account/sessions/${encodeURIComponent(id)}`),
-			signOutEverywhere: () => json<void>("POST", "/account/sessions/sign-out-everywhere"),
+			renamePasskey: async (id, name) => {
+				await json("PATCH", `/account/passkeys/${encodeURIComponent(id)}`, { name });
+			},
+			removePasskey: async (id) => {
+				await json("DELETE", `/account/passkeys/${encodeURIComponent(id)}`);
+			},
+			removeDevice: async (id) => {
+				await json("DELETE", `/account/devices/${id}`);
+			},
+			revokeSession: (id) => json<{ signedOut: boolean }>("DELETE", `/account/sessions/${id}`),
+			signOutEverywhere: async () => {
+				await json("POST", "/account/sign-out-everywhere");
+				csrf = null;
+			},
 		},
 
 		stepUp: {
-			methods: async () =>
-				(await json<{ methods: StepUpMethod[] }>("GET", "/account/step-up")).methods,
+			methods: async () => stepUpMethods(),
 			withPasskey: async () => {
-				await passkeyRound("/account/step-up/passkey/options", "/account/step-up/passkey/verify", {
+				const { verifyPath, body } = await passkeyRound("/step-up/passkey/finish", {
 					conditional: false,
 				});
+				await json("POST", verifyPath, body);
 			},
-			sendEmailCode: () => json<CodeChallenge>("POST", "/account/step-up/email"),
-			verifyEmailCode: (code) => json<void>("POST", "/account/step-up/email/verify", { code }),
-		},
-
-		privacy: {
-			get: () => json<PrivacySettings>("GET", "/account/privacy"),
-			update: (input) => json<PrivacySettings>("PUT", "/account/privacy", snakeize(input)),
+			sendEmailCode: async () =>
+				(await json<{ emailHint: string }>("POST", "/step-up/email")).emailHint,
+			verifyEmailCode: async (code) => {
+				await json("POST", "/step-up/code", { code });
+			},
 		},
 
 		data: {
@@ -203,25 +250,42 @@ export function createHttpApi(options: HttpApiOptions = {}): PortalApi {
 				const match = /filename="?([^";]+)"?/.exec(res.headers.get("content-disposition") ?? "");
 				return { filename: match?.[1] ?? "anyplay-data.json", blob };
 			},
-			requestDeletion: (input) => json<Me>("POST", "/account/delete", input),
-			cancelDeletion: () => json<Me>("POST", "/account/delete/cancel"),
+			requestDeletion: async (handle) =>
+				(await json<{ deletion: { at: number } }>("POST", "/account/deletion", { handle }))
+					.deletion,
+			cancelDeletion: async () => {
+				await json("DELETE", "/account/deletion");
+			},
 		},
 
 		friends: {
-			overview: () => json<FriendsOverview>("GET", "/friends"),
-			sendRequest: (handle) => json<void>("POST", "/friends/requests", { handle }),
-			accept: (id) => json<void>("POST", `/friends/requests/${encodeURIComponent(id)}/accept`),
-			decline: (id) => json<void>("POST", `/friends/requests/${encodeURIComponent(id)}/decline`),
-			cancel: (id) => json<void>("DELETE", `/friends/requests/${encodeURIComponent(id)}`),
-			remove: (id) => json<void>("DELETE", `/friends/${encodeURIComponent(id)}`),
+			lists: () => json<FriendLists>("GET", "/friends"),
+			sendRequest: async (handle) =>
+				(await json<{ state: "requested" | "friends" }>("POST", "/friends/requests", { handle }))
+					.state,
+			accept: async (id) => {
+				await json("POST", `/friends/requests/${id}/accept`);
+			},
+			dropRequest: async (id) => {
+				await json("DELETE", `/friends/requests/${id}`);
+			},
+			remove: async (id) => {
+				await json("DELETE", `/friends/${id}`);
+			},
+			block: async (id) => {
+				await json("PUT", `/blocks/${id}`);
+			},
+			unblock: async (id) => {
+				await json("DELETE", `/blocks/${id}`);
+			},
 		},
 
 		trophies: {
-			summary: () => json<TrophySummary>("GET", "/trophies"),
+			mine: () => json<TrophySummary>("GET", "/me/trophies"),
 		},
 
-		profiles: {
-			get: (handle) => json<PublicProfile>("GET", `/profiles/${encodeURIComponent(handle)}`),
+		users: {
+			get: (name) => json<PublicUser>("GET", `/users/${encodeURIComponent(name)}`),
 		},
 	};
 }

@@ -2,10 +2,12 @@
 // because the CSP has no 'unsafe-inline' for scripts.
 (() => {
 	try {
-		var root = document.documentElement;
-		var theme = localStorage.getItem("anyplay.theme");
+		const root = document.documentElement;
+		const theme = localStorage.getItem("anyplay.theme");
 		if (theme === "dark" || theme === "light") root.setAttribute("data-theme", theme);
-		var accent = localStorage.getItem("anyplay.accent");
+		const accent = localStorage.getItem("anyplay.accent");
 		if (accent) root.setAttribute("data-accent", accent);
-	} catch (_) {}
+	} catch (_) {
+		// storage blocked: the defaults apply
+	}
 })();

@@ -25,6 +25,7 @@ import type { AccentKey, Me } from "@/api/types";
 import { ACCENT_KEYS, type ThemeChoice, useAppearance } from "@/features/appearance";
 import { m } from "@/i18n";
 import { cn } from "@/lib/cn";
+import { accentFor } from "@/lib/identity";
 import { Avatar } from "@/ui/avatar";
 import {
 	Menu,
@@ -193,7 +194,7 @@ export function AppearanceMenu({ side = "bottom" }: { side?: "top" | "bottom" })
 function useSignOut() {
 	const qc = useQueryClient();
 	const navigate = useNavigate();
-	return useAction((_: void, api) => api.auth.signOut(), {
+	return useAction((_: undefined, api) => api.auth.signOut(), {
 		success: m.toast_signed_out(),
 		onSuccess: () => {
 			qc.clear();
@@ -207,7 +208,6 @@ export function AccountMenu({ me, variant }: { me: Me; variant: "sidebar" | "bar
 	return (
 		<Menu>
 			<MenuTrigger
-				aria-label={m.account_menu({ name: me.displayName })}
 				className={cn(
 					"press flex items-center gap-2.5 rounded-md text-start outline-offset-0 data-[popup-open]:bg-hover",
 					variant === "sidebar"
@@ -215,16 +215,15 @@ export function AccountMenu({ me, variant }: { me: Me; variant: "sidebar" | "bar
 						: "size-9 justify-center coarse:size-11",
 				)}
 			>
-				<Avatar
-					name={me.displayName}
-					accent={me.accent}
-					size={variant === "sidebar" ? "sm" : "sm"}
-				/>
+				<Avatar name={me.handle} accent={accentFor(me.handle)} size="sm" />
+				{variant === "bar" ? (
+					<span className="sr-only">{m.account_menu({ name: me.handle })}</span>
+				) : null}
 				{variant === "sidebar" ? (
 					<>
 						<span className="flex min-w-0 flex-1 flex-col leading-tight">
-							<span className="truncate text-body font-medium text-fg">{me.displayName}</span>
-							<span className="truncate font-mono text-caption text-fg-muted">@{me.handle}</span>
+							<span className="truncate font-mono text-body font-medium text-fg">@{me.handle}</span>
+							<span className="truncate text-caption text-fg-muted">{me.email}</span>
 						</span>
 						<ChevronsUpDown
 							aria-hidden
@@ -239,7 +238,7 @@ export function AccountMenu({ me, variant }: { me: Me; variant: "sidebar" | "bar
 				side={variant === "sidebar" ? "top" : "bottom"}
 			>
 				<div className="px-2.5 pb-1.5 pt-2">
-					<p className="truncate text-body font-medium text-fg">{me.displayName}</p>
+					<p className="truncate font-mono text-body font-medium text-fg">@{me.handle}</p>
 					<p className="truncate text-small text-fg-muted">{me.email}</p>
 				</div>
 				<MenuSeparator />
@@ -285,10 +284,10 @@ function MobileNav({ me }: { me: Me }) {
 					</div>
 					<div className="flex items-center gap-1 border-t border-line p-3">
 						<span className="flex min-w-0 flex-1 items-center gap-2.5 px-2">
-							<Avatar name={me.displayName} accent={me.accent} size="sm" />
+							<Avatar name={me.handle} accent={accentFor(me.handle)} size="sm" />
 							<span className="flex min-w-0 flex-col leading-tight">
-								<span className="truncate text-body font-medium">{me.displayName}</span>
-								<span className="truncate font-mono text-caption text-fg-muted">@{me.handle}</span>
+								<span className="truncate font-mono text-body font-medium">@{me.handle}</span>
+								<span className="truncate text-caption text-fg-muted">{me.email}</span>
 							</span>
 						</span>
 					</div>

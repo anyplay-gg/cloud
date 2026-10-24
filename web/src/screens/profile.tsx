@@ -1,49 +1,38 @@
-import { zodResolver } from "@hookform/resolvers/zod";
-import { usePageTitle } from "@/lib/use-page-title";
-import { Radio } from "@base-ui/react/radio";
-import { RadioGroup } from "@base-ui/react/radio-group";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { ArrowUpRight, Check } from "lucide-react";
-import { useMemo } from "react";
-import { Controller, useForm } from "react-hook-form";
-import { z } from "zod";
+import { ArrowUpRight, ImageUp } from "lucide-react";
+import { useRef, useState } from "react";
+import { useForm } from "react-hook-form";
 import { useApi } from "@/api/context";
 import { describeError, isApiError } from "@/api/errors";
-import { qk, useSession } from "@/api/queries";
-import type { AccentKey, Me, ProfileTheme } from "@/api/types";
+import { qk, useAction, useOwnProfile, useSession, useTrophies } from "@/api/queries";
+import type { Profile } from "@/api/types";
 import { Page, PageHeader, Section } from "@/components/layout";
 import { ProfileBanner } from "@/components/profile-banner";
-import { ACCENT_KEYS } from "@/features/appearance";
+import { QueryView } from "@/components/query-state";
 import { m } from "@/i18n";
-import { cn } from "@/lib/cn";
+import { formatPlaytime } from "@/lib/format";
+import { accentFor, avatarUrl, themeFor } from "@/lib/identity";
+import { usePageTitle } from "@/lib/use-page-title";
 import { useSaveState } from "@/lib/use-save-state";
 import { Avatar } from "@/ui/avatar";
 import { Button, buttonClass } from "@/ui/button";
+import { CopyField } from "@/ui/copy-field";
+import { Skeleton } from "@/ui/feedback";
 import { Field } from "@/ui/field";
 import { Input, Textarea } from "@/ui/input";
 import { SaveStatus } from "@/ui/save-status";
 import { toast } from "@/ui/toast";
+import { Checkbox } from "@/ui/toggle";
 
-const THEMES: ProfileTheme[] = ["cosmic", "aurora", "sunset"];
-const THEME_LABEL: Record<ProfileTheme, () => string> = {
-	cosmic: () => m.profile_theme_cosmic(),
-	aurora: () => m.profile_theme_aurora(),
-	sunset: () => m.profile_theme_sunset(),
-};
-const ACCENT_LABEL: Record<AccentKey, () => string> = {
-	blue: () => m.accent_blue(),
-	mint: () => m.accent_mint(),
-	coral: () => m.accent_coral(),
-	violet: () => m.accent_violet(),
-	gold: () => m.accent_gold(),
-	white: () => m.accent_white(),
-};
 const ABOUT_MAX = 160;
+const FAVOURITES_MAX = 3;
+const AVATAR_MAX = 1_000_000;
 
 export function ProfileEdit() {
 	usePageTitle(m.nav_profile());
 	const me = useSession().data?.account;
+	const profile = useOwnProfile();
 	return (
 		<Page>
 			<PageHeader
@@ -62,175 +51,157 @@ export function ProfileEdit() {
 					) : null
 				}
 			/>
-			{me ? <ProfileForm me={me} /> : null}
+			<QueryView
+				query={profile}
+				loadingLabel={m.profile_loading()}
+				errorTitle={m.profile_error()}
+				loading={
+					<div className="flex flex-col gap-10">
+						<Skeleton className="h-48 w-full rounded-xl" />
+						<Skeleton className="h-56 w-full rounded-xl" />
+					</div>
+				}
+			>
+				{(p) => <ProfileForm profile={p} />}
+			</QueryView>
 		</Page>
 	);
 }
 
-function ProfileForm({ me }: { me: Me }) {
+function ProfileForm({ profile }: { profile: Profile }) {
 	const api = useApi();
 	const qc = useQueryClient();
 	const save = useSaveState();
-	const schema = useMemo(
-		() =>
-			z.object({
-				displayName: z
-					.string()
-					.trim()
-					.min(1, { error: m.profile_name_required() })
-					.max(40, { error: m.auth_display_name_long() }),
-				about: z.string().max(ABOUT_MAX, { error: m.profile_about_long({ max: ABOUT_MAX }) }),
-				theme: z.enum(["cosmic", "aurora", "sunset"]),
-				accent: z.enum(["blue", "mint", "coral", "violet", "gold", "white"]),
-			}),
-		[],
-	);
-	type Values = z.infer<typeof schema>;
+	const trophies = useTrophies();
+	const handle = profile.account.handle;
+	const [favourites, setFavourites] = useState<string[]>(profile.favourites ?? []);
 	const {
 		register,
-		control,
 		handleSubmit,
 		watch,
 		reset,
 		setError,
 		formState: { errors, isDirty, isSubmitting },
-	} = useForm<Values>({
-		resolver: zodResolver(schema),
-		defaultValues: {
-			displayName: me.displayName,
-			about: me.about,
-			theme: me.theme,
-			accent: me.accent,
-		},
-	});
-	const live = watch();
+	} = useForm<{ about: string }>({ defaultValues: { about: profile.about ?? "" } });
+	const about = watch("about");
+	const favouritesDirty =
+		favourites.length !== (profile.favourites ?? []).length ||
+		favourites.some((f, i) => f !== (profile.favourites ?? [])[i]);
+	const dirty = isDirty || favouritesDirty;
+
+	// Titles the player can pick: the ones that have trophies or playtime. Never names.
+	const known = new Set<string>([
+		...(trophies.data?.titles.map((t) => t.titleId) ?? []),
+		...(profile.playtime?.map((p) => p.titleId) ?? []),
+		...favourites,
+	]);
 
 	const submit = handleSubmit(async (values) => {
 		save.saving();
 		try {
-			const next = await api.account.updateProfile(values);
-			qc.setQueryData(qk.session, (s: { account: Me | null } | undefined) =>
-				s ? { ...s, account: next } : s,
-			);
-			void qc.invalidateQueries({ queryKey: qk.activity });
-			reset(values);
+			const next = await api.account.updateProfile({ about: values.about.trim(), favourites });
+			qc.setQueryData(qk.profile, next);
+			reset({ about: next.about ?? "" });
+			setFavourites(next.favourites ?? []);
 			save.saved();
 		} catch (e) {
 			save.fail();
-			if (isApiError(e) && Object.keys(e.fields).length > 0) {
-				for (const [k, v] of Object.entries(e.fields)) setError(k as keyof Values, { message: v });
-			} else toast.error(describeError(e));
+			if (isApiError(e) && e.fields.about) setError("about", { message: e.fields.about });
+			else toast.error(describeError(e));
 		}
 	});
 
 	return (
-		<form onSubmit={submit} noValidate className="flex flex-col gap-8">
+		<form onSubmit={submit} noValidate className="flex flex-col gap-10">
 			<Section title={m.profile_preview()} description={m.profile_preview_lead()} flush>
-				<ProfileBanner theme={live.theme} className="h-24" />
+				<ProfileBanner theme={themeFor(handle)} className="h-24" />
 				<div className="flex items-start gap-4 px-5 pb-5">
 					<Avatar
-						name={live.displayName || me.handle}
-						accent={live.accent}
+						name={handle}
+						accent={accentFor(handle)}
+						src={avatarUrl(profile.avatar)}
 						size="lg"
 						className="-mt-8 rounded-full ring-4 ring-surface"
 					/>
 					<div className="min-w-0 pt-2.5">
-						<p className="truncate text-lead font-semibold text-fg">{live.displayName || me.handle}</p>
-						<p className="truncate font-mono text-small text-fg-muted">@{me.handle}</p>
-						{live.about ? <p className="mt-2 max-w-[56ch] text-body text-fg">{live.about}</p> : null}
+						<p className="truncate font-mono text-lead font-semibold text-fg">@{handle}</p>
+						{about.trim() ? (
+							<p className="mt-2 max-w-[56ch] text-body text-fg">{about.trim()}</p>
+						) : (
+							<p className="mt-2 text-body text-fg-muted">{m.overview_no_about()}</p>
+						)}
 					</div>
 				</div>
 			</Section>
 
+			<AvatarSection profile={profile} />
+
 			<Section title={m.profile_details()} description={m.profile_details_lead()}>
 				<div className="flex flex-col gap-5">
-					<Field label={m.auth_display_name_label()} error={errors.displayName?.message}>
-						<Input autoComplete="name" maxLength={60} {...register("displayName")} />
-					</Field>
 					<Field
 						label={m.profile_about_label()}
-						description={m.profile_about_hint({ count: ABOUT_MAX - (live.about?.length ?? 0) })}
+						description={m.profile_about_hint({ count: ABOUT_MAX - about.length })}
 						error={errors.about?.message}
 					>
-						<Textarea rows={3} {...register("about")} />
+						<Textarea rows={3} maxLength={ABOUT_MAX} {...register("about")} />
 					</Field>
 					<Field label={m.auth_handle_label()} description={m.profile_handle_hint()}>
-						<Input value={`@${me.handle}`} readOnly className="font-mono" />
+						<Input value={`@${handle}`} readOnly className="font-mono" />
+					</Field>
+					<Field label={m.profile_link_label()} description={m.profile_link_hint()}>
+						<CopyField
+							value={`${window.location.origin}/u/${handle}`}
+							label={m.profile_link_label()}
+						/>
 					</Field>
 				</div>
 			</Section>
 
-			<Section title={m.profile_look()} description={m.profile_look_lead()}>
-				<div className="flex flex-col gap-6">
-					<Controller
-						control={control}
-						name="theme"
-						render={({ field }) => (
-							<RadioGroup
-								value={field.value}
-								onValueChange={(v) => field.onChange(v)}
-								aria-labelledby="theme-label"
-								className="flex flex-col gap-2"
-							>
-								<span id="theme-label" className="text-small font-medium text-fg">
-									{m.profile_theme()}
-								</span>
-								<div className="grid grid-cols-3 gap-3">
-									{THEMES.map((t) => (
-										<Radio.Root
-											key={t}
-											value={t}
-											className="press group flex flex-col gap-2 rounded-lg p-1.5 text-start shadow-[inset_0_0_0_1px_var(--control-border)] data-[checked]:shadow-[inset_0_0_0_2px_var(--accent-ring)]"
-										>
-											<ProfileBanner theme={t} className="h-14 rounded-[0.5rem]" />
-											<span className="flex items-center justify-between px-1 pb-0.5 text-small font-medium text-fg">
-												{THEME_LABEL[t]()}
-												<Radio.Indicator className="flex text-accent-text">
-													<Check aria-hidden className="size-3.5" strokeWidth={2.5} />
-												</Radio.Indicator>
-											</span>
-										</Radio.Root>
-									))}
-								</div>
-							</RadioGroup>
-						)}
-					/>
-					<Controller
-						control={control}
-						name="accent"
-						render={({ field }) => (
-							<RadioGroup
-								value={field.value}
-								onValueChange={(v) => field.onChange(v)}
-								aria-labelledby="accent-label"
-								className="flex flex-col gap-2"
-							>
-								<span id="accent-label" className="text-small font-medium text-fg">
-									{m.accent_label()}
-								</span>
-								<div className="flex flex-wrap gap-3">
-									{ACCENT_KEYS.map((k) => (
-										<Radio.Root
-											key={k}
-											value={k}
-											aria-label={ACCENT_LABEL[k]()}
-											className={cn(
-												"press relative flex size-9 items-center justify-center rounded-full coarse:size-11",
-												"shadow-[inset_0_0_0_1px_rgb(0_0_0/0.2)] data-[checked]:shadow-[0_0_0_2px_var(--bg),0_0_0_4px_var(--fg)]",
-											)}
-											style={{ background: `var(--swatch-${k})` }}
-										>
-											<Radio.Indicator className="flex text-[#111]">
-												<Check aria-hidden className="size-4" strokeWidth={3} />
-											</Radio.Indicator>
-										</Radio.Root>
-									))}
-								</div>
-							</RadioGroup>
-						)}
-					/>
-				</div>
+			<Section
+				title={m.profile_favourites()}
+				description={m.profile_favourites_lead({ max: FAVOURITES_MAX })}
+			>
+				{known.size === 0 ? (
+					<p className="text-body text-fg-muted">{m.profile_favourites_none()}</p>
+				) : (
+					<ul className="grid gap-2 sm:grid-cols-2">
+						{[...known].sort().map((id) => {
+							const checked = favourites.includes(id);
+							const full = favourites.length >= FAVOURITES_MAX && !checked;
+							return (
+								<li key={id}>
+									{/* biome-ignore lint/a11y/noLabelWithoutControl: the Base UI checkbox inside is the control */}
+									<label
+										className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-body shadow-[inset_0_0_0_1px_var(--line-strong)] ${full ? "opacity-50" : "pointer-hover:hover:bg-hover"}`}
+									>
+										<Checkbox
+											checked={checked}
+											disabled={full}
+											onCheckedChange={(on) =>
+												setFavourites((f) => (on ? [...f, id] : f.filter((x) => x !== id)))
+											}
+										/>
+										<span className="font-mono text-small">{id}</span>
+									</label>
+								</li>
+							);
+						})}
+					</ul>
+				)}
 			</Section>
+
+			{profile.playtime && profile.playtime.length > 0 ? (
+				<Section title={m.profile_playtime()} description={m.profile_playtime_lead()} flush>
+					<ul className="divide-y divide-line">
+						{profile.playtime.map((p) => (
+							<li key={p.titleId} className="flex items-center justify-between gap-4 px-5 py-3.5">
+								<span className="font-mono text-small text-fg">{p.titleId}</span>
+								<span className="nums text-body text-fg-muted">{formatPlaytime(p.minutes)}</span>
+							</li>
+						))}
+					</ul>
+				</Section>
+			) : null}
 
 			<div className="sticky bottom-0 -mx-4 flex items-center justify-between gap-4 border-t border-line bg-page/90 px-4 py-3 backdrop-blur-md sm:-mx-0 sm:rounded-xl sm:border sm:px-5">
 				<SaveStatus state={save.state} />
@@ -238,16 +209,87 @@ function ProfileForm({ me }: { me: Me }) {
 					<Button
 						type="button"
 						variant="ghost"
-						disabled={!isDirty || isSubmitting}
-						onClick={() => reset()}
+						disabled={!dirty || isSubmitting}
+						onClick={() => {
+							reset();
+							setFavourites(profile.favourites ?? []);
+						}}
 					>
 						{m.profile_discard()}
 					</Button>
-					<Button type="submit" variant="primary" loading={isSubmitting} disabled={!isDirty}>
+					<Button type="submit" variant="primary" loading={isSubmitting} disabled={!dirty}>
 						{m.common_save()}
 					</Button>
 				</div>
 			</div>
 		</form>
+	);
+}
+
+function AvatarSection({ profile }: { profile: Profile }) {
+	const input = useRef<HTMLInputElement>(null);
+	const upload = useAction((file: File, api) => api.account.setAvatar(file), {
+		success: m.toast_avatar_saved(),
+		invalidate: [qk.profile],
+	});
+	const remove = useAction((_: undefined, api) => api.account.removeAvatar(), {
+		success: m.toast_avatar_removed(),
+		invalidate: [qk.profile],
+	});
+	const pick = (file: File | undefined) => {
+		if (!file) return;
+		if (file.type !== "image/png" && file.type !== "image/jpeg") {
+			toast.error(m.avatar_type());
+			return;
+		}
+		if (file.size > AVATAR_MAX) {
+			toast.error(m.avatar_too_large());
+			return;
+		}
+		upload.mutate(file);
+	};
+	return (
+		<Section title={m.avatar_title()} description={m.avatar_lead()}>
+			<div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+				<Avatar
+					name={profile.account.handle}
+					accent={accentFor(profile.account.handle)}
+					src={avatarUrl(profile.avatar)}
+					size="xl"
+				/>
+				<div className="flex flex-wrap items-center gap-3">
+					<input
+						ref={input}
+						type="file"
+						accept="image/png,image/jpeg"
+						className="sr-only"
+						tabIndex={-1}
+						aria-hidden
+						onChange={(e) => {
+							pick(e.target.files?.[0]);
+							e.target.value = "";
+						}}
+					/>
+					<Button
+						variant="secondary"
+						onClick={() => input.current?.click()}
+						loading={upload.isPending}
+					>
+						{upload.isPending ? null : <ImageUp aria-hidden />}
+						{profile.avatar ? m.avatar_replace() : m.avatar_upload()}
+					</Button>
+					{profile.avatar ? (
+						<Button
+							variant="ghost"
+							onClick={() => remove.mutate(undefined)}
+							loading={remove.isPending}
+						>
+							{m.avatar_remove()}
+						</Button>
+					) : null}
+				</div>
+			</div>
+			<p className="mt-3 text-small text-fg-muted">{m.avatar_hint()}</p>
+		</Section>
 	);
 }

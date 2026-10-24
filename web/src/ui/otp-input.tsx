@@ -29,6 +29,7 @@ export function OtpInput({
 	name = "code",
 }: OtpInputProps) {
 	const half = Math.floor(length / 2);
+	const slots = Array.from({ length }, (_, i) => `slot-${i + 1}`);
 	return (
 		<OTPField.Root
 			length={length}
@@ -40,20 +41,19 @@ export function OtpInput({
 			aria-label={label}
 			className="flex items-center gap-2"
 		>
-			{Array.from({ length }, (_, i) => (
-				<span key={`slot-${i + 1}`} className="contents">
+			{slots.map((slot, i) => (
+				<span key={slot} className="contents">
 					{i === half ? (
 						<OTPField.Separator aria-hidden className="mx-0.5 h-px w-2 shrink-0 bg-line-strong" />
 					) : null}
 					<OTPField.Input
 						aria-label={`${label}, digit ${i + 1} of ${length}`}
-						// biome-ignore lint/a11y/noAutofocus: the code step has one control and the person just asked for the code
 						autoFocus={autoFocus && i === 0}
 						aria-invalid={invalid || undefined}
 						className={cn(
 							"h-12 w-10 min-w-0 flex-1 rounded-md bg-raised text-center font-mono text-lead font-medium text-fg nums sm:h-14 sm:w-12 sm:flex-none",
 							"shadow-[inset_0_0_0_1px_var(--control-border)] transition-[box-shadow,background-color] duration-[var(--dur-quick)] ease-[var(--ease-out)]",
-							"caret-accent focus:bg-hover aria-[invalid=true]:shadow-[inset_0_0_0_1px_var(--danger-9)] disabled:opacity-50",
+							"halo caret-accent focus:bg-hover aria-[invalid=true]:shake aria-[invalid=true]:shadow-[inset_0_0_0_1px_var(--danger-9)] disabled:opacity-50",
 						)}
 					/>
 				</span>

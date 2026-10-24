@@ -14,7 +14,7 @@ export function Page({
 	return (
 		<div
 			className={cn(
-				"mx-auto flex w-full flex-col gap-8",
+				"mx-auto flex w-full flex-col gap-10",
 				width === "narrow" ? "max-w-[44rem]" : "max-w-[60rem]",
 				className,
 			)}

@@ -55,6 +55,41 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  # The web portal (web/): a static React app the cloud will serve. Tokens, types, lint, tests and
+  # the production build, with the lockfile frozen. No Rust, so it does not need the network checkout.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloud/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: cloud
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: cloud/web/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: cloud/web/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Colour tokens are up to date
+        run: node scripts/gen-tokens.mjs --check
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Lint
+        run: pnpm lint
+      - name: Test
+        run: pnpm test
+      - name: Build
+        run: pnpm build
+      - name: Route tree is committed
+        run: git diff --exit-code -- src/routeTree.gen.ts
+
   # The same tests with the store in PostgreSQL instead of a SQLite file
   # (docs/adr/0003-postgres-for-a-cluster.md), and tests/cluster.rs with two nodes that share
   # the database and tell each other about changes over NATS (docs/adr/0004).

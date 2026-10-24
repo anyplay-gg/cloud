@@ -1,16 +1,15 @@
 import type {
-	ActivityEvent,
-	AuthProgress,
-	CodeChallenge,
+	AccountView,
+	BanStatement,
 	DataExport,
-	DeviceSession,
-	FriendsOverview,
+	FriendLists,
 	Me,
 	Passkey,
-	PrivacySettings,
+	Privacy,
+	Profile,
 	ProfileUpdate,
-	PublicProfile,
-	SessionInfo,
+	PublicUser,
+	SessionView,
 	SignInIntent,
 	StepUpMethod,
 	TrophySummary,
@@ -29,79 +28,95 @@ import type {
  *   the step-up dialog (`useStepUp().run`) and the dialog calls the same write again.
  * - Passkey ceremonies happen inside the adapter. The screen calls `addPasskey()` and gets a
  *   `Passkey` back, or `passkey_cancelled` when the person closed the browser's sheet.
+ * - Every sign-in step answers with the whole `SessionView`; the screen shows `flow.step`.
  */
 export interface PortalApi {
-	/** "http" talks to a cloud, "mock" is in memory. Screens may show a dev notice for mock. */
+	/** "http" talks to a cloud, "mock" is in memory. */
 	readonly mode: "http" | "mock";
 
-	/** The current browser session. Never rejects for a signed-out visitor. */
-	session(): Promise<SessionInfo>;
+	/** The browser's session. Starts one when there is none; never rejects for a signed-out visitor. */
+	session(): Promise<SessionView>;
 
 	auth: {
-		/** Sends a sign-in code to the address (or starts account creation). */
-		start(input: { email: string; intent: SignInIntent }): Promise<CodeChallenge>;
-		resendCode(): Promise<CodeChallenge>;
-		verifyCode(code: string): Promise<AuthProgress>;
-		submitDetails(input: { handle: string; displayName: string }): Promise<AuthProgress>;
-		acceptTerms(): Promise<AuthProgress>;
+		start(input: { email: string; intent: SignInIntent }): Promise<SessionView>;
+		resendCode(): Promise<SessionView>;
+		verifyCode(code: string): Promise<SessionView>;
+		submitDetails(input: {
+			handle: string;
+			ageConfirmed: boolean;
+			termsAccepted: boolean;
+		}): Promise<SessionView>;
+		acceptTerms(): Promise<SessionView>;
 		/** Whether this browser can do passkeys, and whether the autofill form is available. */
 		passkeySupport(): Promise<{ available: boolean; conditional: boolean }>;
 		/** Resolves when a passkey signs the player in. With `conditional`, waits for autofill. */
 		signInWithPasskey(options: {
 			conditional: boolean;
 			signal?: AbortSignal;
-		}): Promise<AuthProgress>;
+		}): Promise<SessionView>;
 		signOut(): Promise<void>;
+		/** The statement of the ban this session proved to be its own. */
+		ban(): Promise<BanStatement>;
+		appeal(text: string): Promise<void>;
 	};
 
 	account: {
-		updateProfile(input: ProfileUpdate): Promise<Me>;
-		activity(): Promise<ActivityEvent[]>;
+		get(): Promise<AccountView>;
+		/** Sends a code to the new address. Needs a recent sign-in. */
+		changeEmail(email: string): Promise<void>;
+		confirmEmail(code: string): Promise<string>;
+		profile(): Promise<Profile>;
+		updateProfile(input: ProfileUpdate): Promise<Profile>;
+		setAvatar(file: Blob): Promise<string>;
+		removeAvatar(): Promise<void>;
+		privacy(): Promise<Privacy>;
+		updatePrivacy(input: Privacy): Promise<Privacy>;
 	};
 
 	security: {
-		passkeys(): Promise<Passkey[]>;
 		addPasskey(name: string): Promise<Passkey>;
+		renamePasskey(id: string, name: string): Promise<void>;
 		removePasskey(id: string): Promise<void>;
-		sessions(): Promise<DeviceSession[]>;
-		revokeSession(id: string): Promise<void>;
-		/** Ends every session but this browser's. */
+		removeDevice(id: number): Promise<void>;
+		/** Ends a browser session. `signedOut` is true when it was this browser's own. */
+		revokeSession(id: number): Promise<{ signedOut: boolean }>;
+		/** Ends every device and browser, this one too. */
 		signOutEverywhere(): Promise<void>;
 	};
 
 	stepUp: {
 		methods(): Promise<StepUpMethod[]>;
 		withPasskey(): Promise<void>;
-		sendEmailCode(): Promise<CodeChallenge>;
+		/** Sends a code to the account's own address; answers the hint, "a***@example.com". */
+		sendEmailCode(): Promise<string>;
 		verifyEmailCode(code: string): Promise<void>;
-	};
-
-	privacy: {
-		get(): Promise<PrivacySettings>;
-		update(input: PrivacySettings): Promise<PrivacySettings>;
 	};
 
 	data: {
 		exportData(): Promise<DataExport>;
 		/** Starts the 30-day grace period. `handle` must match the account's handle. */
-		requestDeletion(input: { handle: string }): Promise<Me>;
-		cancelDeletion(): Promise<Me>;
+		requestDeletion(handle: string): Promise<{ at: number }>;
+		cancelDeletion(): Promise<void>;
 	};
 
 	friends: {
-		overview(): Promise<FriendsOverview>;
-		sendRequest(handle: string): Promise<void>;
-		accept(requestId: string): Promise<void>;
-		decline(requestId: string): Promise<void>;
-		cancel(requestId: string): Promise<void>;
-		remove(friendId: string): Promise<void>;
+		lists(): Promise<FriendLists>;
+		sendRequest(handle: string): Promise<"requested" | "friends">;
+		accept(accountId: number): Promise<void>;
+		/** Declines an incoming request or withdraws an outgoing one. */
+		dropRequest(accountId: number): Promise<void>;
+		remove(accountId: number): Promise<void>;
+		block(accountId: number): Promise<void>;
+		unblock(accountId: number): Promise<void>;
 	};
 
 	trophies: {
-		summary(): Promise<TrophySummary>;
+		mine(): Promise<TrophySummary>;
 	};
 
-	profiles: {
-		get(handle: string): Promise<PublicProfile>;
+	users: {
+		get(handle: string): Promise<PublicUser>;
 	};
 }
+
+export type { Me };

@@ -21,7 +21,7 @@ const pkc = (): (JsonCapablePublicKeyCredential & typeof PublicKeyCredential) | 
 
 export async function passkeySupport(): Promise<{ available: boolean; conditional: boolean }> {
 	const c = pkc();
-	if (!c || !c.parseRequestOptionsFromJSON || !c.parseCreationOptionsFromJSON) {
+	if (!c?.parseRequestOptionsFromJSON || !c.parseCreationOptionsFromJSON) {
 		return { available: false, conditional: false };
 	}
 	let conditional = false;
@@ -40,7 +40,7 @@ function mapCeremonyError(e: unknown): ApiError {
 			return new ApiError("passkey_cancelled", "The passkey prompt was closed.");
 		}
 		if (e.name === "InvalidStateError") {
-			return new ApiError("conflict", "This device already has a passkey for your account.");
+			return new ApiError("limit", "This device already has a passkey for your account.");
 		}
 		if (e.name === "NotSupportedError" || e.name === "SecurityError") {
 			return new ApiError("passkey_unsupported", "This browser can't use passkeys here.");

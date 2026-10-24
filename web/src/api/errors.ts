@@ -1,28 +1,66 @@
+import { m } from "@/i18n";
 import type { StepUpMethod } from "./types";
 
-/** Every failure the API layer reports, so screens branch on `code` and never on a status. */
+/**
+ * Every failure the API layer reports, so screens branch on `code` and never on a status. The
+ * cloud's own codes (`spec/portal-api.md`) keep their names; the rest are the client's.
+ */
 export type ApiErrorCode =
 	| "network" // the request never got an answer
-	| "server" // 5xx
-	| "unauthorized" // not signed in, or the session ended
-	| "step_up_required" // the action needs a recent sign-in
+	| "bad_request"
+	| "code_wrong"
+	| "code_expired"
+	| "handle_invalid"
+	| "handle_taken"
+	| "unauthorized" // no live session, or a wrong CSRF token
+	| "banned"
 	| "forbidden"
+	| "step_up_required" // the action needs a recent sign-in
 	| "not_found"
-	| "invalid" // the cloud rejected the input; see `fields`
+	| "unsupported_media_type"
+	| "limit"
+	| "too_large"
 	| "rate_limited"
-	| "conflict"
+	| "internal"
 	| "passkey_cancelled" // the person closed the browser's passkey sheet
 	| "passkey_unsupported"
 	| "unknown";
 
+const KNOWN: ReadonlySet<string> = new Set<ApiErrorCode>([
+	"bad_request",
+	"code_wrong",
+	"code_expired",
+	"handle_invalid",
+	"handle_taken",
+	"unauthorized",
+	"banned",
+	"forbidden",
+	"step_up_required",
+	"not_found",
+	"unsupported_media_type",
+	"limit",
+	"too_large",
+	"rate_limited",
+	"internal",
+]);
+
+export const asErrorCode = (code: unknown, status: number): ApiErrorCode => {
+	if (typeof code === "string" && KNOWN.has(code)) return code as ApiErrorCode;
+	if (status >= 500) return "internal";
+	if (status === 401) return "unauthorized";
+	if (status === 404) return "not_found";
+	if (status === 429) return "rate_limited";
+	return "unknown";
+};
+
 export class ApiError extends Error {
 	readonly code: ApiErrorCode;
 	readonly status: number;
-	/** Field-level messages from a rejected form, keyed by the input's name. */
+	/** Messages for the input named by the cloud's `field`, keyed by that name. */
 	readonly fields: Record<string, string>;
-	/** For `step_up_required`: how the player can prove it is them. */
+	/** For `step_up_required`: how the player can prove it is them. Filled in by the client. */
 	readonly methods: StepUpMethod[];
-	/** For `rate_limited`: seconds to wait. */
+	/** For `rate_limited`: seconds to wait, from `Retry-After`. */
 	readonly retryAfter: number | null;
 
 	constructor(
@@ -51,25 +89,39 @@ export const isStepUp = (e: unknown): e is ApiError =>
 
 /** What to show for a failure the screen has no better words for. */
 export function describeError(e: unknown): string {
-	if (!isApiError(e)) return "Something went wrong. Try again.";
+	if (!isApiError(e)) return m.error_generic();
 	switch (e.code) {
 		case "network":
-			return "Can't reach AnyPlay. Check your connection and try again.";
-		case "server":
-			return "AnyPlay had a problem on its side. Try again in a minute.";
+			return m.error_network();
+		case "internal":
+			return m.error_server();
 		case "unauthorized":
-			return "Your session ended. Sign in again.";
+			return m.error_unauthorized();
 		case "forbidden":
-			return "You can't do that with this account.";
+			return m.error_forbidden();
+		case "banned":
+			return m.error_banned();
 		case "not_found":
-			return "That doesn't exist any more.";
+			return m.error_not_found();
+		case "limit":
+			return m.error_limit();
+		case "too_large":
+			return m.error_too_large();
+		case "code_wrong":
+			return m.error_code_wrong();
+		case "code_expired":
+			return m.error_code_expired();
+		case "handle_taken":
+			return m.error_handle_taken();
+		case "handle_invalid":
+			return m.auth_handle_rules();
 		case "rate_limited":
 			return e.retryAfter
-				? `Too many tries. Wait ${e.retryAfter} seconds and try again.`
-				: "Too many tries. Wait a moment and try again.";
+				? m.error_rate_limited_in({ seconds: e.retryAfter })
+				: m.error_rate_limited();
 		case "passkey_unsupported":
-			return "This browser can't use passkeys. Use the e-mail code instead.";
+			return m.error_passkey_unsupported();
 		default:
-			return e.message || "Something went wrong. Try again.";
+			return e.message || m.error_generic();
 	}
 }

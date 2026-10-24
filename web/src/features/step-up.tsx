@@ -96,8 +96,7 @@ function StepUpBody({ methods, onDone }: { methods: StepUpMethod[]; onDone: () =
 		setBusy("send");
 		setError(null);
 		try {
-			const c = await api.stepUp.sendEmailCode();
-			setHint(c.emailHint);
+			setHint(await api.stepUp.sendEmailCode());
 			setMode("code");
 		} catch (e) {
 			setError(describeError(e));

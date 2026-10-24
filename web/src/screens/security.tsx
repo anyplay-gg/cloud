@@ -1,24 +1,28 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { usePageTitle } from "@/lib/use-page-title";
-import { Globe, KeyRound, Mail, Monitor, Plus } from "lucide-react";
+import { Globe, KeyRound, Mail, Monitor, Pencil, Plus } from "lucide-react";
 import { useState } from "react";
+import { useApi } from "@/api/context";
 import { describeError, isApiError } from "@/api/errors";
-import { qk, useAction, useDevices, usePasskeys, useSession } from "@/api/queries";
-import type { DeviceSession, Passkey } from "@/api/types";
+import { qk, useAccountView, useAction, useSession } from "@/api/queries";
+import type { BrowserSession, Device, Passkey } from "@/api/types";
 import { AnimatedRow, AnimatedRows } from "@/components/animated-rows";
-import { Page, PageHeader, Row, Section } from "@/components/layout";
+import { Page, PageHeader, Section } from "@/components/layout";
 import { QueryView } from "@/components/query-state";
-import { isStepUpCancelled } from "@/features/step-up";
+import { isStepUpCancelled, useStepUp } from "@/features/step-up";
 import { m } from "@/i18n";
 import { formatDate, relativeTime } from "@/lib/format";
+import { usePageTitle } from "@/lib/use-page-title";
+import { useUndoable } from "@/lib/use-undoable";
+import { PresenceDot } from "@/ui/avatar";
 import { Badge } from "@/ui/badge";
 import { Button } from "@/ui/button";
+import { ConfirmMorph } from "@/ui/confirm-morph";
 import { ConfirmDialog, Dialog, DialogContent } from "@/ui/dialog";
 import { EmptyState, Skeleton } from "@/ui/feedback";
 import { Field } from "@/ui/field";
 import { Input } from "@/ui/input";
-
-const MAX_PASSKEYS = 10;
+import { OtpInput } from "@/ui/otp-input";
+import { toast } from "@/ui/toast";
 
 export function Security() {
 	usePageTitle(m.nav_security());
@@ -56,17 +60,18 @@ function IconTile({ children }: { children: React.ReactNode }) {
 // Passkeys
 
 function PasskeysSection() {
-	const passkeys = usePasskeys();
+	const account = useAccountView();
 	const [adding, setAdding] = useState(false);
-	const [removing, setRemoving] = useState<Passkey | null>(null);
-	const count = passkeys.data?.length ?? 0;
-	const canAdd = !passkeys.isError && count < MAX_PASSKEYS;
+	const [renaming, setRenaming] = useState<Passkey | null>(null);
+	const count = account.data?.passkeys.length ?? 0;
+	const max = account.data?.maxPasskeys ?? 10;
+	const canAdd = !account.isError && count < max;
 
 	return (
 		<Section
 			id="passkeys"
 			title={m.passkeys_title()}
-			description={m.passkeys_lead({ max: MAX_PASSKEYS })}
+			description={m.passkeys_lead({ max })}
 			flush
 			actions={
 				canAdd && count > 0 ? (
@@ -78,11 +83,11 @@ function PasskeysSection() {
 			}
 		>
 			<QueryView
-				query={passkeys}
+				query={account}
 				loadingLabel={m.passkeys_loading()}
 				loading={<RowSkeleton />}
 				errorTitle={m.passkeys_error()}
-				isEmpty={(d) => d.length === 0}
+				isEmpty={(d) => d.passkeys.length === 0}
 				empty={
 					<EmptyState
 						icon={<KeyRound aria-hidden strokeWidth={1.75} />}
@@ -97,35 +102,34 @@ function PasskeysSection() {
 					/>
 				}
 			>
-				{(list) => (
+				{(a) => (
 					<AnimatedRows label={m.passkeys_title()}>
-						{list.map((k) => (
+						{a.passkeys.map((k) => (
 							<AnimatedRow key={k.id}>
-								<div className="flex items-center gap-4 px-5 py-4">
+								<div className="flex items-center gap-3 px-5 py-4 sm:gap-4">
 									<IconTile>
 										<KeyRound aria-hidden strokeWidth={1.75} />
 									</IconTile>
 									<div className="min-w-0 flex-1">
-										<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-body font-medium text-fg">
-											<span className="truncate">{k.name}</span>
-											{k.synced ? <Badge>{m.passkeys_synced()}</Badge> : null}
-										</p>
+										<p className="truncate text-body font-medium text-fg">{k.name}</p>
 										<p className="mt-0.5 text-small text-fg-muted">
-											{m.passkeys_added({ date: formatDate(k.createdAt, "medium") })}
+											{m.passkeys_added({ date: formatDate(k.created, "medium") })}
 											{" · "}
-											{k.lastUsedAt
-												? m.passkeys_last_used({ when: relativeTime(k.lastUsedAt) })
+											{k.lastUsed
+												? m.passkeys_last_used({ when: relativeTime(k.lastUsed) })
 												: m.passkeys_never_used()}
 										</p>
 									</div>
 									<Button
 										variant="ghost"
 										size="sm"
-										onClick={() => setRemoving(k)}
-										aria-label={m.passkeys_remove_named({ name: k.name })}
+										icon
+										onClick={() => setRenaming(k)}
+										aria-label={m.passkeys_rename_named({ name: k.name })}
 									>
-										{m.common_remove()}
+										<Pencil aria-hidden />
 									</Button>
+									<PasskeyRemove passkey={k} isLast={a.passkeys.length === 1} />
 								</div>
 							</AnimatedRow>
 						))}
@@ -133,7 +137,7 @@ function PasskeysSection() {
 				)}
 			</QueryView>
 			<AddPasskeyDialog open={adding} onOpenChange={setAdding} />
-			<RemovePasskeyDialog passkey={removing} onClose={() => setRemoving(null)} isLast={count === 1} />
+			<RenamePasskeyDialog passkey={renaming} onClose={() => setRenaming(null)} />
 		</Section>
 	);
 }
@@ -154,7 +158,13 @@ function guessDeviceName(): string {
 	return os ? m.passkeys_default_name({ device: os }) : m.passkeys_default_name_plain();
 }
 
-function AddPasskeyDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+function AddPasskeyDialog({
+	open,
+	onOpenChange,
+}: {
+	open: boolean;
+	onOpenChange: (o: boolean) => void;
+}) {
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			{open ? <AddPasskeyBody onDone={() => onOpenChange(false)} /> : null}
@@ -167,7 +177,7 @@ function AddPasskeyBody({ onDone }: { onDone: () => void }) {
 	const [error, setError] = useState<string | null>(null);
 	const add = useAction((n: string, api) => api.security.addPasskey(n), {
 		success: m.toast_passkey_added(),
-		invalidate: [qk.passkeys, qk.activity],
+		invalidate: [qk.account],
 		toastErrors: false,
 		onSuccess: onDone,
 	});
@@ -190,7 +200,12 @@ function AddPasskeyBody({ onDone }: { onDone: () => void }) {
 					<Button variant="secondary" onClick={onDone} disabled={add.isPending}>
 						{m.common_cancel()}
 					</Button>
-					<Button variant="primary" onClick={submit} loading={add.isPending} disabled={name.trim() === ""}>
+					<Button
+						variant="primary"
+						onClick={submit}
+						loading={add.isPending}
+						disabled={name.trim() === ""}
+					>
 						{m.passkeys_add_continue()}
 					</Button>
 				</>
@@ -203,44 +218,86 @@ function AddPasskeyBody({ onDone }: { onDone: () => void }) {
 				}}
 			>
 				<Field label={m.passkeys_name_label()} description={m.passkeys_name_hint()} error={error}>
-					<Input
-						value={name}
-						onChange={(e) => setName(e.target.value)}
-						maxLength={40}
-						// biome-ignore lint/a11y/noAutofocus: the dialog has one field and was opened to fill it
-						autoFocus
-					/>
+					<Input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} autoFocus />
 				</Field>
 			</form>
 		</DialogContent>
 	);
 }
 
-function RemovePasskeyDialog({
+function RenamePasskeyDialog({
 	passkey,
 	onClose,
-	isLast,
 }: {
 	passkey: Passkey | null;
 	onClose: () => void;
-	isLast: boolean;
 }) {
+	return (
+		<Dialog open={passkey !== null} onOpenChange={(o) => !o && onClose()}>
+			{passkey ? <RenameBody passkey={passkey} onDone={onClose} /> : null}
+		</Dialog>
+	);
+}
+
+function RenameBody({ passkey, onDone }: { passkey: Passkey; onDone: () => void }) {
+	const [name, setName] = useState(passkey.name);
+	const rename = useAction((n: string, api) => api.security.renamePasskey(passkey.id, n), {
+		success: m.toast_passkey_renamed(),
+		invalidate: [qk.account],
+		onSuccess: onDone,
+	});
+	const submit = () => name.trim() && rename.mutate(name.trim());
+	return (
+		<DialogContent
+			title={m.passkeys_rename_title()}
+			footer={
+				<>
+					<Button variant="secondary" onClick={onDone} disabled={rename.isPending}>
+						{m.common_cancel()}
+					</Button>
+					<Button
+						variant="primary"
+						onClick={submit}
+						loading={rename.isPending}
+						disabled={name.trim() === "" || name.trim() === passkey.name}
+					>
+						{m.common_save()}
+					</Button>
+				</>
+			}
+		>
+			<form
+				onSubmit={(e) => {
+					e.preventDefault();
+					submit();
+				}}
+			>
+				<Field label={m.passkeys_name_label()}>
+					<Input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} autoFocus />
+				</Field>
+			</form>
+		</DialogContent>
+	);
+}
+
+function PasskeyRemove({ passkey, isLast }: { passkey: Passkey; isLast: boolean }) {
 	const remove = useAction((id: string, api) => api.security.removePasskey(id), {
 		success: m.toast_passkey_removed(),
-		invalidate: [qk.passkeys, qk.activity],
-		onSuccess: onClose,
+		invalidate: [qk.account],
 	});
 	return (
-		<ConfirmDialog
-			open={passkey !== null}
-			onOpenChange={(o) => !o && onClose()}
-			title={m.passkeys_remove_title()}
+		<ConfirmMorph
+			label={m.common_remove()}
+			confirmLabel={isLast ? m.passkeys_remove_last_confirm() : m.passkeys_remove_confirm()}
+			ariaLabel={m.passkeys_remove_named({ name: passkey.name })}
+			confirmAriaLabel={m.passkeys_confirm_named({ name: passkey.name })}
 			description={
-				passkey ? (isLast ? m.passkeys_remove_last({ name: passkey.name }) : m.passkeys_remove_text({ name: passkey.name })) : undefined
+				isLast
+					? m.passkeys_remove_last({ name: passkey.name })
+					: m.passkeys_remove_text({ name: passkey.name })
 			}
-			confirmLabel={m.passkeys_remove_confirm()}
 			pending={remove.isPending}
-			onConfirm={() => passkey && remove.mutate(passkey.id)}
+			onConfirm={() => remove.mutate(passkey.id)}
 		/>
 	);
 }
@@ -250,35 +307,193 @@ function RemovePasskeyDialog({
 
 function EmailSection() {
 	const me = useSession().data?.account;
+	const account = useAccountView();
+	const [open, setOpen] = useState(false);
+	const pending = account.data?.pendingEmail ?? null;
 	return (
 		<Section title={m.email_title()} flush>
-			<Row
-				title={
-					<span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+			<div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+				<div className="min-w-0">
+					<p className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-body font-medium text-fg">
 						<Mail aria-hidden strokeWidth={1.75} className="size-4 text-fg-muted" />
 						{me ? <span className="break-all">{me.email}</span> : <Skeleton className="h-4 w-48" />}
 						<Badge tone="success">{m.email_confirmed()}</Badge>
-					</span>
-				}
-				description={m.email_text()}
-			/>
+					</p>
+					<p className="mt-1 text-body text-fg-muted">
+						{pending ? m.email_pending({ email: pending }) : m.email_text()}
+					</p>
+				</div>
+				<Button variant="secondary" className="shrink-0" onClick={() => setOpen(true)}>
+					{pending ? m.email_enter_code() : m.email_change()}
+				</Button>
+			</div>
+			<Dialog open={open} onOpenChange={setOpen}>
+				{open ? <ChangeEmailBody pending={pending} onDone={() => setOpen(false)} /> : null}
+			</Dialog>
 		</Section>
 	);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Devices
+function ChangeEmailBody({ pending, onDone }: { pending: string | null; onDone: () => void }) {
+	const api = useApi();
+	const qc = useQueryClient();
+	const stepUp = useStepUp();
+	const [email, setEmail] = useState("");
+	const [sentTo, setSentTo] = useState<string | null>(pending);
+	const [code, setCode] = useState("");
+	const [error, setError] = useState<string | null>(null);
+	const [busy, setBusy] = useState(false);
 
+	const send = async () => {
+		setBusy(true);
+		setError(null);
+		try {
+			await stepUp.run(() => api.account.changeEmail(email.trim()));
+			setSentTo(email.trim());
+			void qc.invalidateQueries({ queryKey: qk.account });
+		} catch (e) {
+			if (!isStepUpCancelled(e))
+				setError(isApiError(e) && e.fields.email ? e.fields.email : describeError(e));
+		} finally {
+			setBusy(false);
+		}
+	};
+	const confirm = async (value: string) => {
+		if (value.length < 6 || busy) return;
+		setBusy(true);
+		setError(null);
+		try {
+			const confirmed = await stepUp.run(() => api.account.confirmEmail(value));
+			toast.success(m.toast_email_changed());
+			await qc.invalidateQueries({ queryKey: qk.session });
+			void qc.invalidateQueries({ queryKey: qk.account });
+			void confirmed;
+			onDone();
+		} catch (e) {
+			setCode("");
+			if (!isStepUpCancelled(e)) setError(describeError(e));
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	return sentTo ? (
+		<DialogContent title={m.email_code_title()} description={m.email_code_text({ email: sentTo })}>
+			<form
+				className="flex flex-col gap-5"
+				onSubmit={(e) => {
+					e.preventDefault();
+					void confirm(code);
+				}}
+			>
+				<Field label={m.auth_code_label()} error={error}>
+					<OtpInput
+						value={code}
+						onChange={setCode}
+						onComplete={(v) => void confirm(v)}
+						invalid={Boolean(error)}
+						disabled={busy}
+						autoFocus
+					/>
+				</Field>
+				<div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
+					<Button type="button" variant="ghost" onClick={() => setSentTo(null)}>
+						{m.email_other()}
+					</Button>
+					<Button type="submit" variant="primary" loading={busy} disabled={code.length < 6}>
+						{m.email_confirm()}
+					</Button>
+				</div>
+			</form>
+		</DialogContent>
+	) : (
+		<DialogContent title={m.email_change_title()} description={m.email_change_text()}>
+			<form
+				className="flex flex-col gap-5"
+				onSubmit={(e) => {
+					e.preventDefault();
+					if (email.trim()) void send();
+				}}
+			>
+				<Field label={m.email_new_label()} error={error}>
+					<Input
+						type="email"
+						inputMode="email"
+						autoComplete="email"
+						autoCapitalize="none"
+						spellCheck={false}
+						value={email}
+						onChange={(e) => setEmail(e.target.value)}
+						placeholder={m.auth_email_placeholder()}
+						autoFocus
+					/>
+				</Field>
+				<div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+					<Button type="button" variant="secondary" onClick={onDone}>
+						{m.common_cancel()}
+					</Button>
+					<Button type="submit" variant="primary" loading={busy} disabled={!email.trim()}>
+						{m.auth_send_code()}
+					</Button>
+				</div>
+			</form>
+		</DialogContent>
+	);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Launchers and browsers
+
+/**
+ * Active sessions, the way ObsidianUI lays them out (pattern, written again): the browser you are
+ * in first and set apart, then everything else that can open the account. Signing a launcher or
+ * another browser out is held back for six seconds with an Undo, because it is cheap to hold
+ * and easy to misclick.
+ */
 function DevicesSection() {
-	const devices = useDevices();
-	const [revoking, setRevoking] = useState<DeviceSession | null>(null);
+	const api = useApi();
+	const qc = useQueryClient();
+	const stepUp = useStepUp();
+	const account = useAccountView();
 	const [everywhere, setEverywhere] = useState(false);
-	const others = (devices.data ?? []).filter((d) => !d.current).length;
+
+	type Target = { key: string; name: string; run: () => Promise<unknown> };
+	const undoable = useUndoable<Target>(
+		async (t) => {
+			try {
+				await stepUp.run(() => t.run());
+				toast.success(m.toast_device_signed_out());
+			} catch (e) {
+				if (!isStepUpCancelled(e)) toast.error(describeError(e));
+			} finally {
+				void qc.invalidateQueries({ queryKey: qk.account });
+			}
+		},
+		(t) => t.key,
+	);
+
+	const data = account.data;
+	const launchers = (data?.devices ?? []).filter((d) => !undoable.hidden.has(`d${d.id}`));
+	const browsers = (data?.sessions ?? []).filter((s) => !undoable.hidden.has(`s${s.id}`));
+	const current = browsers.find((s) => s.current);
+	const otherBrowsers = browsers.filter((s) => !s.current);
+	const others = launchers.length + otherBrowsers.length;
+
+	const signOutLauncher = (d: Device) =>
+		undoable.run(
+			{ key: `d${d.id}`, name: d.name, run: () => api.security.removeDevice(d.id) },
+			m.toast_device_signed_out_undo({ name: d.name }),
+		);
+	const signOutBrowser = (s: BrowserSession) =>
+		undoable.run(
+			{ key: `s${s.id}`, name: m.devices_browser(), run: () => api.security.revokeSession(s.id) },
+			m.toast_device_signed_out_undo({ name: m.devices_browser() }),
+		);
 
 	return (
 		<Section id="devices" title={m.devices_title()} description={m.devices_lead()} flush>
 			<QueryView
-				query={devices}
+				query={account}
 				loadingLabel={m.devices_loading()}
 				loading={
 					<>
@@ -287,57 +502,99 @@ function DevicesSection() {
 					</>
 				}
 				errorTitle={m.devices_error()}
-				isEmpty={(d) => d.length === 0}
-				empty={<EmptyState title={m.devices_empty()} description={m.devices_empty_text()} />}
 			>
-				{(list) => (
+				{() => (
 					<>
-						<AnimatedRows label={m.devices_title()}>
-							{[...list]
-								.sort((a, b) => Number(b.current) - Number(a.current))
-								.map((d) => (
-									<AnimatedRow key={d.id}>
+						{current ? (
+							<div className="flex items-center gap-4 bg-accent-soft/50 px-5 py-4">
+								<IconTile>
+									<Globe aria-hidden strokeWidth={1.75} />
+								</IconTile>
+								<div className="min-w-0 flex-1">
+									<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-body font-medium text-fg">
+										<span className="truncate">{m.devices_this_browser()}</span>
+										<Badge tone="accent">{m.devices_current()}</Badge>
+									</p>
+									<p className="mt-0.5 flex items-center gap-2 text-small text-fg-muted">
+										<PresenceDot status="online" />
+										{m.devices_signed_in_since({ date: formatDate(current.created, "medium") })}
+										{" · "}
+										{m.devices_active_now()}
+									</p>
+								</div>
+							</div>
+						) : null}
+						<div className="border-t border-line px-5 pb-1 pt-4">
+							<h3 className="text-small font-medium text-fg-muted">{m.security_others()}</h3>
+						</div>
+						{others === 0 ? (
+							<p className="px-5 pb-4 pt-1 text-body text-fg-muted">{m.devices_empty_text()}</p>
+						) : (
+							<AnimatedRows label={m.security_others()}>
+								{launchers.map((d) => (
+									<AnimatedRow key={`d${d.id}`}>
 										<div className="flex items-center gap-4 px-5 py-4">
 											<IconTile>
-												{d.kind === "launcher" ? (
-													<Monitor aria-hidden strokeWidth={1.75} />
-												) : (
-													<Globe aria-hidden strokeWidth={1.75} />
-												)}
+												<Monitor aria-hidden strokeWidth={1.75} />
 											</IconTile>
 											<div className="min-w-0 flex-1">
 												<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-body font-medium text-fg">
 													<span className="truncate">{d.name}</span>
-													{d.current ? <Badge tone="accent">{m.devices_this_browser()}</Badge> : null}
-													{d.kind === "launcher" ? <Badge>{m.devices_launcher()}</Badge> : null}
+													<Badge>{m.devices_launcher()}</Badge>
 												</p>
 												<p className="mt-0.5 text-small text-fg-muted">
-													{d.platform}
-													{d.region ? ` · ${d.region}` : ""}
+													{platformName(d.platform)}
 													{" · "}
-													{d.current ? m.devices_active_now() : m.devices_last_active({ when: relativeTime(d.lastUsedAt) })}
+													{m.devices_last_active({ when: relativeTime(d.lastUsed) })}
 												</p>
 											</div>
-											{d.current ? null : (
-												<Button
-													variant="ghost"
-													size="sm"
-													onClick={() => setRevoking(d)}
-													aria-label={m.devices_sign_out_named({ name: d.name })}
-												>
-													{m.devices_sign_out()}
-												</Button>
-											)}
+											<Button
+												variant="ghost"
+												size="sm"
+												onClick={() => signOutLauncher(d)}
+												aria-label={m.devices_sign_out_named({ name: d.name })}
+											>
+												{m.devices_sign_out()}
+											</Button>
 										</div>
 									</AnimatedRow>
 								))}
-						</AnimatedRows>
+								{otherBrowsers.map((s) => (
+									<AnimatedRow key={`s${s.id}`}>
+										<div className="flex items-center gap-4 px-5 py-4">
+											<IconTile>
+												<Globe aria-hidden strokeWidth={1.75} />
+											</IconTile>
+											<div className="min-w-0 flex-1">
+												<p className="truncate text-body font-medium text-fg">
+													{m.devices_browser()}
+												</p>
+												<p className="mt-0.5 text-small text-fg-muted">
+													{m.devices_signed_in_since({ date: formatDate(s.created, "medium") })}
+													{" · "}
+													{m.devices_last_active({ when: relativeTime(s.lastUsed) })}
+												</p>
+											</div>
+											<Button
+												variant="ghost"
+												size="sm"
+												onClick={() => signOutBrowser(s)}
+												aria-label={m.devices_sign_out_browser_named({
+													date: formatDate(s.created, "medium"),
+												})}
+											>
+												{m.devices_sign_out()}
+											</Button>
+										</div>
+									</AnimatedRow>
+								))}
+							</AnimatedRows>
+						)}
 						<div className="flex flex-col gap-3 border-t border-line px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
 							<p className="text-body text-fg-muted">{m.devices_everywhere_text()}</p>
 							<Button
 								variant="danger-soft"
 								onClick={() => setEverywhere(true)}
-								disabled={others === 0}
 								className="shrink-0"
 							>
 								{m.devices_everywhere()}
@@ -346,39 +603,37 @@ function DevicesSection() {
 					</>
 				)}
 			</QueryView>
-			<RevokeDialog device={revoking} onClose={() => setRevoking(null)} />
 			<EverywhereDialog open={everywhere} onClose={() => setEverywhere(false)} count={others} />
 		</Section>
 	);
 }
 
-function RevokeDialog({ device, onClose }: { device: DeviceSession | null; onClose: () => void }) {
-	const revoke = useAction((id: string, api) => api.security.revokeSession(id), {
-		success: m.toast_device_signed_out(),
-		invalidate: [qk.devices, qk.activity],
-		onSuccess: onClose,
-	});
-	return (
-		<ConfirmDialog
-			open={device !== null}
-			onOpenChange={(o) => !o && onClose()}
-			title={m.devices_revoke_title()}
-			description={device ? m.devices_revoke_text({ name: device.name }) : undefined}
-			confirmLabel={m.devices_revoke_confirm()}
-			pending={revoke.isPending}
-			onConfirm={() => device && revoke.mutate(device.id)}
-		/>
-	);
-}
+const platformName = (p: string) =>
+	p === "windows"
+		? "Windows"
+		: p === "linux"
+			? "Linux"
+			: p === "macos"
+				? "macOS"
+				: m.devices_platform_other();
 
-function EverywhereDialog({ open, onClose, count }: { open: boolean; onClose: () => void; count: number }) {
+function EverywhereDialog({
+	open,
+	onClose,
+	count,
+}: {
+	open: boolean;
+	onClose: () => void;
+	count: number;
+}) {
 	const qc = useQueryClient();
-	const out = useAction((_: void, api) => api.security.signOutEverywhere(), {
+	const out = useAction((_: undefined, api) => api.security.signOutEverywhere(), {
 		success: m.toast_signed_out_everywhere(),
-		invalidate: [qk.devices, qk.activity],
 		onSuccess: () => {
 			onClose();
-			void qc.invalidateQueries({ queryKey: qk.devices });
+			// this browser is signed out too: drop what it knew and let the guards send it to sign in
+			qc.clear();
+			window.location.assign("/sign-in");
 		},
 	});
 	return (
@@ -389,8 +644,7 @@ function EverywhereDialog({ open, onClose, count }: { open: boolean; onClose: ()
 			description={m.devices_everywhere_confirm_text({ count })}
 			confirmLabel={m.devices_everywhere_confirm()}
 			pending={out.isPending}
-			onConfirm={() => out.mutate()}
+			onConfirm={() => out.mutate(undefined)}
 		/>
 	);
 }
-

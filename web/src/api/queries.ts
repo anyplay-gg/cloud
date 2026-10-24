@@ -7,13 +7,13 @@ import type { PortalApi } from "./portal-api";
 
 export const qk = {
 	session: ["session"] as const,
-	passkeys: ["passkeys"] as const,
-	devices: ["devices"] as const,
-	activity: ["activity"] as const,
+	account: ["account"] as const,
 	privacy: ["privacy"] as const,
+	profile: ["profile"] as const,
 	friends: ["friends"] as const,
 	trophies: ["trophies"] as const,
-	profile: (handle: string) => ["profile", handle] as const,
+	user: (handle: string) => ["user", handle.toLowerCase()] as const,
+	ban: ["ban"] as const,
 };
 
 // A failed read is a state the screen shows with a retry; do not hammer the cloud behind it.
@@ -28,37 +28,57 @@ export const useSession = () => {
 		...noRetry,
 	});
 };
+
+/** `GET /account`: the passkeys, launchers, browsers, deletion and pending address, in one read. */
+export const useAccountView = () => {
+	const api = useApi();
+	return useQuery({ queryKey: qk.account, queryFn: () => api.account.get(), ...noRetry });
+};
 export const usePasskeys = () => {
 	const api = useApi();
-	return useQuery({ queryKey: qk.passkeys, queryFn: () => api.security.passkeys(), ...noRetry });
+	return useQuery({
+		queryKey: qk.account,
+		queryFn: () => api.account.get(),
+		select: (a) => a.passkeys,
+		...noRetry,
+	});
 };
 export const useDevices = () => {
 	const api = useApi();
-	return useQuery({ queryKey: qk.devices, queryFn: () => api.security.sessions(), ...noRetry });
-};
-export const useActivity = () => {
-	const api = useApi();
-	return useQuery({ queryKey: qk.activity, queryFn: () => api.account.activity(), ...noRetry });
+	return useQuery({
+		queryKey: qk.account,
+		queryFn: () => api.account.get(),
+		select: (a) => ({ devices: a.devices, sessions: a.sessions }),
+		...noRetry,
+	});
 };
 export const usePrivacy = () => {
 	const api = useApi();
-	return useQuery({ queryKey: qk.privacy, queryFn: () => api.privacy.get(), ...noRetry });
+	return useQuery({ queryKey: qk.privacy, queryFn: () => api.account.privacy(), ...noRetry });
+};
+export const useOwnProfile = () => {
+	const api = useApi();
+	return useQuery({ queryKey: qk.profile, queryFn: () => api.account.profile(), ...noRetry });
 };
 export const useFriends = () => {
 	const api = useApi();
-	return useQuery({ queryKey: qk.friends, queryFn: () => api.friends.overview(), ...noRetry });
+	return useQuery({ queryKey: qk.friends, queryFn: () => api.friends.lists(), ...noRetry });
 };
 export const useTrophies = () => {
 	const api = useApi();
-	return useQuery({ queryKey: qk.trophies, queryFn: () => api.trophies.summary(), ...noRetry });
+	return useQuery({ queryKey: qk.trophies, queryFn: () => api.trophies.mine(), ...noRetry });
 };
-export const usePublicProfile = (handle: string) => {
+export const usePublicUser = (handle: string) => {
 	const api = useApi();
 	return useQuery({
-		queryKey: qk.profile(handle),
-		queryFn: () => api.profiles.get(handle),
+		queryKey: qk.user(handle),
+		queryFn: () => api.users.get(handle),
 		...noRetry,
 	});
+};
+export const useBan = () => {
+	const api = useApi();
+	return useQuery({ queryKey: qk.ban, queryFn: () => api.auth.ban(), ...noRetry });
 };
 
 interface ActionOptions<V, R> {

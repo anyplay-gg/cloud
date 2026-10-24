@@ -17,7 +17,7 @@ export function Input({
 	return (
 		<BaseInput
 			ref={ref}
-			className={cn(controlClass, "h-9 px-3 text-body coarse:h-11", className as string)}
+			className={cn(controlClass, "halo h-9 px-3 text-body coarse:h-11", className as string)}
 			{...props}
 		/>
 	);

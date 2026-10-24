@@ -1,24 +1,25 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { usePageTitle } from "@/lib/use-page-title";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { KeyRound } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import * as motion from "motion/react-m";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { useApi } from "@/api/context";
 import { describeError, isApiError } from "@/api/errors";
-import { qk } from "@/api/queries";
-import type { AuthProgress, AuthStep, SignInIntent } from "@/api/types";
+import { qk, useSession } from "@/api/queries";
+import type { FlowStep, SessionView, SignInIntent } from "@/api/types";
 import { AuthLayout } from "@/components/auth-layout";
 import { m } from "@/i18n";
+import { usePageTitle } from "@/lib/use-page-title";
 import { Button } from "@/ui/button";
 import { Field } from "@/ui/field";
 import { Input } from "@/ui/input";
 import { OtpInput } from "@/ui/otp-input";
 import { Checkbox } from "@/ui/toggle";
+import { ReturnPanel } from "./return";
 
 type Step = "email" | "code" | "details" | "terms";
 
@@ -26,51 +27,59 @@ export interface AuthScreenProps {
 	mode: SignInIntent;
 	/** Where to go after sign-in: a same-origin path, checked by the route. */
 	next?: string;
-	/** The launcher sent the player here; finish on the "return to AnyPlay" page. */
-	handoff?: boolean;
 }
 
 const EASE_OUT = [0.23, 1, 0.32, 1] as const;
+const link =
+	"font-medium text-fg underline decoration-line-strong underline-offset-4 hover:decoration-fg";
 
-export function AuthScreen({ mode, next, handoff }: AuthScreenProps) {
+/**
+ * Sign in and create account. The cloud owns the state machine: every request answers with the
+ * session view, and `flow.step` says which step to show. The screen keeps nothing about the flow
+ * but one choice, "use a different e-mail", which only reopens the first step.
+ */
+export function AuthScreen({ mode, next }: AuthScreenProps) {
 	usePageTitle(mode === "sign_in" ? m.auth_signin_link() : m.auth_create_button());
 	const api = useApi();
 	const qc = useQueryClient();
 	const navigate = useNavigate();
-	const [step, setStep] = useState<Step>("email");
-	const [email, setEmail] = useState("");
-	const [hint, setHint] = useState("");
-	const [resendAt, setResendAt] = useState(0);
+	const session = useSession();
+	const view = session.data;
+	const [reopen, setReopen] = useState(false);
 	const [passkeyBusy, setPasskeyBusy] = useState(false);
 	const [passkeyError, setPasskeyError] = useState<string | null>(null);
 	const [support, setSupport] = useState({ available: false, conditional: false });
 	const direction = useRef(1);
 
-	const finish = useCallback(async () => {
-		await qc.invalidateQueries({ queryKey: qk.session });
-		if (handoff) await navigate({ to: "/return" });
-		else await navigate({ to: next ?? "/account" });
-	}, [qc, navigate, next, handoff]);
+	const step: FlowStep = view?.flow.step ?? "email";
+	const shown: Step = reopen
+		? "email"
+		: step === "code" || step === "details" || step === "terms"
+			? step
+			: "email";
 
-	const go = (to: Step, dir = 1) => {
-		direction.current = dir;
-		setStep(to);
+	const accept = (v: SessionView) => {
+		direction.current = 1;
+		setReopen(false);
+		qc.setQueryData(qk.session, v);
 	};
-	const advance = (p: AuthProgress) => {
-		const map: Record<AuthStep, Step | null> = {
-			code: "code",
-			details: "details",
-			terms: "terms",
-			done: null,
-		};
-		const to = map[p.next];
-		if (to) go(to);
-		else void finish();
-	};
+	const acceptRef = useRef(accept);
+	acceptRef.current = accept;
+
+	// Where the flow ends: the account, the launcher, or the ban statement.
+	const redirect = view?.flow.redirect;
+	useEffect(() => {
+		if (step === "done") void navigate({ to: next ?? "/account" });
+		else if (step === "banned") void navigate({ to: "/banned" });
+		else if (step === "handoff" && redirect) {
+			const id = window.setTimeout(() => window.location.assign(redirect), 900);
+			return () => window.clearTimeout(id);
+		}
+	}, [step, redirect, next, navigate]);
 
 	// Passkey autofill: the browser offers saved passkeys in the e-mail field's suggestions.
 	useEffect(() => {
-		if (mode !== "sign_in" || step !== "email") return;
+		if (mode !== "sign_in" || shown !== "email") return;
 		const ctrl = new AbortController();
 		let live = true;
 		void api.auth
@@ -81,7 +90,7 @@ export function AuthScreen({ mode, next, handoff }: AuthScreenProps) {
 				if (!s.conditional) return;
 				return api.auth
 					.signInWithPasskey({ conditional: true, signal: ctrl.signal })
-					.then((p) => live && advance(p));
+					.then((v) => live && acceptRef.current(v));
 			})
 			.catch(() => {
 				// closed, aborted or unsupported: the e-mail form still works
@@ -90,15 +99,13 @@ export function AuthScreen({ mode, next, handoff }: AuthScreenProps) {
 			live = false;
 			ctrl.abort();
 		};
-		// advance changes every render; the effect only depends on what starts a ceremony
-		// biome-ignore lint/correctness/useExhaustiveDependencies: see above
-	}, [api, mode, step]);
+	}, [api, mode, shown]);
 
 	const signInWithPasskey = async () => {
 		setPasskeyBusy(true);
 		setPasskeyError(null);
 		try {
-			advance(await api.auth.signInWithPasskey({ conditional: false }));
+			accept(await api.auth.signInWithPasskey({ conditional: false }));
 		} catch (e) {
 			if (isApiError(e) && e.code === "passkey_cancelled")
 				setPasskeyError(m.auth_passkey_cancelled());
@@ -108,40 +115,40 @@ export function AuthScreen({ mode, next, handoff }: AuthScreenProps) {
 		}
 	};
 
+	if (step === "handoff") {
+		return (
+			<AuthLayout>
+				<ReturnPanel handle={view?.account?.handle} />
+			</AuthLayout>
+		);
+	}
+
 	const heading =
-		step === "email"
+		shown === "email"
 			? mode === "sign_in"
 				? m.auth_signin_title()
 				: m.auth_create_title()
-			: step === "code"
+			: shown === "code"
 				? m.auth_code_title()
-				: step === "details"
+				: shown === "details"
 					? m.auth_details_title()
 					: m.auth_terms_title();
 
 	return (
 		<AuthLayout
 			footer={
-				step === "email" ? (
+				shown === "email" ? (
 					mode === "sign_in" ? (
 						<p className="text-body text-fg-muted">
 							{m.auth_new_here()}{" "}
-							<Link
-								to="/create"
-								search={{ next, handoff }}
-								className="font-medium text-fg underline decoration-line-strong underline-offset-4 hover:decoration-fg"
-							>
+							<Link to="/create" search={{ next }} className={link}>
 								{m.auth_create_link()}
 							</Link>
 						</p>
 					) : (
 						<p className="text-body text-fg-muted">
 							{m.auth_have_account()}{" "}
-							<Link
-								to="/sign-in"
-								search={{ next, handoff }}
-								className="font-medium text-fg underline decoration-line-strong underline-offset-4 hover:decoration-fg"
-							>
+							<Link to="/sign-in" search={{ next }} className={link}>
 								{m.auth_signin_link()}
 							</Link>
 						</p>
@@ -151,7 +158,7 @@ export function AuthScreen({ mode, next, handoff }: AuthScreenProps) {
 		>
 			<AnimatePresence mode="wait" initial={false}>
 				<motion.div
-					key={step}
+					key={shown}
 					initial={{ opacity: 0, x: 14 * direction.current }}
 					animate={{ opacity: 1, x: 0, transition: { duration: 0.2, ease: EASE_OUT } }}
 					exit={{
@@ -164,39 +171,40 @@ export function AuthScreen({ mode, next, handoff }: AuthScreenProps) {
 					<div>
 						<h1 className="text-heading font-semibold text-fg">{heading}</h1>
 						<p className="mt-2 text-body text-fg-muted">
-							{step === "email" &&
-								(mode === "sign_in" ? m.auth_signin_lead() : m.auth_create_lead())}
-							{step === "code" && m.auth_code_lead({ email: hint })}
-							{step === "details" && m.auth_details_lead({ email })}
-							{step === "terms" && m.auth_terms_lead()}
+							{shown === "email" &&
+								(view?.authorize
+									? m.auth_launcher_waiting({ device: view.authorize.device })
+									: mode === "sign_in"
+										? m.auth_signin_lead()
+										: m.auth_create_lead())}
+							{shown === "code" && m.auth_code_lead({ email: view?.flow.email ?? "" })}
+							{shown === "details" && m.auth_details_lead({ email: view?.flow.email ?? "" })}
+							{shown === "terms" && m.auth_terms_lead()}
 						</p>
 					</div>
 
-					{step === "email" ? (
+					{shown === "email" ? (
 						<EmailStep
 							mode={mode}
 							passkey={support.available && mode === "sign_in"}
 							passkeyBusy={passkeyBusy}
 							passkeyError={passkeyError}
 							onPasskey={signInWithPasskey}
-							onSent={(e, challenge) => {
-								setEmail(e);
-								setHint(challenge.emailHint);
-								setResendAt(Date.now() + challenge.resendAfter * 1000);
-								go("code");
-							}}
+							onView={accept}
 						/>
 					) : null}
-					{step === "code" ? (
+					{shown === "code" ? (
 						<CodeStep
-							resendAt={resendAt}
-							onResent={(secs) => setResendAt(Date.now() + secs * 1000)}
-							onBack={() => go("email", -1)}
-							onVerified={advance}
+							notice={view?.notice ?? null}
+							onBack={() => {
+								direction.current = -1;
+								setReopen(true);
+							}}
+							onView={accept}
 						/>
 					) : null}
-					{step === "details" ? <DetailsStep onDone={advance} /> : null}
-					{step === "terms" ? <TermsStep onDone={advance} /> : null}
+					{shown === "details" ? <DetailsStep terms={view?.flow.terms} onView={accept} /> : null}
+					{shown === "terms" ? <TermsStep terms={view?.flow.terms} onView={accept} /> : null}
 				</motion.div>
 			</AnimatePresence>
 		</AuthLayout>
@@ -209,14 +217,14 @@ function EmailStep({
 	passkeyBusy,
 	passkeyError,
 	onPasskey,
-	onSent,
+	onView,
 }: {
 	mode: SignInIntent;
 	passkey: boolean;
 	passkeyBusy: boolean;
 	passkeyError: string | null;
 	onPasskey: () => void;
-	onSent: (email: string, c: { emailHint: string; resendAfter: number }) => void;
+	onView: (v: SessionView) => void;
 }) {
 	const api = useApi();
 	const schema = useMemo(() => z.object({ email: z.email({ error: m.auth_email_invalid() }) }), []);
@@ -232,11 +240,9 @@ function EmailStep({
 
 	const submit = handleSubmit(async ({ email }) => {
 		try {
-			onSent(email, await api.auth.start({ email, intent: mode }));
+			onView(await api.auth.start({ email, intent: mode }));
 		} catch (e) {
-			setError("email", {
-				message: isApiError(e) ? (e.fields.email ?? describeError(e)) : describeError(e),
-			});
+			setError("email", { message: describeError(e) });
 		}
 	});
 
@@ -252,7 +258,6 @@ function EmailStep({
 						autoCapitalize="none"
 						spellCheck={false}
 						placeholder={m.auth_email_placeholder()}
-						// biome-ignore lint/a11y/noAutofocus: the page has exactly one field
 						autoFocus
 						{...register("email")}
 					/>
@@ -285,34 +290,34 @@ function EmailStep({
 	);
 }
 
-function useCountdown(until: number) {
-	const [left, setLeft] = useState(() => Math.max(0, Math.ceil((until - Date.now()) / 1000)));
+const RESEND_AFTER = 30;
+
+function useCountdown(from: number) {
+	const [left, setLeft] = useState(() => Math.max(0, Math.ceil((from - Date.now()) / 1000)));
 	useEffect(() => {
-		const tick = () => setLeft(Math.max(0, Math.ceil((until - Date.now()) / 1000)));
+		const tick = () => setLeft(Math.max(0, Math.ceil((from - Date.now()) / 1000)));
 		tick();
 		const id = window.setInterval(tick, 1000);
 		return () => window.clearInterval(id);
-	}, [until]);
+	}, [from]);
 	return left;
 }
 
 function CodeStep({
-	resendAt,
-	onResent,
+	notice,
 	onBack,
-	onVerified,
+	onView,
 }: {
-	resendAt: number;
-	onResent: (seconds: number) => void;
+	notice: string | null;
 	onBack: () => void;
-	onVerified: (p: AuthProgress) => void;
+	onView: (v: SessionView) => void;
 }) {
 	const api = useApi();
 	const [code, setCode] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [resending, setResending] = useState(false);
-	const [sentNote, setSentNote] = useState(false);
+	const [resendAt, setResendAt] = useState(() => Date.now() + RESEND_AFTER * 1000);
 	const left = useCountdown(resendAt);
 
 	const verify = async (value: string) => {
@@ -320,10 +325,10 @@ function CodeStep({
 		setBusy(true);
 		setError(null);
 		try {
-			onVerified(await api.auth.verifyCode(value));
+			onView(await api.auth.verifyCode(value));
 		} catch (e) {
 			setCode("");
-			setError(isApiError(e) && e.fields.code ? e.fields.code : describeError(e));
+			setError(describeError(e));
 		} finally {
 			setBusy(false);
 		}
@@ -333,9 +338,8 @@ function CodeStep({
 		setResending(true);
 		setError(null);
 		try {
-			const c = await api.auth.resendCode();
-			onResent(c.resendAfter);
-			setSentNote(true);
+			onView(await api.auth.resendCode());
+			setResendAt(Date.now() + RESEND_AFTER * 1000);
 			setCode("");
 		} catch (e) {
 			setError(describeError(e));
@@ -355,10 +359,7 @@ function CodeStep({
 			<Field label={m.auth_code_label()} error={error}>
 				<OtpInput
 					value={code}
-					onChange={(v) => {
-						setCode(v);
-						setSentNote(false);
-					}}
+					onChange={setCode}
 					onComplete={(v) => void verify(v)}
 					invalid={Boolean(error)}
 					disabled={busy}
@@ -384,13 +385,33 @@ function CodeStep({
 				</Button>
 			</div>
 			<p role="status" className="-mt-2 min-h-5 text-small text-fg-muted">
-				{sentNote ? m.auth_resent() : ""}
+				{notice ?? ""}
 			</p>
 		</form>
 	);
 }
 
-function DetailsStep({ onDone }: { onDone: (p: AuthProgress) => void }) {
+function TermsLabel({ terms }: { terms?: { version: string; url: string | null } }) {
+	if (!terms?.url) return <>{m.auth_terms_accept_plain()}</>;
+	return (
+		<>
+			{m.auth_terms_accept_pre()}{" "}
+			<a href={terms.url} target="_blank" rel="noopener noreferrer" className={link}>
+				{m.auth_terms_link()}
+				<span className="sr-only"> {m.common_new_tab()}</span>
+			</a>
+			{terms.version ? ` (${m.auth_terms_version({ version: terms.version })})` : null}.
+		</>
+	);
+}
+
+function DetailsStep({
+	terms,
+	onView,
+}: {
+	terms?: { version: string; url: string | null };
+	onView: (v: SessionView) => void;
+}) {
 	const api = useApi();
 	const schema = useMemo(
 		() =>
@@ -399,31 +420,53 @@ function DetailsStep({ onDone }: { onDone: (p: AuthProgress) => void }) {
 					.string()
 					.trim()
 					.regex(/^[A-Za-z][A-Za-z0-9_-]{2,15}$/, { error: m.auth_handle_rules() }),
-				displayName: z.string().trim().max(40, { error: m.auth_display_name_long() }),
+				ageConfirmed: z.boolean().refine((v) => v, { error: m.auth_age_required() }),
+				termsAccepted: terms
+					? z.boolean().refine((v) => v, { error: m.auth_terms_required() })
+					: z.boolean(),
 			}),
-		[],
+		[terms],
 	);
 	const {
 		register,
 		handleSubmit,
 		setError,
+		watch,
+		setValue,
 		formState: { errors, isSubmitting },
 	} = useForm<z.infer<typeof schema>>({
 		resolver: zodResolver(schema),
-		defaultValues: { handle: "", displayName: "" },
+		defaultValues: { handle: "", ageConfirmed: false, termsAccepted: false },
 	});
 
 	const submit = handleSubmit(async (values) => {
 		try {
-			onDone(await api.auth.submitDetails(values));
+			onView(
+				await api.auth.submitDetails({
+					...values,
+					termsAccepted: terms ? values.termsAccepted : true,
+				}),
+			);
 		} catch (e) {
-			if (isApiError(e) && e.fields.handle) setError("handle", { message: e.fields.handle });
-			else setError("handle", { message: describeError(e) });
+			const map: Record<string, "handle" | "ageConfirmed" | "termsAccepted"> = {
+				handle: "handle",
+				age_confirmed: "ageConfirmed",
+				terms_accepted: "termsAccepted",
+			};
+			if (isApiError(e)) {
+				const field = Object.keys(e.fields)[0];
+				const target = field ? map[field] : undefined;
+				if (field && target) {
+					setError(target, { message: e.fields[field] });
+					return;
+				}
+			}
+			setError("handle", { message: describeError(e) });
 		}
 	});
 
 	return (
-		<form onSubmit={submit} noValidate className="flex flex-col gap-4">
+		<form onSubmit={submit} noValidate className="flex flex-col gap-5">
 			<Field
 				label={m.auth_handle_label()}
 				description={m.auth_handle_hint()}
@@ -434,40 +477,91 @@ function DetailsStep({ onDone }: { onDone: (p: AuthProgress) => void }) {
 					autoCapitalize="none"
 					spellCheck={false}
 					className="font-mono"
-					// biome-ignore lint/a11y/noAutofocus: first field of the step
 					autoFocus
 					{...register("handle")}
 				/>
 			</Field>
-			<Field label={m.auth_display_name_label()} optional error={errors.displayName?.message}>
-				<Input autoComplete="name" {...register("displayName")} />
-			</Field>
+			<fieldset className="flex flex-col gap-4">
+				<legend className="sr-only">{m.auth_terms_title()}</legend>
+				{terms ? (
+					<CheckRow
+						checked={watch("termsAccepted")}
+						onChange={(v) => setValue("termsAccepted", v, { shouldValidate: true })}
+						error={errors.termsAccepted?.message}
+					>
+						<TermsLabel terms={terms} />
+					</CheckRow>
+				) : null}
+				<CheckRow
+					checked={watch("ageConfirmed")}
+					onChange={(v) => setValue("ageConfirmed", v, { shouldValidate: true })}
+					error={errors.ageConfirmed?.message}
+					hint={m.auth_age_hint()}
+				>
+					{m.auth_age_label()}
+				</CheckRow>
+			</fieldset>
 			<Button type="submit" variant="primary" size="lg" loading={isSubmitting}>
-				{m.common_continue()}
+				{m.auth_create_button()}
 			</Button>
 		</form>
 	);
 }
 
-function TermsStep({ onDone }: { onDone: (p: AuthProgress) => void }) {
+function CheckRow({
+	checked,
+	onChange,
+	error,
+	hint,
+	children,
+}: {
+	checked: boolean;
+	onChange: (v: boolean) => void;
+	error?: string;
+	hint?: string;
+	children: React.ReactNode;
+}) {
+	return (
+		<div>
+			{/* biome-ignore lint/a11y/noLabelWithoutControl: the Base UI checkbox inside is the control */}
+			<label className="flex items-start gap-3 text-body">
+				<Checkbox checked={checked} onCheckedChange={onChange} className="mt-0.5" />
+				<span>
+					{children}
+					{hint ? <span className="mt-0.5 block text-small text-fg-muted">{hint}</span> : null}
+				</span>
+			</label>
+			{error ? (
+				<p role="alert" className="mt-1.5 ps-[1.875rem] text-small text-danger-text">
+					{error}
+				</p>
+			) : null}
+		</div>
+	);
+}
+
+/** The terms changed since the player last agreed. */
+function TermsStep({
+	terms,
+	onView,
+}: {
+	terms?: { version: string; url: string | null };
+	onView: (v: SessionView) => void;
+}) {
 	const api = useApi();
-	const qc = useQueryClient();
-	const session = qc.getQueryData<{ terms?: { url: string | null; version: string } }>(qk.session);
-	const terms = session?.terms ?? { url: null, version: "" };
-	const [age, setAge] = useState(false);
 	const [accepted, setAccepted] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 
 	const submit = async () => {
-		if (!age || !accepted) {
+		if (!accepted) {
 			setError(m.auth_terms_required());
 			return;
 		}
 		setBusy(true);
 		setError(null);
 		try {
-			onDone(await api.auth.acceptTerms());
+			onView(await api.auth.acceptTerms());
 		} catch (e) {
 			setError(describeError(e));
 		} finally {
@@ -483,45 +577,11 @@ function TermsStep({ onDone }: { onDone: (p: AuthProgress) => void }) {
 				void submit();
 			}}
 		>
-			<fieldset className="flex flex-col gap-4">
-				<legend className="sr-only">{m.auth_terms_title()}</legend>
-				<label className="flex items-start gap-3 text-body">
-					<Checkbox checked={accepted} onCheckedChange={setAccepted} className="mt-0.5" />
-					<span>
-						{terms.url ? (
-							<>
-								{m.auth_terms_accept_pre()}{" "}
-								<a
-									href={terms.url}
-									target="_blank"
-									rel="noopener noreferrer"
-									className="font-medium underline decoration-line-strong underline-offset-4 hover:decoration-fg"
-								>
-									{m.auth_terms_link()}
-									<span className="sr-only"> {m.common_new_tab()}</span>
-								</a>
-								{terms.version ? ` (${m.auth_terms_version({ version: terms.version })})` : null}.
-							</>
-						) : (
-							m.auth_terms_accept_plain()
-						)}
-					</span>
-				</label>
-				<label className="flex items-start gap-3 text-body">
-					<Checkbox checked={age} onCheckedChange={setAge} className="mt-0.5" />
-					<span>
-						{m.auth_age_label()}
-						<span className="mt-0.5 block text-small text-fg-muted">{m.auth_age_hint()}</span>
-					</span>
-				</label>
-			</fieldset>
-			{error ? (
-				<p role="alert" className="text-small text-danger-text">
-					{error}
-				</p>
-			) : null}
+			<CheckRow checked={accepted} onChange={setAccepted} error={error ?? undefined}>
+				<TermsLabel terms={terms} />
+			</CheckRow>
 			<Button type="submit" variant="primary" size="lg" loading={busy}>
-				{m.auth_create_button()}
+				{m.auth_terms_continue()}
 			</Button>
 		</form>
 	);

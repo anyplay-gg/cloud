@@ -11,13 +11,13 @@ export const Route = createFileRoute("/sign-in")({
 			queryFn: () => context.api.session(),
 			staleTime: 60_000,
 		});
-		if (s.signedIn)
-			throw redirect({ to: search.handoff ? "/return" : (search.next ?? "/account") });
+		if (s.signedIn && s.flow.step === "banned") throw redirect({ to: "/banned" });
+		if (s.signedIn && s.flow.step === "done") throw redirect({ to: search.next ?? "/account" });
 	},
 	component: SignIn,
 });
 
 function SignIn() {
-	const { next, handoff } = Route.useSearch();
-	return <AuthScreen mode="sign_in" next={next} handoff={handoff} />;
+	const { next } = Route.useSearch();
+	return <AuthScreen mode="sign_in" next={next} />;
 }

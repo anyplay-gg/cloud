@@ -9,5 +9,4 @@ export const safeNext = z
 
 export const authSearch = z.object({
 	next: safeNext,
-	handoff: z.boolean().optional().catch(undefined),
 });

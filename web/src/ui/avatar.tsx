@@ -11,11 +11,13 @@ const SIZE = {
 } as const;
 
 export function initialsOf(name: string): string {
-	const parts = name.trim().split(/\s+/).filter(Boolean);
+	const parts = name
+		.trim()
+		.split(/[s_-]+/)
+		.filter(Boolean);
 	if (parts.length === 0) return "?";
-	const first = parts[0]?.[0] ?? "?";
-	const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? "") : "";
-	return (first + last).toUpperCase();
+	if (parts.length === 1) return (parts[0] ?? "?").slice(0, 2).toUpperCase();
+	return ((parts[0]?.[0] ?? "") + (parts[parts.length - 1]?.[0] ?? "")).toUpperCase();
 }
 
 export interface AvatarProps {
@@ -86,5 +88,40 @@ export function PresenceDot({ status }: { status: "online" | "away" | "offline" 
 				status === "offline" && "bg-fg-faint",
 			)}
 		/>
+	);
+}
+
+/** Overlapping avatars with a "+n" for the rest. The group is one image with one description. */
+export function AvatarGroup({
+	people,
+	max = 4,
+	label,
+	size = "sm",
+}: {
+	people: { name: string; accent: AccentKey }[];
+	max?: number;
+	label: string;
+	size?: "xs" | "sm" | "md";
+}) {
+	const shown = people.slice(0, max);
+	const rest = people.length - shown.length;
+	return (
+		<span role="img" aria-label={label} className="flex items-center">
+			{shown.map((p, i) => (
+				<span key={p.name} className={cn("rounded-full ring-2 ring-surface", i > 0 && "-ms-2")}>
+					<Avatar name={p.name} accent={p.accent} size={size} />
+				</span>
+			))}
+			{rest > 0 ? (
+				<span
+					className={cn(
+						"nums -ms-2 flex items-center justify-center rounded-full bg-raised text-caption font-semibold text-fg-muted ring-2 ring-surface",
+						SIZE[size],
+					)}
+				>
+					+{rest}
+				</span>
+			) : null}
+		</span>
 	);
 }

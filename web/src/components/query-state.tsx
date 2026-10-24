@@ -38,5 +38,5 @@ export function QueryView<T>({
 		);
 	}
 	if (isEmpty?.(query.data) && empty) return <>{empty}</>;
-	return <>{children(query.data)}</>;
+	return <div className="fade-in">{children(query.data)}</div>;
 }

@@ -1,38 +1,37 @@
 import { Link } from "@tanstack/react-router";
-import { usePageTitle } from "@/lib/use-page-title";
 import {
 	ArrowUpRight,
 	CircleCheck,
-	KeyRound,
-	LogIn,
-	LogOut,
+	Globe,
 	type LucideIcon,
+	Monitor,
 	PencilLine,
 	ShieldAlert,
 	TriangleAlert,
-	UserRound,
 } from "lucide-react";
 import * as motion from "motion/react-m";
 import {
 	qk,
+	useAccountView,
 	useAction,
-	useActivity,
-	useDevices,
 	useFriends,
-	usePasskeys,
+	useOwnProfile,
 	useSession,
 	useTrophies,
 } from "@/api/queries";
-import type { ActivityEvent, ActivityKind, Me } from "@/api/types";
+import type { Me } from "@/api/types";
 import { Page, PageHeader, Section } from "@/components/layout";
 import { ProfileBanner } from "@/components/profile-banner";
 import { QueryView } from "@/components/query-state";
 import { m } from "@/i18n";
-import { cn } from "@/lib/cn";
 import { daysUntil, formatDate, formatNumber, relativeTime } from "@/lib/format";
-import { Avatar } from "@/ui/avatar";
+import { accentFor, avatarUrl, themeFor } from "@/lib/identity";
+import { total } from "@/lib/trophies";
+import { usePageTitle } from "@/lib/use-page-title";
+import { Avatar, AvatarGroup } from "@/ui/avatar";
 import { Button, buttonClass } from "@/ui/button";
-import { EmptyState, Skeleton } from "@/ui/feedback";
+import { Skeleton } from "@/ui/feedback";
+import { RollingNumber } from "@/ui/rolling-number";
 
 const EASE_OUT = [0.23, 1, 0.32, 1] as const;
 
@@ -55,35 +54,36 @@ export function Overview() {
 	usePageTitle(m.nav_overview());
 	const me = useSession().data?.account;
 	if (!me) return null;
-	const first = me.displayName.split(" ")[0] ?? me.displayName;
 	return (
 		<Page width="wide">
-			<PageHeader title={m.overview_title({ name: first })} description={m.overview_lead()} />
-			{me.deletion ? <DeletionNotice me={me} /> : null}
+			<PageHeader title={m.overview_title({ name: me.handle })} description={m.overview_lead()} />
+			<DeletionNotice />
 			<motion.div {...stage(0)}>
 				<IdentityCard me={me} />
 			</motion.div>
 			<motion.div {...stage(1)}>
 				<StatStrip />
 			</motion.div>
-			<div className="grid gap-8 lg:grid-cols-2">
+			<div className="grid gap-10 lg:grid-cols-2">
 				<motion.div {...stage(2)}>
 					<SecuritySummary />
 				</motion.div>
 				<motion.div {...stage(3)}>
-					<RecentActivity />
+					<SignedIn />
 				</motion.div>
 			</div>
 		</Page>
 	);
 }
 
-function DeletionNotice({ me }: { me: Me }) {
-	const cancel = useAction((_: void, api) => api.data.cancelDeletion(), {
+function DeletionNotice() {
+	const account = useAccountView();
+	const cancel = useAction((_: undefined, api) => api.data.cancelDeletion(), {
 		success: m.toast_deletion_cancelled(),
-		invalidate: [qk.session],
+		invalidate: [qk.account],
 	});
-	if (!me.deletion) return null;
+	const deletion = account.data?.deletion;
+	if (!deletion) return null;
 	return (
 		<div
 			role="status"
@@ -93,14 +93,18 @@ function DeletionNotice({ me }: { me: Me }) {
 				<TriangleAlert aria-hidden className="mt-0.5 size-5 shrink-0 text-warning-text" />
 				<div>
 					<p className="text-body font-semibold text-fg">
-						{m.deletion_banner_title({ date: formatDate(me.deletion.scheduledFor) })}
+						{m.deletion_banner_title({ date: formatDate(deletion.at) })}
 					</p>
 					<p className="mt-0.5 text-body text-fg-muted">
-						{m.deletion_banner_body({ days: daysUntil(me.deletion.scheduledFor) })}
+						{m.deletion_banner_body({ days: daysUntil(deletion.at) })}
 					</p>
 				</div>
 			</div>
-			<Button variant="secondary" onClick={() => cancel.mutate()} loading={cancel.isPending}>
+			<Button
+				variant="secondary"
+				onClick={() => cancel.mutate(undefined)}
+				loading={cancel.isPending}
+			>
 				{m.deletion_cancel()}
 			</Button>
 		</div>
@@ -109,23 +113,26 @@ function DeletionNotice({ me }: { me: Me }) {
 
 /** The profile as others see it, in small: banner, avatar, name, one line about you. */
 function IdentityCard({ me }: { me: Me }) {
+	const profile = useOwnProfile();
+	const about = profile.data?.about;
 	return (
 		<section
 			aria-label={m.overview_profile_label()}
 			className="overflow-hidden rounded-xl bg-surface shadow-card"
 		>
-			<ProfileBanner theme={me.theme} className="h-24 sm:h-28" />
+			<ProfileBanner theme={themeFor(me.handle)} className="h-24 sm:h-28" />
 			<div className="relative flex flex-col gap-4 px-5 pb-5 sm:flex-row sm:items-start sm:justify-between">
 				<div className="flex min-w-0 items-start gap-4">
 					<Avatar
-						name={me.displayName}
-						accent={me.accent}
+						name={me.handle}
+						accent={accentFor(me.handle)}
+						src={avatarUrl(profile.data?.avatar)}
 						size="lg"
 						className="-mt-8 rounded-full ring-4 ring-surface"
 					/>
 					<div className="min-w-0 pt-2.5">
-						<p className="truncate text-lead font-semibold text-fg">{me.displayName}</p>
-						<p className="truncate font-mono text-small text-fg-muted">@{me.handle}</p>
+						<p className="truncate font-mono text-lead font-semibold text-fg">@{me.handle}</p>
+						<p className="truncate text-small text-fg-muted">{me.email}</p>
 					</div>
 				</div>
 				<div className="flex items-center gap-3 sm:pt-3">
@@ -144,7 +151,13 @@ function IdentityCard({ me }: { me: Me }) {
 				</div>
 			</div>
 			<p className="px-5 pb-5 text-body text-fg-muted">
-				{me.about ? <span className="text-fg">{me.about}</span> : m.overview_no_about()}
+				{profile.isPending ? (
+					<Skeleton className="h-4 w-64 max-w-full" />
+				) : about ? (
+					<span className="text-fg">{about}</span>
+				) : (
+					m.overview_no_about()
+				)}
 			</p>
 		</section>
 	);
@@ -153,8 +166,8 @@ function IdentityCard({ me }: { me: Me }) {
 function StatStrip() {
 	const trophies = useTrophies();
 	const friends = useFriends();
-	const passkeys = usePasskeys();
-	const devices = useDevices();
+	const account = useAccountView();
+	const online = friends.data?.friends.filter((f) => f.presence.online) ?? [];
 	return (
 		<section aria-label={m.overview_stats_label()}>
 			<ul className="grid grid-cols-2 gap-px overflow-hidden rounded-xl bg-line shadow-card lg:grid-cols-4">
@@ -162,50 +175,66 @@ function StatStrip() {
 					to="/account/trophies"
 					label={m.nav_trophies()}
 					loading={trophies.isPending}
-					value={trophies.data ? `${trophies.data.percent}%` : undefined}
+					error={trophies.isError}
+					value={trophies.data ? total(trophies.data.counts) : undefined}
+					rolling
 					note={
 						trophies.data
 							? m.overview_trophy_note({ count: trophies.data.titles.length })
 							: undefined
 					}
-					error={trophies.isError}
 				/>
 				<Stat
 					to="/account/friends"
 					label={m.nav_friends()}
 					loading={friends.isPending}
-					value={friends.data ? formatNumber(friends.data.friends.length) : undefined}
+					error={friends.isError}
+					value={friends.data?.friends.length}
+					highlight={(friends.data?.incoming.length ?? 0) > 0}
 					note={
 						friends.data
 							? friends.data.incoming.length > 0
 								? m.overview_friends_requests({ count: friends.data.incoming.length })
-								: m.overview_friends_none()
+								: m.overview_friends_online({ count: online.length })
 							: undefined
 					}
-					highlight={(friends.data?.incoming.length ?? 0) > 0}
-					error={friends.isError}
+					extra={
+						online.length > 0 ? (
+							<AvatarGroup
+								people={online.map((f) => ({
+									name: f.account.handle,
+									accent: accentFor(f.account.handle),
+								}))}
+								label={m.friends_online_group({ count: online.length })}
+								size="xs"
+								max={3}
+							/>
+						) : undefined
+					}
 				/>
 				<Stat
 					to="/account/security"
 					label={m.overview_passkeys()}
-					loading={passkeys.isPending}
-					value={passkeys.data ? formatNumber(passkeys.data.length) : undefined}
+					loading={account.isPending}
+					error={account.isError}
+					value={account.data?.passkeys.length}
 					note={
-						passkeys.data
-							? passkeys.data.length === 0
+						account.data
+							? account.data.passkeys.length === 0
 								? m.overview_passkeys_none()
 								: m.overview_passkeys_note()
 							: undefined
 					}
-					error={passkeys.isError}
 				/>
 				<Stat
 					to="/account/security"
 					label={m.overview_devices()}
-					loading={devices.isPending}
-					value={devices.data ? formatNumber(devices.data.length) : undefined}
-					note={devices.data ? m.overview_devices_note() : undefined}
-					error={devices.isError}
+					loading={account.isPending}
+					error={account.isError}
+					value={
+						account.data ? account.data.devices.length + account.data.sessions.length : undefined
+					}
+					note={account.data ? m.overview_devices_note() : undefined}
 				/>
 			</ul>
 		</section>
@@ -220,14 +249,18 @@ function Stat({
 	loading,
 	error,
 	highlight,
+	rolling,
+	extra,
 }: {
 	to: "/account/trophies" | "/account/friends" | "/account/security";
 	label: string;
-	value?: string;
+	value?: number;
 	note?: string;
 	loading?: boolean;
 	error?: boolean;
 	highlight?: boolean;
+	rolling?: boolean;
+	extra?: React.ReactNode;
 }) {
 	return (
 		<li className="bg-surface">
@@ -255,14 +288,22 @@ function Stat({
 					</>
 				) : (
 					<>
-						<span className="nums text-display font-semibold text-fg">{value}</span>
-						<span
-							className={cn(
-								"text-small",
-								highlight ? "font-medium text-accent-text" : "text-fg-muted",
+						<span className="text-display font-semibold text-fg">
+							{rolling && value !== undefined ? (
+								<RollingNumber value={value} />
+							) : (
+								<span className="nums">{value === undefined ? "" : formatNumber(value)}</span>
 							)}
-						>
-							{note}
+						</span>
+						<span className="flex items-center gap-2">
+							{extra}
+							<span
+								className={
+									highlight ? "text-small font-medium text-accent-text" : "text-small text-fg-muted"
+								}
+							>
+								{note}
+							</span>
 						</span>
 					</>
 				)}
@@ -272,24 +313,24 @@ function Stat({
 }
 
 function SecuritySummary() {
-	const passkeys = usePasskeys();
-	const devices = useDevices();
-	const hasPasskey = (passkeys.data?.length ?? 0) > 0;
+	const account = useAccountView();
+	const hasPasskey = (account.data?.passkeys.length ?? 0) > 0;
+	const pending = account.isPending;
 	const items: { ok: boolean | undefined; title: string; text: string }[] = [
 		{
-			ok: passkeys.isPending ? undefined : hasPasskey,
+			ok: pending ? undefined : hasPasskey,
 			title: hasPasskey ? m.overview_check_passkey_ok() : m.overview_check_passkey_todo(),
 			text: hasPasskey ? m.overview_check_passkey_ok_text() : m.overview_check_passkey_todo_text(),
 		},
+		{ ok: true, title: m.overview_check_email_ok(), text: m.overview_check_email_ok_text() },
 		{
-			ok: true,
-			title: m.overview_check_email_ok(),
-			text: m.overview_check_email_ok_text(),
-		},
-		{
-			ok: devices.isPending ? undefined : true,
+			ok: pending ? undefined : true,
 			title: m.overview_check_devices(),
-			text: devices.data ? m.overview_check_devices_text({ count: devices.data.length }) : "",
+			text: account.data
+				? m.overview_check_devices_text({
+						count: account.data.devices.length + account.data.sessions.length,
+					})
+				: "",
 		},
 	];
 	return (
@@ -324,22 +365,23 @@ function SecuritySummary() {
 	);
 }
 
-const ACTIVITY: Record<ActivityKind, { icon: LucideIcon; label: () => string }> = {
-	sign_in: { icon: LogIn, label: () => m.activity_sign_in() },
-	passkey_added: { icon: KeyRound, label: () => m.activity_passkey_added() },
-	passkey_removed: { icon: KeyRound, label: () => m.activity_passkey_removed() },
-	device_signed_out: { icon: LogOut, label: () => m.activity_device_signed_out() },
-	signed_out_everywhere: { icon: LogOut, label: () => m.activity_signed_out_everywhere() },
-	profile_updated: { icon: UserRound, label: () => m.activity_profile_updated() },
-};
-
-function RecentActivity() {
-	const activity = useActivity();
+/** The most recently used launchers and browsers, so a stranger among them is easy to spot. */
+function SignedIn() {
+	const account = useAccountView();
 	return (
-		<Section title={m.overview_activity()} description={m.overview_activity_lead()} flush>
+		<Section
+			title={m.devices_title()}
+			description={m.overview_signed_in_lead()}
+			flush
+			actions={
+				<Link to="/account/security" className={buttonClass({ variant: "ghost", size: "sm" })}>
+					{m.overview_manage()}
+				</Link>
+			}
+		>
 			<QueryView
-				query={activity}
-				loadingLabel={m.overview_activity_loading()}
+				query={account}
+				loadingLabel={m.devices_loading()}
 				loading={
 					<ul className="divide-y divide-line">
 						{[0, 1, 2].map((i) => (
@@ -353,41 +395,59 @@ function RecentActivity() {
 						))}
 					</ul>
 				}
-				isEmpty={(d) => d.length === 0}
-				empty={
-					<EmptyState
-						title={m.overview_activity_empty()}
-						description={m.overview_activity_empty_text()}
-					/>
-				}
+				errorTitle={m.devices_error()}
 			>
-				{(events) => (
-					<ul className="divide-y divide-line">
-						{events.slice(0, 5).map((e) => (
-							<ActivityRow key={e.id} event={e} />
-						))}
-					</ul>
-				)}
+				{(a) => {
+					const rows: {
+						key: string;
+						icon: LucideIcon;
+						title: string;
+						detail: string;
+						at: number;
+						current: boolean;
+					}[] = [
+						...a.devices.map((d) => ({
+							key: `d${d.id}`,
+							icon: Monitor,
+							title: d.name,
+							detail: m.devices_launcher(),
+							at: d.lastUsed,
+							current: false,
+						})),
+						...a.sessions.map((s) => ({
+							key: `s${s.id}`,
+							icon: Globe,
+							title: s.current ? m.devices_this_browser() : m.devices_browser(),
+							detail: m.devices_signed_in_since({ date: formatDate(s.created, "medium") }),
+							at: s.lastUsed,
+							current: s.current,
+						})),
+					]
+						.sort((x, y) => y.at - x.at)
+						.slice(0, 4);
+					return (
+						<ul className="divide-y divide-line">
+							{rows.map((r) => (
+								<li key={r.key} className="flex items-center gap-3 px-5 py-3.5">
+									<span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-raised text-fg-muted shadow-[inset_0_0_0_1px_var(--line)]">
+										<r.icon aria-hidden strokeWidth={1.75} className="size-4" />
+									</span>
+									<div className="min-w-0 flex-1">
+										<p className="truncate text-body font-medium text-fg">{r.title}</p>
+										<p className="truncate text-small text-fg-muted">{r.detail}</p>
+									</div>
+									<time
+										dateTime={new Date(r.at * 1000).toISOString()}
+										className="shrink-0 text-small text-fg-muted"
+									>
+										{r.current ? m.devices_active_now() : relativeTime(r.at)}
+									</time>
+								</li>
+							))}
+						</ul>
+					);
+				}}
 			</QueryView>
 		</Section>
-	);
-}
-
-function ActivityRow({ event }: { event: ActivityEvent }) {
-	const def = ACTIVITY[event.kind];
-	const Icon = def.icon;
-	return (
-		<li className="flex items-center gap-3 px-5 py-3.5">
-			<span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-raised text-fg-muted shadow-[inset_0_0_0_1px_var(--line)]">
-				<Icon aria-hidden strokeWidth={1.75} className="size-4" />
-			</span>
-			<div className="min-w-0 flex-1">
-				<p className="truncate text-body font-medium text-fg">{def.label()}</p>
-				{event.detail ? <p className="truncate text-small text-fg-muted">{event.detail}</p> : null}
-			</div>
-			<time dateTime={event.at} className="shrink-0 text-small text-fg-muted">
-				{relativeTime(event.at)}
-			</time>
-		</li>
 	);
 }

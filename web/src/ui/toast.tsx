@@ -1,6 +1,7 @@
 import { Toast } from "@base-ui/react/toast";
 import { CircleAlert, CircleCheck, X } from "lucide-react";
 import type { ReactNode } from "react";
+import { m } from "@/i18n";
 
 /**
  * Sonner was the first choice, but it injects a <style> element at runtime and the CSP is
@@ -15,6 +16,22 @@ export const toast = {
 	error: (title: string, description?: string) =>
 		manager.add({ title, description, type: "error", timeout: 0 }),
 	dismiss: (id?: string) => manager.close(id),
+	/** A toast with an Undo button that lives for `ms`. Pressing it closes the toast. */
+	undoable: (title: string, onUndo: () => void, ms: number) => {
+		const id: string = manager.add({
+			title,
+			type: "undo",
+			timeout: ms,
+			actionProps: {
+				children: m.common_undo(),
+				onClick: () => {
+					onUndo();
+					manager.close(id);
+				},
+			},
+		});
+		return id;
+	},
 };
 
 export function ToastProvider({ children }: { children: ReactNode }) {
@@ -51,6 +68,9 @@ function Toasts() {
 					<Toast.Title className="text-body font-medium" />
 					<Toast.Description className="mt-0.5 text-small text-fg-muted" />
 				</div>
+				{t.actionProps ? (
+					<Toast.Action className="press -my-1 h-8 shrink-0 rounded-md bg-raised px-3 text-small font-medium text-fg shadow-[inset_0_0_0_1px_var(--line-strong)] pointer-hover:hover:bg-hover coarse:h-11" />
+				) : null}
 				<Toast.Close
 					aria-label="Dismiss"
 					className="press -m-1.5 flex size-8 shrink-0 items-center justify-center rounded-md text-fg-muted pointer-hover:hover:bg-hover pointer-hover:hover:text-fg coarse:size-11"

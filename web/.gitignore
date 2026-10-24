@@ -5,3 +5,4 @@ src/paraglide
 *.log
 .vite
 .tmp-*
+project.inlang/cache

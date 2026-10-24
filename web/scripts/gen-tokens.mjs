@@ -103,6 +103,7 @@ function luminance(hex) {
 	return 0.2126729 * lin(c.r) + 0.7151522 * lin(c.g) + 0.072175 * lin(c.b);
 }
 export function apca(text, bg) {
+	// biome-ignore lint/suspicious/noApproximativeNumericConstant: 1.414 is the SAPC soft-clamp exponent, not sqrt(2)
 	const clamp = (y) => (y >= 0.022 ? y : y + (0.022 - y) ** 1.414);
 	const yt = clamp(luminance(text));
 	const yb = clamp(luminance(bg));
@@ -213,13 +214,13 @@ function accentRamp(key, mode, grayR) {
 }
 
 /** Pick the label colour for a solid fill: whichever of the two inks reads better. */
-function onFill(fillHex, mode) {
+function onFill(fillHex, _mode) {
 	const dark = INK.dark;
 	const light = "#ffffff";
 	return wcag(dark, fillHex) >= wcag(light, fillHex) ? dark : light;
 }
 
-function statusRamp(key, mode, grayR) {
+function statusRamp(key, mode) {
 	const hue = STATUS[key].hue;
 	const l9 = STATUS_L9[mode];
 	const c9 = 0.85 * maxC(l9, hue);
@@ -254,7 +255,7 @@ for (const k of Object.keys(ACCENTS)) {
 const status = {};
 for (const k of Object.keys(STATUS)) {
 	status[k] = {};
-	for (const m of modes) status[k][m] = statusRamp(k, m, gray[m]);
+	for (const m of modes) status[k][m] = statusRamp(k, m);
 }
 const grade = {};
 for (const k of Object.keys(GRADES)) {
