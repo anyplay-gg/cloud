@@ -42,7 +42,7 @@ impl Inner {
     /// longest-standing member; the last member ends the party, with its invitations and chat.
     /// Returns whether the account was a member.
     pub async fn remove_party_member(&self, id: &str, account: u64) -> Result<bool, AppError> {
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.begin_write().await?;
         let Some(mut party) = party::lock_party(&mut tx, id).await? else {
             return Ok(false);
         };

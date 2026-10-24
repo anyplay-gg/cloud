@@ -21,6 +21,8 @@ use crate::metrics::Metrics;
 use crate::news::{AuthNote, News, Push};
 use crate::{db, util};
 
+pub use crate::db::WriteTx;
+
 pub type AppState = Arc<Inner>;
 
 /// How often a node deletes moderation data past its retention.
@@ -51,8 +53,6 @@ pub struct Inner {
     pub web: Option<crate::web::Web>,
     /// This process in the store's `nodes` table, new at every start.
     pub node: String,
-    /// Serializes changes to friendships and blocks, which check limits before they write.
-    pub social: tokio::sync::Mutex<()>,
     pub metrics: Metrics,
     /// Set when the node is shutting down: it reports itself not ready, so that the load
     /// balancer stops sending players, before it closes their connections.
@@ -61,6 +61,8 @@ pub struct Inner {
     pub ban_key: crate::moderation::banhash::BanKey,
     /// When this node last ran the retention sweep of moderation data, in Unix seconds.
     pub retention_at: std::sync::atomic::AtomicU64,
+    /// Starts the transactions of [`Inner::begin_write`].
+    pub writer: db::Writer,
 }
 
 fn ms(duration: Duration) -> i64 {
@@ -68,6 +70,11 @@ fn ms(duration: Duration) -> i64 {
 }
 
 impl Inner {
+    /// Starts a transaction that will write; see [`db::Writer`].
+    pub async fn begin_write(&self) -> sqlx::Result<WriteTx> {
+        self.writer.begin(&self.db).await
+    }
+
     /// Fails when the device is signed out or the account is banned. A device this node has
     /// not seen yet, because it signed in through another node, is looked up in the store.
     pub async fn check_device(
@@ -284,7 +291,7 @@ impl Inner {
     /// member; the last member closes the session. Returns the accounts whose presence may have
     /// changed.
     pub async fn remove_member(&self, id: &str, account: u64) -> Result<Vec<u64>, AppError> {
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.begin_write().await?;
         let Some(mut session) = live::lock_session(&mut tx, id).await? else {
             return Ok(Vec::new());
         };
@@ -505,7 +512,7 @@ impl Inner {
             close::SIGNED_OUT,
             "account deleted",
         );
-        db::delete_account(&self.db, account).await?;
+        db::delete_account(&self.writer, &self.db, account).await?;
         {
             let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
             for device in &devices {

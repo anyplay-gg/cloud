@@ -7,6 +7,7 @@
 //! migrations exist twice, with the same tables and columns. IDs are at most 2^53 - 1, so they
 //! are stored as `i64` and converted at the edge. Every value reaches SQL as a bound parameter.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use sqlx::any::{AnyPoolOptions, install_default_drivers};
@@ -16,6 +17,99 @@ use sqlx::{ConnectOptions as _, Connection as _, Executor as _, FromRow};
 pub mod profiles;
 
 pub type Pool = sqlx::AnyPool;
+type Conn = sqlx::AnyConnection;
+
+/// Starts transactions that will write.
+///
+/// SQLite must take its write lock at the start: a transaction that reads first and writes later
+/// fails with "database is locked" when another writer commits in between, and waiting does not
+/// help. SQLite also lets only one writer in at a time and makes the others retry after a sleep
+/// that grows the longer they have waited, so under load a transaction can lose many retries in a
+/// row to ones that came later. On SQLite these transactions therefore wait in a queue of this
+/// node first and reach SQLite one after another, in the order they asked. PostgreSQL needs
+/// neither.
+///
+/// Every write transaction of the cloud starts here. A single statement outside a transaction
+/// does not wait in the queue: SQLite retries it while a transaction holds the write lock. A
+/// transaction must not wait for a second store connection or a second transaction while it holds
+/// its place, or the node's writers stop.
+pub struct Writer {
+    queue: Option<std::sync::Arc<tokio::sync::Mutex<()>>>,
+}
+
+/// A transaction from [`Writer::begin`]. On SQLite it keeps its place in the queue until it ends.
+///
+/// One that ends without [`WriteTx::commit`] (an early return, an error, a client that went away)
+/// rolls back before its place goes to the next writer: sqlx would roll back only once the
+/// connection is back in the pool, and until then SQLite's write lock is still held.
+pub struct WriteTx {
+    tx: Option<sqlx::Transaction<'static, sqlx::Any>>,
+    turn: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Writer {
+    pub fn new(sqlite: bool) -> Self {
+        Self {
+            queue: sqlite.then(Default::default),
+        }
+    }
+
+    pub async fn begin(&self, pool: &Pool) -> sqlx::Result<WriteTx> {
+        match &self.queue {
+            Some(queue) => {
+                let turn = queue.clone().lock_owned().await;
+                Ok(WriteTx {
+                    tx: Some(pool.begin_with("BEGIN IMMEDIATE").await?),
+                    turn: Some(turn),
+                })
+            }
+            None => Ok(WriteTx {
+                tx: Some(pool.begin().await?),
+                turn: None,
+            }),
+        }
+    }
+}
+
+impl WriteTx {
+    pub async fn commit(mut self) -> sqlx::Result<()> {
+        let tx = self.tx.take().expect("a transaction until it ends");
+        tx.commit().await
+    }
+}
+
+impl Drop for WriteTx {
+    fn drop(&mut self) {
+        let Some(tx) = self.tx.take() else {
+            return;
+        };
+        let turn = self.turn.take();
+        if turn.is_none() {
+            // Nothing waits behind it; sqlx rolls back on the connection's return to the pool.
+            return;
+        }
+        tokio::spawn(async move {
+            if let Err(error) = tx.rollback().await {
+                // The connection is closed then, which ends the transaction as well.
+                tracing::warn!(%error, "cannot roll back a write transaction");
+            }
+            drop(turn);
+        });
+    }
+}
+
+impl std::ops::Deref for WriteTx {
+    type Target = Conn;
+    fn deref(&self) -> &Conn {
+        self.tx.as_deref().expect("a transaction until it ends")
+    }
+}
+
+impl std::ops::DerefMut for WriteTx {
+    fn deref_mut(&mut self) -> &mut Conn {
+        self.tx.as_deref_mut().expect("a transaction until it ends")
+    }
+}
 
 /// Where the store keeps its data.
 #[derive(Clone, Copy, Debug)]
@@ -87,6 +181,15 @@ fn i(id: u64) -> i64 {
 
 fn u(id: i64) -> u64 {
     id as u64
+}
+
+/// The IDs as the inside of an SQL `IN (...)`. They are integers, so nothing can be injected. The
+/// slice must not be empty: `IN ()` is not valid SQL.
+fn id_list(ids: &[u64]) -> String {
+    ids.iter()
+        .map(|id| i(*id).to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 #[derive(Clone, Debug, FromRow)]
@@ -170,6 +273,23 @@ pub async fn account(pool: &Pool, id: u64) -> sqlx::Result<Option<AccountRow>> {
         .await
 }
 
+/// The accounts with these IDs in one query, by ID; an ID without an account is missing.
+pub async fn accounts_by_ids(
+    conn: &mut Conn,
+    ids: &[u64],
+) -> sqlx::Result<HashMap<u64, AccountRow>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<AccountRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT id, handle, email, created FROM accounts WHERE id IN ({})",
+        id_list(ids)
+    )))
+    .fetch_all(conn)
+    .await?;
+    Ok(rows.into_iter().map(|row| (row.id(), row)).collect())
+}
+
 /// `key` is the handle in lower case.
 pub async fn account_by_handle(pool: &Pool, key: &str) -> sqlx::Result<Option<AccountRow>> {
     sqlx::query_as("SELECT id, handle, email, created FROM accounts WHERE handle_key = $1")
@@ -232,8 +352,8 @@ pub async fn insert_account(
 
 /// Deletes an account and everything that hangs on it. Bans, the actions against the account
 /// and reports about it stay until their retention ends; reports it filed lose their link to it.
-pub async fn delete_account(pool: &Pool, id: u64) -> sqlx::Result<()> {
-    let mut tx = pool.begin().await?;
+pub async fn delete_account(writer: &Writer, pool: &Pool, id: u64) -> sqlx::Result<()> {
+    let mut tx = writer.begin(pool).await?;
     crate::moderation::store::forget_reporter(&mut tx, id).await?;
     // Foreign keys cascade to devices, friends, requests and blocks.
     sqlx::query("DELETE FROM accounts WHERE id = $1")
@@ -414,13 +534,14 @@ const USED_REFRESH_KEEP: u64 = 30 * 24 * 60 * 60;
 /// Replaces the refresh hash if it is still `old`, and remembers `old`. False when another
 /// request got there first.
 pub async fn rotate_refresh(
+    writer: &Writer,
     pool: &Pool,
     device: u64,
     old: &[u8],
     new: &[u8],
     now: u64,
 ) -> sqlx::Result<bool> {
-    let mut tx = pool.begin().await?;
+    let mut tx = writer.begin(pool).await?;
     let result = sqlx::query(
         "UPDATE devices SET refresh_hash = $1, last_used = $2 WHERE id = $3 AND refresh_hash = $4",
     )
@@ -454,14 +575,17 @@ fn pair(a: u64, b: u64) -> (i64, i64) {
     (i(a.min(b)), i(a.max(b)))
 }
 
-pub async fn friends_of(pool: &Pool, account: u64) -> sqlx::Result<Vec<Related>> {
+pub async fn friends_of<'e>(
+    db: impl sqlx::Executor<'e, Database = sqlx::Any>,
+    account: u64,
+) -> sqlx::Result<Vec<Related>> {
     sqlx::query_as(
         "SELECT a.id AS id, a.handle AS handle, f.since AS since FROM friends f \
          JOIN accounts a ON a.id = CASE WHEN f.low = $1 THEN f.high ELSE f.low END \
          WHERE f.low = $1 OR f.high = $1 ORDER BY a.handle_key",
     )
     .bind(i(account))
-    .fetch_all(pool)
+    .fetch_all(db)
     .await
 }
 
@@ -475,34 +599,65 @@ pub async fn friend_ids(pool: &Pool, account: u64) -> sqlx::Result<Vec<u64>> {
     Ok(rows.into_iter().map(|(id,)| u(id)).collect())
 }
 
-pub async fn are_friends(pool: &Pool, a: u64, b: u64) -> sqlx::Result<bool> {
+pub async fn are_friends<'e>(
+    db: impl sqlx::Executor<'e, Database = sqlx::Any>,
+    a: u64,
+    b: u64,
+) -> sqlx::Result<bool> {
     let (low, high) = pair(a, b);
     let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM friends WHERE low = $1 AND high = $2")
         .bind(low)
         .bind(high)
-        .fetch_optional(pool)
+        .fetch_optional(db)
         .await?;
     Ok(row.is_some())
 }
 
-pub async fn count_friends(pool: &Pool, account: u64) -> sqlx::Result<i64> {
+/// Whether both accounts (or the one, when they are the same) exist. With `lock` (PostgreSQL) it
+/// also locks their rows until the transaction ends, in the order of their IDs, so that two
+/// transactions that lock the same pair never wait for each other; SQLite has no row locks, and
+/// its write transaction holds the whole store already.
+pub async fn lock_accounts(conn: &mut Conn, a: u64, b: u64, lock: bool) -> sqlx::Result<bool> {
+    let (low, high) = (a.min(b), a.max(b));
+    let ids = if low == high {
+        vec![low]
+    } else {
+        vec![low, high]
+    };
+    let query = if lock {
+        "SELECT id FROM accounts WHERE id = $1 FOR UPDATE"
+    } else {
+        "SELECT id FROM accounts WHERE id = $1"
+    };
+    let mut found = true;
+    for id in ids {
+        let row: Option<(i64,)> = sqlx::query_as(query)
+            .bind(i(id))
+            .fetch_optional(&mut *conn)
+            .await?;
+        found &= row.is_some();
+    }
+    Ok(found)
+}
+
+pub async fn count_friends(conn: &mut Conn, account: u64) -> sqlx::Result<i64> {
     let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM friends WHERE low = $1 OR high = $1")
         .bind(i(account))
-        .fetch_one(pool)
+        .fetch_one(conn)
         .await?;
     Ok(n)
 }
 
-/// Turns a request into a friendship, or adds one directly. Removes requests both ways.
-pub async fn make_friends(pool: &Pool, a: u64, b: u64, now: u64) -> sqlx::Result<()> {
+/// Turns a request into a friendship, or adds one directly. Removes requests both ways. Runs in
+/// the caller's transaction.
+pub async fn make_friends(conn: &mut Conn, a: u64, b: u64, now: u64) -> sqlx::Result<()> {
     let (low, high) = pair(a, b);
-    let mut tx = pool.begin().await?;
     sqlx::query(
         "DELETE FROM friend_requests WHERE (from_id = $1 AND to_id = $2) OR (from_id = $2 AND to_id = $1)",
     )
     .bind(low)
     .bind(high)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
     sqlx::query(
         "INSERT INTO friends (low, high, since) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
@@ -510,134 +665,146 @@ pub async fn make_friends(pool: &Pool, a: u64, b: u64, now: u64) -> sqlx::Result
     .bind(low)
     .bind(high)
     .bind(i(now))
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
-    tx.commit().await
+    Ok(())
 }
 
-pub async fn remove_friendship(pool: &Pool, a: u64, b: u64) -> sqlx::Result<bool> {
+pub async fn remove_friendship(conn: &mut Conn, a: u64, b: u64) -> sqlx::Result<bool> {
     let (low, high) = pair(a, b);
     let result = sqlx::query("DELETE FROM friends WHERE low = $1 AND high = $2")
         .bind(low)
         .bind(high)
-        .execute(pool)
+        .execute(conn)
         .await?;
     Ok(result.rows_affected() == 1)
 }
 
-pub async fn request_exists(pool: &Pool, from: u64, to: u64) -> sqlx::Result<bool> {
+pub async fn request_exists(conn: &mut Conn, from: u64, to: u64) -> sqlx::Result<bool> {
     let row: Option<(i64,)> =
         sqlx::query_as("SELECT 1 FROM friend_requests WHERE from_id = $1 AND to_id = $2")
             .bind(i(from))
             .bind(i(to))
-            .fetch_optional(pool)
+            .fetch_optional(conn)
             .await?;
     Ok(row.is_some())
 }
 
-pub async fn insert_request(pool: &Pool, from: u64, to: u64, now: u64) -> sqlx::Result<()> {
+pub async fn insert_request(conn: &mut Conn, from: u64, to: u64, now: u64) -> sqlx::Result<()> {
     sqlx::query("INSERT INTO friend_requests (from_id, to_id, since) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
         .bind(i(from))
         .bind(i(to))
         .bind(i(now))
-        .execute(pool)
+        .execute(conn)
         .await?;
     Ok(())
 }
 
-pub async fn delete_request(pool: &Pool, from: u64, to: u64) -> sqlx::Result<bool> {
+pub async fn delete_request(conn: &mut Conn, from: u64, to: u64) -> sqlx::Result<bool> {
     let result = sqlx::query("DELETE FROM friend_requests WHERE from_id = $1 AND to_id = $2")
         .bind(i(from))
         .bind(i(to))
-        .execute(pool)
+        .execute(conn)
         .await?;
     Ok(result.rows_affected() == 1)
 }
 
-pub async fn incoming_requests(pool: &Pool, account: u64) -> sqlx::Result<Vec<Related>> {
+pub async fn incoming_requests<'e>(
+    db: impl sqlx::Executor<'e, Database = sqlx::Any>,
+    account: u64,
+) -> sqlx::Result<Vec<Related>> {
     sqlx::query_as(
         "SELECT a.id AS id, a.handle AS handle, r.since AS since FROM friend_requests r \
          JOIN accounts a ON a.id = r.from_id WHERE r.to_id = $1 ORDER BY r.since DESC",
     )
     .bind(i(account))
-    .fetch_all(pool)
+    .fetch_all(db)
     .await
 }
 
-pub async fn outgoing_requests(pool: &Pool, account: u64) -> sqlx::Result<Vec<Related>> {
+pub async fn outgoing_requests<'e>(
+    db: impl sqlx::Executor<'e, Database = sqlx::Any>,
+    account: u64,
+) -> sqlx::Result<Vec<Related>> {
     sqlx::query_as(
         "SELECT a.id AS id, a.handle AS handle, r.since AS since FROM friend_requests r \
          JOIN accounts a ON a.id = r.to_id WHERE r.from_id = $1 ORDER BY r.since DESC",
     )
     .bind(i(account))
-    .fetch_all(pool)
+    .fetch_all(db)
     .await
 }
 
-pub async fn count_incoming(pool: &Pool, account: u64) -> sqlx::Result<i64> {
+pub async fn count_incoming(conn: &mut Conn, account: u64) -> sqlx::Result<i64> {
     let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM friend_requests WHERE to_id = $1")
         .bind(i(account))
-        .fetch_one(pool)
+        .fetch_one(conn)
         .await?;
     Ok(n)
 }
 
-pub async fn count_outgoing(pool: &Pool, account: u64) -> sqlx::Result<i64> {
+pub async fn count_outgoing(conn: &mut Conn, account: u64) -> sqlx::Result<i64> {
     let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM friend_requests WHERE from_id = $1")
         .bind(i(account))
-        .fetch_one(pool)
+        .fetch_one(conn)
         .await?;
     Ok(n)
 }
 
 // Blocks
 
-pub async fn blocked_by(pool: &Pool, blocker: u64) -> sqlx::Result<Vec<Related>> {
+pub async fn blocked_by<'e>(
+    db: impl sqlx::Executor<'e, Database = sqlx::Any>,
+    blocker: u64,
+) -> sqlx::Result<Vec<Related>> {
     sqlx::query_as(
         "SELECT a.id AS id, a.handle AS handle, b.since AS since FROM blocks b \
          JOIN accounts a ON a.id = b.blocked WHERE b.blocker = $1 ORDER BY a.handle_key",
     )
     .bind(i(blocker))
-    .fetch_all(pool)
+    .fetch_all(db)
     .await
 }
 
-pub async fn count_blocks(pool: &Pool, blocker: u64) -> sqlx::Result<i64> {
+pub async fn count_blocks(conn: &mut Conn, blocker: u64) -> sqlx::Result<i64> {
     let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM blocks WHERE blocker = $1")
         .bind(i(blocker))
-        .fetch_one(pool)
+        .fetch_one(conn)
         .await?;
     Ok(n)
 }
 
 /// True when `blocker` blocked `blocked`.
-pub async fn has_blocked(pool: &Pool, blocker: u64, blocked: u64) -> sqlx::Result<bool> {
+pub async fn has_blocked<'e>(
+    db: impl sqlx::Executor<'e, Database = sqlx::Any>,
+    blocker: u64,
+    blocked: u64,
+) -> sqlx::Result<bool> {
     let row: Option<(i64,)> =
         sqlx::query_as("SELECT 1 FROM blocks WHERE blocker = $1 AND blocked = $2")
             .bind(i(blocker))
             .bind(i(blocked))
-            .fetch_optional(pool)
+            .fetch_optional(db)
             .await?;
     Ok(row.is_some())
 }
 
-/// Adds a block and removes friendship and requests between the two, in one step. Returns whether
-/// a friendship or a request existed in either direction.
-pub async fn block(pool: &Pool, blocker: u64, blocked: u64, now: u64) -> sqlx::Result<bool> {
+/// Adds a block and removes friendship and requests between the two, in the caller's
+/// transaction. Returns whether a friendship or a request existed in either direction.
+pub async fn block(conn: &mut Conn, blocker: u64, blocked: u64, now: u64) -> sqlx::Result<bool> {
     let (low, high) = pair(blocker, blocked);
-    let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO blocks (blocker, blocked, since) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
     )
     .bind(i(blocker))
     .bind(i(blocked))
     .bind(i(now))
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
     let friends = sqlx::query("DELETE FROM friends WHERE low = $1 AND high = $2")
         .bind(low)
         .bind(high)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?
         .rows_affected();
     let requests = sqlx::query(
@@ -645,18 +812,17 @@ pub async fn block(pool: &Pool, blocker: u64, blocked: u64, now: u64) -> sqlx::R
     )
     .bind(low)
     .bind(high)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?
     .rows_affected();
-    tx.commit().await?;
     Ok(friends + requests > 0)
 }
 
-pub async fn unblock(pool: &Pool, blocker: u64, blocked: u64) -> sqlx::Result<bool> {
+pub async fn unblock(conn: &mut Conn, blocker: u64, blocked: u64) -> sqlx::Result<bool> {
     let result = sqlx::query("DELETE FROM blocks WHERE blocker = $1 AND blocked = $2")
         .bind(i(blocker))
         .bind(i(blocked))
-        .execute(pool)
+        .execute(conn)
         .await?;
     Ok(result.rows_affected() == 1)
 }
@@ -780,12 +946,13 @@ pub(crate) fn audience_of(name: &str) -> anyplay_api::Audience {
 /// Records the trophies in one step. A trophy recorded already keeps its first time and grade.
 /// Returns how many records are new.
 pub async fn add_trophies(
+    writer: &Writer,
     pool: &Pool,
     account: u64,
     title_id: &str,
     trophies: &[anyplay_api::Trophy],
 ) -> sqlx::Result<u64> {
-    let mut tx = pool.begin().await?;
+    let mut tx = writer.begin(pool).await?;
     let mut added = 0;
     for trophy in trophies {
         added += sqlx::query(
@@ -850,16 +1017,48 @@ pub async fn trophy_counts(pool: &Pool, account: u64) -> sqlx::Result<anyplay_ap
             .await?;
     let mut count = anyplay_api::Count::default();
     for (grade, n) in rows {
-        let n = u32::try_from(n).unwrap_or(u32::MAX);
-        match grade_of(&grade) {
-            Some(anyplay_api::Grade::Bronze) => count.bronze = n,
-            Some(anyplay_api::Grade::Silver) => count.silver = n,
-            Some(anyplay_api::Grade::Gold) => count.gold = n,
-            Some(anyplay_api::Grade::Platinum) => count.platinum = n,
-            None => {}
-        }
+        add_to_count(&mut count, &grade, n);
     }
     Ok(count)
+}
+
+/// The number of records per grade for each of the accounts, in one query. An account without
+/// records has the empty count, as with `trophy_counts`.
+pub async fn trophy_counts_of(
+    conn: &mut Conn,
+    accounts: &[u64],
+) -> sqlx::Result<HashMap<u64, anyplay_api::Count>> {
+    if accounts.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(i64, String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT account_id, grade, COUNT(*) FROM trophies WHERE account_id IN ({}) \
+         GROUP BY account_id, grade",
+        id_list(accounts)
+    )))
+    .fetch_all(conn)
+    .await?;
+    let mut counts: HashMap<u64, anyplay_api::Count> = accounts
+        .iter()
+        .map(|id| (*id, anyplay_api::Count::default()))
+        .collect();
+    for (account, grade, n) in rows {
+        if let Some(count) = counts.get_mut(&u(account)) {
+            add_to_count(count, &grade, n);
+        }
+    }
+    Ok(counts)
+}
+
+fn add_to_count(count: &mut anyplay_api::Count, grade: &str, n: i64) {
+    let n = u32::try_from(n).unwrap_or(u32::MAX);
+    match grade_of(grade) {
+        Some(anyplay_api::Grade::Bronze) => count.bronze = n,
+        Some(anyplay_api::Grade::Silver) => count.silver = n,
+        Some(anyplay_api::Grade::Gold) => count.gold = n,
+        Some(anyplay_api::Grade::Platinum) => count.platinum = n,
+        None => {}
+    }
 }
 
 /// How many accounts have a record for the title.
@@ -890,16 +1089,100 @@ pub async fn privacy_of(pool: &Pool, account: u64) -> sqlx::Result<anyplay_api::
     .bind(i(account))
     .fetch_optional(pool)
     .await?;
-    Ok(row.map_or_else(
-        anyplay_api::Privacy::default,
-        |(trophies, about, favourites, avatar, playtime)| anyplay_api::Privacy {
-            trophies: audience_of(&trophies),
-            about: audience_of(&about),
-            favourites: audience_of(&favourites),
-            avatar: audience_of(&avatar),
-            playtime: audience_of(&playtime),
-        },
-    ))
+    Ok(row.map_or_else(anyplay_api::Privacy::default, privacy_from_row))
+}
+
+type PrivacyRow = (String, String, String, String, String);
+
+fn privacy_from_row(
+    (trophies, about, favourites, avatar, playtime): PrivacyRow,
+) -> anyplay_api::Privacy {
+    anyplay_api::Privacy {
+        trophies: audience_of(&trophies),
+        about: audience_of(&about),
+        favourites: audience_of(&favourites),
+        avatar: audience_of(&avatar),
+        playtime: audience_of(&playtime),
+    }
+}
+
+/// What each of the accounts shows, in one query; an account without a setting is missing.
+pub async fn privacies_of(
+    conn: &mut Conn,
+    accounts: &[u64],
+) -> sqlx::Result<HashMap<u64, anyplay_api::Privacy>> {
+    if accounts.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(i64, String, String, String, String, String)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT account_id, trophies, about, favourites, avatar, playtime FROM privacy \
+             WHERE account_id IN ({})",
+            id_list(accounts)
+        )))
+        .fetch_all(conn)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, trophies, about, favourites, avatar, playtime)| {
+            (
+                u(id),
+                privacy_from_row((trophies, about, favourites, avatar, playtime)),
+            )
+        })
+        .collect())
+}
+
+/// Which of `others` `account` blocked or was blocked by, in one query.
+pub async fn blocked_among(
+    conn: &mut Conn,
+    account: u64,
+    others: &[u64],
+) -> sqlx::Result<HashSet<u64>> {
+    if others.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let list = id_list(others);
+    let rows: Vec<(i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT blocker, blocked FROM blocks \
+         WHERE (blocker = $1 AND blocked IN ({list})) OR (blocked = $1 AND blocker IN ({list}))"
+    )))
+    .bind(i(account))
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(blocker, blocked)| {
+            u(if u(blocker) == account {
+                blocked
+            } else {
+                blocker
+            })
+        })
+        .collect())
+}
+
+/// Which of `others` are friends of `account`, in one query.
+pub async fn friends_among(
+    conn: &mut Conn,
+    account: u64,
+    others: &[u64],
+) -> sqlx::Result<HashSet<u64>> {
+    if others.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let list = id_list(others);
+    let rows: Vec<(i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT low, high FROM friends \
+         WHERE (low = $1 AND high IN ({list})) OR (high = $1 AND low IN ({list}))"
+    )))
+    .bind(i(account))
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(low, high)| u(if u(low) == account { high } else { low }))
+        .collect())
 }
 
 pub async fn set_privacy(
@@ -959,6 +1242,110 @@ mod tests {
         let pool = open(Location::File(&file), 2).await.unwrap();
         let account = account(&pool, 7).await.unwrap().unwrap();
         assert_eq!(account.handle, "Alec");
+    }
+
+    /// Writers that wait for SQLite's write lock get it in the order they asked for it. Each
+    /// writer asks only once the one before it is waiting, so the order is known; SQLite's own
+    /// retries, which sleep longer the longer a writer has waited, let later ones in first.
+    #[tokio::test]
+    async fn writers_on_sqlite_get_their_turn_in_the_order_they_asked() {
+        const WRITERS: usize = 12;
+        let dir = tempfile::tempdir().unwrap();
+        let pool = open(
+            Location::File(&dir.path().join("cloud.db")),
+            WRITERS as u32 + 1,
+        )
+        .await
+        .unwrap();
+        let writer = std::sync::Arc::new(Writer::new(true));
+        let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let first = writer.begin(&pool).await.unwrap();
+        let mut waiting = Vec::new();
+        for n in 0..WRITERS {
+            let (writer, pool, order) = (writer.clone(), pool.clone(), order.clone());
+            waiting.push(tokio::spawn(async move {
+                let mut tx = writer.begin(&pool).await.unwrap();
+                order.lock().unwrap().push(n);
+                sqlx::query("UPDATE accounts SET created = created WHERE id = 0")
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            }));
+            // Long enough for this writer to be waiting before the next one asks.
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        }
+        // Held long enough that SQLite's retries have grown far apart.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        first.commit().await.unwrap();
+        for task in waiting {
+            task.await.unwrap();
+        }
+        assert_eq!(*order.lock().unwrap(), (0..WRITERS).collect::<Vec<_>>());
+    }
+
+    /// A writer that ends without committing (an early return) gives its place to the next only
+    /// once SQLite rolled it back. Here SQLite does not retry at all, so the next writer's
+    /// `BEGIN IMMEDIATE` fails if it meets the write lock still held.
+    #[tokio::test]
+    async fn a_writer_that_returns_early_has_rolled_back_when_the_next_begins() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("cloud.db");
+        open(Location::File(&file), 1).await.unwrap().close().await;
+        let pool = AnyPoolOptions::new()
+            .max_connections(4)
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    conn.execute("PRAGMA busy_timeout = 0").await?;
+                    Ok(())
+                })
+            })
+            .connect(&sqlite_url(&file))
+            .await
+            .unwrap();
+        let writer = Writer::new(true);
+        for round in 0..20 {
+            let mut early = writer.begin(&pool).await.unwrap();
+            sqlx::query("UPDATE accounts SET created = created WHERE id = 0")
+                .execute(&mut *early)
+                .await
+                .unwrap();
+            drop(early);
+            let next = writer.begin(&pool).await;
+            assert!(next.is_ok(), "round {round}: {:?}", next.err());
+            next.unwrap().commit().await.unwrap();
+        }
+    }
+
+    /// A writer that stops waiting for its turn (its client went away) leaves the queue, and the
+    /// writers behind it still get theirs.
+    #[tokio::test]
+    async fn a_writer_that_stops_waiting_leaves_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = open(Location::File(&dir.path().join("cloud.db")), 4)
+            .await
+            .unwrap();
+        let writer = std::sync::Arc::new(Writer::new(true));
+        let first = writer.begin(&pool).await.unwrap();
+        let gone = {
+            let (writer, pool) = (writer.clone(), pool.clone());
+            tokio::spawn(async move { writer.begin(&pool).await.map(|_| ()) })
+        };
+        let next = {
+            let (writer, pool) = (writer.clone(), pool.clone());
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                let tx = writer.begin(&pool).await.unwrap();
+                tx.commit().await.unwrap();
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        gone.abort();
+        first.commit().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), next)
+            .await
+            .expect("the writer behind one that left gets its turn")
+            .unwrap();
     }
 
     #[test]

@@ -299,9 +299,10 @@ pub async fn user(
                 Relation::Stranger | Relation::Blocked => "none",
             };
             let requested = if matches!(seen.relation(), Relation::Stranger) {
-                if db::request_exists(&state.db, owner.id(), me).await? {
+                let mut conn = state.db.acquire().await?;
+                if db::request_exists(&mut conn, owner.id(), me).await? {
                     Some("incoming")
-                } else if db::request_exists(&state.db, me, owner.id()).await? {
+                } else if db::request_exists(&mut conn, me, owner.id()).await? {
                     Some("outgoing")
                 } else {
                     None

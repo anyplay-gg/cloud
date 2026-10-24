@@ -127,7 +127,7 @@ pub async fn create(
         address,
         joined: created,
     };
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     // A write first, so that SQLite takes its write lock before the count reads.
     live::insert_session(&mut tx, &row).await?;
     if live::count_sessions_of(&mut tx, auth.account).await? >= MAX_SESSIONS_PER_ACCOUNT {
@@ -197,7 +197,7 @@ pub async fn join(
     let handle = handle_of(&state, auth.account).await?;
     let friends = friends_of(&state, auth.account).await?;
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     let mut session = live::lock_session(&mut tx, &id)
         .await?
         .ok_or_else(AppError::not_found)?;
@@ -316,7 +316,7 @@ pub async fn update(
     if let Some(max) = request.max_members {
         check_max_members(max)?;
     }
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     let mut session = live::lock_session(&mut tx, &id)
         .await?
         .ok_or_else(AppError::not_found)?;
@@ -401,7 +401,7 @@ pub async fn invite(
     let handle = handle_of(&state, auth.account).await?;
     let friends = friends_of(&state, auth.account).await?;
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     let session = live::lock_session(&mut tx, &id)
         .await?
         .ok_or_else(AppError::not_found)?;

@@ -1,4 +1,8 @@
 //! Friends, requests and blocks.
+//!
+//! A change between two accounts runs in one store transaction that holds both accounts (see
+//! [`hold`]): the limits it checks count what the other changes to either account have written,
+//! on this node and every other, while changes between other accounts go on at the same time.
 
 use anyplay_api::{
     Account, AccountId, Event, Friend, FriendLists, FriendRequest, FriendRequestAnswer,
@@ -7,12 +11,13 @@ use anyplay_api::{
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use sqlx::AnyConnection;
 
 use crate::db::{self, Related};
 use crate::error::{AppError, Result};
 use crate::http::{ApiJson, Auth, parse_id};
 use crate::live;
-use crate::state::AppState;
+use crate::state::{AppState, WriteTx};
 use crate::util::now;
 
 const MAX_FRIENDS: i64 = 500;
@@ -34,13 +39,49 @@ fn notify(state: &AppState, accounts: &[u64]) {
     }
 }
 
+/// How long a change waits for another change to the same account on PostgreSQL before it is
+/// refused. Without a limit, a burst at one popular account would hold a store connection per
+/// waiting request and could take the whole pool.
+const LOCK_TIMEOUT: &str = "SET LOCAL lock_timeout = '2s'";
+
+/// Starts a transaction that holds accounts `a` and `b` until it ends: another change that holds
+/// either of them waits for it. Every change to friends, requests and blocks must start here, or
+/// the limits it checks no longer count what the others write. On PostgreSQL it locks the two
+/// accounts' rows, in the order of their IDs so that two changes never wait for each other, and a
+/// change that waits longer than [`LOCK_TIMEOUT`] is answered `rate_limited`; SQLite has one
+/// writer, which the transaction already is. Fails with `not_found` when either account is gone,
+/// unless `missing_ok`.
+async fn hold(state: &AppState, a: u64, b: u64, missing_ok: bool) -> Result<WriteTx> {
+    let mut tx = state.begin_write().await?;
+    let postgres = state.config.database_url.is_some();
+    if postgres {
+        sqlx::query(LOCK_TIMEOUT).execute(&mut *tx).await?;
+    }
+    match db::lock_accounts(&mut tx, a, b, postgres).await {
+        Ok(true) => Ok(tx),
+        Ok(false) if missing_ok => Ok(tx),
+        Ok(false) => Err(AppError::not_found()),
+        Err(error) if is_lock_timeout(&error) => Err(AppError::rate_limited(1)),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// PostgreSQL's `lock_not_available`, which a `lock_timeout` raises.
+fn is_lock_timeout(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(e) if e.code().as_deref() == Some("55P03"))
+}
+
+/// The friend lists with the friends' presence. All of it is read on one store connection: under
+/// load a handler waits for each connection it asks the pool for, and this one is asked for by
+/// every player who comes back after a reconnect.
 pub async fn list(State(state): State<AppState>, auth: Auth) -> Result<Json<FriendLists>> {
-    let friends = db::friends_of(&state.db, auth.account).await?;
-    let incoming = db::incoming_requests(&state.db, auth.account).await?;
-    let outgoing = db::outgoing_requests(&state.db, auth.account).await?;
-    let blocked = db::blocked_by(&state.db, auth.account).await?;
-    let mut presence =
-        live::presence_of_friends(&mut *state.db.acquire().await?, auth.account).await?;
+    let mut conn = state.db.acquire().await?;
+    let friends = db::friends_of(&mut *conn, auth.account).await?;
+    let incoming = db::incoming_requests(&mut *conn, auth.account).await?;
+    let outgoing = db::outgoing_requests(&mut *conn, auth.account).await?;
+    let blocked = db::blocked_by(&mut *conn, auth.account).await?;
+    let mut presence = live::presence_of_friends(&mut conn, auth.account).await?;
+    drop(conn);
     Ok(Json(FriendLists {
         friends: friends
             .iter()
@@ -74,7 +115,6 @@ pub async fn request(
     ApiJson(request): ApiJson<FriendRequest>,
 ) -> Result<Json<FriendRequestAnswer>> {
     let me = auth.account;
-    let _social = state.social.lock().await;
     let target = db::account_by_handle(&state.db, &request.handle.to_ascii_lowercase())
         .await?
         .ok_or_else(AppError::not_found)?;
@@ -85,50 +125,54 @@ pub async fn request(
     let requested = Json(FriendRequestAnswer {
         state: FriendState::Requested,
     });
+    let friends = Json(FriendRequestAnswer {
+        state: FriendState::Friends,
+    });
+    let rules = crate::moderation::friend_request_rules(&state, me).await?;
+    let mut tx = hold(&state, me, them, false).await?;
     // A block stays private: the answer is the same and nothing happens.
-    if db::has_blocked(&state.db, them, me).await? {
+    if db::has_blocked(&mut *tx, them, me).await? {
         return Ok(requested);
     }
-    if db::has_blocked(&state.db, me, them).await? {
+    if db::has_blocked(&mut *tx, me, them).await? {
         return Err(AppError::forbidden(
             "You blocked this account. Unblock it first.",
         ));
     }
-    let friends = Json(FriendRequestAnswer {
-        state: FriendState::Friends,
-    });
-    if db::are_friends(&state.db, me, them).await? {
+    if db::are_friends(&mut *tx, me, them).await? {
         return Ok(friends);
     }
-    if db::request_exists(&state.db, them, me).await? {
-        check_friend_limits(&state, me, them).await?;
-        db::make_friends(&state.db, me, them, now()).await?;
+    if db::request_exists(&mut tx, them, me).await? {
+        check_friend_limits(&mut tx, me, them).await?;
+        db::make_friends(&mut tx, me, them, now()).await?;
+        tx.commit().await?;
         notify(&state, &[me, them]);
         return Ok(friends);
     }
-    if db::request_exists(&state.db, me, them).await? {
+    if db::request_exists(&mut tx, me, them).await? {
         return Ok(requested);
     }
     // A muted account sends none, a new one only a few.
-    crate::moderation::may_send_friend_request(&state, me).await?;
-    if db::count_friends(&state.db, me).await? >= MAX_FRIENDS {
+    rules.check(&mut tx).await?;
+    if db::count_friends(&mut tx, me).await? >= MAX_FRIENDS {
         return Err(AppError::limit("You have the most friends allowed."));
     }
-    if db::count_outgoing(&state.db, me).await? >= MAX_OUTGOING {
+    if db::count_outgoing(&mut tx, me).await? >= MAX_OUTGOING {
         return Err(AppError::limit("You have too many open friend requests."));
     }
-    if db::count_incoming(&state.db, them).await? >= MAX_INCOMING {
+    if db::count_incoming(&mut tx, them).await? >= MAX_INCOMING {
         return Err(AppError::limit("This account has too many open requests."));
     }
-    db::insert_request(&state.db, me, them, now()).await?;
-    crate::moderation::friend_request_sent(&state, me).await?;
+    db::insert_request(&mut tx, me, them, now()).await?;
+    rules.record(&mut tx).await?;
+    tx.commit().await?;
     notify(&state, &[me, them]);
     Ok(requested)
 }
 
-async fn check_friend_limits(state: &AppState, a: u64, b: u64) -> Result<()> {
+async fn check_friend_limits(tx: &mut AnyConnection, a: u64, b: u64) -> Result<()> {
     for account in [a, b] {
-        if db::count_friends(&state.db, account).await? >= MAX_FRIENDS {
+        if db::count_friends(tx, account).await? >= MAX_FRIENDS {
             return Err(AppError::limit("The most friends allowed is reached."));
         }
     }
@@ -141,12 +185,13 @@ pub async fn accept(
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
     let them = parse_id(&id)?;
-    let _social = state.social.lock().await;
-    if !db::request_exists(&state.db, them, auth.account).await? {
+    let mut tx = hold(&state, auth.account, them, false).await?;
+    if !db::request_exists(&mut tx, them, auth.account).await? {
         return Err(AppError::not_found());
     }
-    check_friend_limits(&state, auth.account, them).await?;
-    db::make_friends(&state.db, auth.account, them, now()).await?;
+    check_friend_limits(&mut tx, auth.account, them).await?;
+    db::make_friends(&mut tx, auth.account, them, now()).await?;
+    tx.commit().await?;
     notify(&state, &[auth.account, them]);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -158,12 +203,13 @@ pub async fn cancel(
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
     let them = parse_id(&id)?;
-    let _social = state.social.lock().await;
-    let removed = db::delete_request(&state.db, them, auth.account).await?
-        || db::delete_request(&state.db, auth.account, them).await?;
+    let mut tx = hold(&state, auth.account, them, false).await?;
+    let removed = db::delete_request(&mut tx, them, auth.account).await?
+        || db::delete_request(&mut tx, auth.account, them).await?;
     if !removed {
         return Err(AppError::not_found());
     }
+    tx.commit().await?;
     notify(&state, &[auth.account, them]);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -174,10 +220,11 @@ pub async fn unfriend(
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
     let them = parse_id(&id)?;
-    let _social = state.social.lock().await;
-    if !db::remove_friendship(&state.db, auth.account, them).await? {
+    let mut tx = hold(&state, auth.account, them, false).await?;
+    if !db::remove_friendship(&mut tx, auth.account, them).await? {
         return Err(AppError::not_found());
     }
+    tx.commit().await?;
     notify(&state, &[auth.account, them]);
     // Neither sees the other's presence from now on, and invitations between them end.
     let gone = live::take_between(&mut *state.db.acquire().await?, auth.account, them).await?;
@@ -194,18 +241,19 @@ pub async fn block(
     if them == auth.account {
         return Err(AppError::bad_request("You cannot block yourself."));
     }
-    let _social = state.social.lock().await;
     if db::account(&state.db, them).await?.is_none() {
         return Err(AppError::not_found());
     }
-    if !db::has_blocked(&state.db, auth.account, them).await?
-        && db::count_blocks(&state.db, auth.account).await? >= MAX_BLOCKS
+    let mut tx = hold(&state, auth.account, them, false).await?;
+    if !db::has_blocked(&mut *tx, auth.account, them).await?
+        && db::count_blocks(&mut tx, auth.account).await? >= MAX_BLOCKS
     {
         return Err(AppError::limit(
             "You have blocked the most accounts allowed.",
         ));
     }
-    let had_relation = db::block(&state.db, auth.account, them, now()).await?;
+    let had_relation = db::block(&mut tx, auth.account, them, now()).await?;
+    tx.commit().await?;
     let gone = live::take_between(&mut *state.db.acquire().await?, auth.account, them).await?;
     state.invitations_gone(&gone);
     let gone =
@@ -225,8 +273,10 @@ pub async fn unblock(
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
     let them = parse_id(&id)?;
-    let _social = state.social.lock().await;
-    if db::unblock(&state.db, auth.account, them).await? {
+    let mut tx = hold(&state, auth.account, them, true).await?;
+    let removed = db::unblock(&mut tx, auth.account, them).await?;
+    tx.commit().await?;
+    if removed {
         notify(&state, &[auth.account]);
     }
     Ok(StatusCode::NO_CONTENT)

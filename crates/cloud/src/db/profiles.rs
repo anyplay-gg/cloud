@@ -1,6 +1,6 @@
 //! Profiles, avatars and playtime (migration 0006).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyplay_api::PlaytimeEntry;
 
@@ -28,13 +28,14 @@ pub async fn profile_of(pool: &Pool, account: u64) -> sqlx::Result<(String, Vec<
 
 /// Sets the parts that are given and leaves the others.
 pub async fn set_profile(
+    writer: &super::Writer,
     pool: &Pool,
     account: u64,
     about: Option<&str>,
     favourites: Option<&[String]>,
     now: u64,
 ) -> sqlx::Result<()> {
-    let mut tx = pool.begin().await?;
+    let mut tx = writer.begin(pool).await?;
     sqlx::query(
         "INSERT INTO profiles (account_id, about, favourites, updated) VALUES ($1, '', '', $2) \
          ON CONFLICT DO NOTHING",
@@ -100,6 +101,23 @@ pub async fn avatar_hash_of(pool: &Pool, account: u64) -> sqlx::Result<Option<St
     Ok(row.map(|(hash,)| hash))
 }
 
+/// The avatar hash of each of the accounts that has an avatar, in one query.
+pub async fn avatar_hashes_of(
+    conn: &mut sqlx::AnyConnection,
+    accounts: &[u64],
+) -> sqlx::Result<HashMap<u64, String>> {
+    if accounts.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(i64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT account_id, hash FROM avatars WHERE account_id IN ({})",
+        super::id_list(accounts)
+    )))
+    .fetch_all(conn)
+    .await?;
+    Ok(rows.into_iter().map(|(id, hash)| (u(id), hash)).collect())
+}
+
 /// The whole avatar row of an account, for the export.
 pub async fn avatar_of(pool: &Pool, account: u64) -> sqlx::Result<Option<AvatarRow>> {
     sqlx::query_as("SELECT hash, picture, updated FROM avatars WHERE account_id = $1")
@@ -140,6 +158,7 @@ pub async fn playtime_rows(pool: &Pool, account: u64) -> sqlx::Result<i64> {
 /// Keeps the highest minutes per title and day. An entry twice in one call counts once, with its
 /// higher number. Returns how many entries were new or raised the kept number.
 pub async fn add_playtime(
+    writer: &super::Writer,
     pool: &Pool,
     account: u64,
     entries: &[PlaytimeEntry],
@@ -151,7 +170,7 @@ pub async fn add_playtime(
             .or_default();
         *kept = (*kept).max(entry.minutes);
     }
-    let mut tx = pool.begin().await?;
+    let mut tx = writer.begin(pool).await?;
     let mut changed = 0;
     for ((title, day), minutes) in highest {
         changed += sqlx::query(

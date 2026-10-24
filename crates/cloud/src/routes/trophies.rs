@@ -18,7 +18,7 @@ use crate::http::{ApiJson, Auth, parse_id};
 use crate::routes::accounts::account_of;
 use crate::state::AppState;
 use crate::util::now;
-use crate::visibility::{may_see, viewing};
+use crate::visibility::{may_see, viewing_many};
 
 /// A trophy may not be earned later than this many seconds from now.
 const FUTURE_SLACK: u64 = 24 * 60 * 60;
@@ -56,7 +56,14 @@ pub async fn upload(
             ));
         }
     }
-    let added = db::add_trophies(&state.db, auth.account, title, &upload.trophies).await?;
+    let added = db::add_trophies(
+        &state.writer,
+        &state.db,
+        auth.account,
+        title,
+        &upload.trophies,
+    )
+    .await?;
     Ok(Json(TrophiesAdded {
         added: u32::try_from(added).unwrap_or(u32::MAX),
     }))
@@ -142,27 +149,33 @@ pub async fn cards(
             "Ask for at most {MAX_CARDS} accounts."
         )));
     }
-    let mut cards = Vec::new();
+    // A fixed number of queries on one connection, whatever the number of accounts.
+    let ids: Vec<u64> = ids.into_iter().collect();
+    let mut conn = state.db.acquire().await?;
+    let mut accounts = db::accounts_by_ids(&mut conn, &ids).await?;
+    // An account that does not exist is left out.
+    let ids: Vec<u64> = ids
+        .into_iter()
+        .filter(|id| accounts.contains_key(id))
+        .collect();
+    let seen = viewing_many(&mut conn, auth.account, &ids).await?;
+    let of = |part| -> Vec<u64> {
+        ids.iter()
+            .copied()
+            .filter(|id| seen[id].can(part))
+            .collect()
+    };
+    let mut counts = db::trophy_counts_of(&mut conn, &of(Part::Trophies)).await?;
+    let mut avatars = db::profiles::avatar_hashes_of(&mut conn, &of(Part::Avatar)).await?;
+    let mut cards = Vec::with_capacity(ids.len());
     for id in ids {
-        // An account that does not exist is left out.
-        let Some(row) = db::account(&state.db, id).await? else {
+        let Some(row) = accounts.remove(&id) else {
             continue;
-        };
-        let seen = viewing(&state.db, auth.account, id).await?;
-        let trophies = if seen.can(Part::Trophies) {
-            Some(db::trophy_counts(&state.db, id).await?)
-        } else {
-            None
-        };
-        let avatar = if seen.can(Part::Avatar) {
-            db::profiles::avatar_hash_of(&state.db, id).await?
-        } else {
-            None
         };
         cards.push(Card {
             account: account_of(&row),
-            trophies,
-            avatar,
+            trophies: counts.remove(&id),
+            avatar: avatars.remove(&id),
         });
     }
     Ok(Json(Cards { cards }))

@@ -706,7 +706,7 @@ async fn deleting_an_account_deletes_its_connections() {
         link_discord(&providers, &portal, "555", None).await,
         "linked"
     );
-    anyplay_cloud::db::delete_account(&cloud.state.db, alec.id)
+    anyplay_cloud::db::delete_account(&cloud.state.writer, &cloud.state.db, alec.id)
         .await
         .unwrap();
     assert!(

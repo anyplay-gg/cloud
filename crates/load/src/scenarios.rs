@@ -469,6 +469,72 @@ pub async fn presence_churn(ctx: &Arc<Ctx>, sampler: &Sampler) -> ScenarioReport
     run.finish(ctx, sampler, Some(delivery), None, notes).await
 }
 
+/// Players fetch the gamer cards of their friends, as a friends screen does. A call names
+/// `--cards-size` accounts: the player's friends first, then other random players.
+pub async fn cards_fetch(ctx: &Arc<Ctx>, sampler: &Sampler) -> ScenarioReport {
+    let opts = &ctx.opts;
+    let run = Run::begin(ctx, "cards").await;
+    let all = players(ctx);
+    let size = opts
+        .cards_size
+        .clamp(1, anyplay_api::MAX_CARDS)
+        .min(all.len());
+    let mut notes = vec![format!(
+        "{} calls per second of {size} accounts for {} s by {} players",
+        opts.cards_rate,
+        opts.cards_seconds,
+        all.len()
+    )];
+    let (c, rec, pool) = (ctx.clone(), run.rec.clone(), Arc::new(all));
+    open_loop(
+        opts.cards_rate,
+        opts.cards_seconds,
+        opts.max_in_flight,
+        run.rec.clone(),
+        move |_| {
+            let (c, rec, pool) = (c.clone(), rec.clone(), pool.clone());
+            async move {
+                let pick = |n: usize| (rand::random::<f64>() * n as f64) as usize % n;
+                let me = &pool[pick(pool.len())];
+                if !me.up.load(Ordering::Relaxed) {
+                    rec.count("skipped_offline", 1);
+                    return;
+                }
+                let mut ids: Vec<u64> = me
+                    .friends
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .take(size)
+                    .map(|f| pool[*f].id)
+                    .collect();
+                while ids.len() < size {
+                    let id = pool[pick(pool.len())].id;
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+                let list: Vec<String> = ids.iter().map(u64::to_string).collect();
+                let path = format!("{}?accounts={}", anyplay_api::path::CARDS, list.join(","));
+                let reply = c.call_as(me, "cards", Method::GET, &path, None).await;
+                if reply.status == 200 {
+                    let got = reply
+                        .json::<anyplay_api::Cards>()
+                        .map(|answer| answer.cards.len());
+                    if got != Some(ids.len()) {
+                        rec.count("wrong_count", 1);
+                    }
+                }
+            }
+        },
+    )
+    .await;
+    if opts.cards_size > anyplay_api::MAX_CARDS {
+        notes.push(format!("--cards-size cut to {}", anyplay_api::MAX_CARDS));
+    }
+    run.finish(ctx, sampler, None, None, notes).await
+}
+
 /// Players create sessions, their friends join, and everyone leaves after a while.
 pub async fn session_churn(ctx: &Arc<Ctx>, sampler: &Sampler) -> ScenarioReport {
     let opts = &ctx.opts;

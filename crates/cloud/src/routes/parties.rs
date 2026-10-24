@@ -60,7 +60,7 @@ async fn make_party(state: &AppState, account: u64, handle: String) -> Result<Pa
         created,
         updated_ms: now_ms(),
     };
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     party::insert_party(&mut tx, &row).await?;
     if !party::add_member(&mut tx, &row.id, &member).await? {
         return Err(AppError::limit("You are in a party already."));
@@ -134,7 +134,7 @@ pub async fn invite(
     };
 
     let ttl = state.tuning.invitation_ttl;
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     let party = party::lock_party(&mut tx, &id)
         .await?
         .ok_or_else(AppError::not_found)?;
@@ -220,7 +220,7 @@ pub async fn accept(
     else {
         return Err(AppError::not_found());
     };
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     // The party row first, so the capacity below is read from a state nobody else is changing.
     let mut party = party::lock_party(&mut tx, &row.party_id)
         .await?
@@ -325,7 +325,7 @@ pub async fn update(
     let id = party::party_id_of(&mut *state.db.acquire().await?, auth.account)
         .await?
         .ok_or_else(AppError::not_found)?;
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     let mut party = party::lock_party(&mut tx, &id)
         .await?
         .ok_or_else(AppError::not_found)?;
@@ -371,7 +371,7 @@ pub async fn set_endpoint(
     let id = party::party_id_of(&mut *state.db.acquire().await?, auth.account)
         .await?
         .ok_or_else(AppError::not_found)?;
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     let mut party = party::lock_party(&mut tx, &id)
         .await?
         .ok_or_else(AppError::not_found)?;
@@ -441,7 +441,7 @@ pub async fn move_to_session(
         .map(AccountId)
         .collect();
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     let session = live::lock_session(&mut tx, &request.session)
         .await?
         .ok_or_else(AppError::not_found)?;
