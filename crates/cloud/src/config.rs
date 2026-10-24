@@ -44,6 +44,9 @@ pub struct Config {
     pub database_url: Option<String>,
     /// The most connections the store keeps open.
     pub database_connections: u32,
+    /// A `nats://` URL. With it the cloud runs as one node of a cluster and tells the other
+    /// nodes about changes over NATS.
+    pub nats_url: Option<String>,
     pub name: String,
     pub relays: Vec<String>,
     pub mail: MailMode,
@@ -67,6 +70,7 @@ impl Default for Config {
             data_dir: PathBuf::from("data"),
             database_url: None,
             database_connections: 16,
+            nats_url: None,
             name: "AnyPlay cloud".into(),
             relays: Vec::new(),
             mail: MailMode::Log,
@@ -130,6 +134,9 @@ impl Config {
         if let Some(v) = get("DATABASE_CONNECTIONS") {
             self.database_connections = parse("DATABASE_CONNECTIONS", &v)?;
         }
+        if let Some(v) = get("NATS_URL") {
+            self.nats_url = Some(v);
+        }
         if let Some(v) = get("NAME") {
             self.name = v;
         }
@@ -189,6 +196,16 @@ impl Config {
         }
         if self.database_connections == 0 {
             bail!("database_connections must be at least 1");
+        }
+        if let Some(url) = &self.nats_url {
+            if !(url.starts_with("nats://") || url.starts_with("tls://")) {
+                bail!("nats_url must be a nats:// or tls:// URL");
+            }
+            if self.database_url.is_none() {
+                bail!(
+                    "nats_url needs database_url: the nodes of a cluster share one PostgreSQL database"
+                );
+            }
         }
         for url in &self.relays {
             if !crate::util::is_http_url(url) {
@@ -349,6 +366,16 @@ mod tests {
             ..Config::default()
         };
         assert!(postgres.validate().is_ok());
+        let lonely = Config {
+            nats_url: Some("nats://nats.internal:4222".into()),
+            ..Config::default()
+        };
+        assert!(lonely.validate().is_err(), "a cluster shares its database");
+        let cluster = Config {
+            nats_url: Some("nats://nats.internal:4222".into()),
+            ..postgres
+        };
+        assert!(cluster.validate().is_ok());
         assert!(Config::default().validate().is_ok());
     }
 

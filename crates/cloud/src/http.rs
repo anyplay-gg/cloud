@@ -88,7 +88,7 @@ impl FromRequestParts<AppState> for Auth {
                 ));
             }
         };
-        state.check_device(auth.device, auth.account)?;
+        state.check_device(auth.device, auth.account).await?;
         count_request(state, auth.account)?;
         Ok(auth)
     }

@@ -72,6 +72,17 @@ pub async fn open(
         .await
         .context("cannot open the database")?;
 
+    let node = util::random_token(12);
+    let (news, notes) = match &config.nats_url {
+        Some(url) => {
+            let (news, notes) = news::News::over_nats(url, &node)
+                .await
+                .with_context(|| format!("cannot reach NATS at {url}"))?;
+            (news, Some(notes))
+        }
+        None => (news::News::default(), None),
+    };
+
     let mut cache = state::AuthCache::default();
     for (device, account) in db::all_devices(&pool).await? {
         cache.devices.insert(device, account);
@@ -92,8 +103,8 @@ pub async fn open(
         mailer,
         limiter: limits::RateLimiter::default(),
         cache: RwLock::new(cache),
-        news: news::News::default(),
-        node: util::random_token(12),
+        news,
+        node,
         social: tokio::sync::Mutex::new(()),
     });
     // The first heartbeat, so that other nodes count this one as alive from the start.
@@ -103,6 +114,15 @@ pub async fn open(
         .map_err(|e| anyhow::anyhow!(e.body.message))
         .context("cannot write to the store")?;
     state::start_sweeper(&state);
+    if let Some(mut notes) = notes {
+        let weak = Arc::downgrade(&state);
+        tokio::spawn(async move {
+            while let Some(note) = notes.recv().await {
+                let Some(state) = weak.upgrade() else { return };
+                state.apply_note(note);
+            }
+        });
+    }
     Ok(state)
 }
 

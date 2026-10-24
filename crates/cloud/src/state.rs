@@ -16,7 +16,7 @@ use crate::error::AppError;
 use crate::limits::RateLimiter;
 use crate::live::{self, Gone, SessionState};
 use crate::mail::Mailer;
-use crate::news::{News, Push};
+use crate::news::{AuthNote, News, Push};
 use crate::{db, util};
 
 pub type AppState = Arc<Inner>;
@@ -51,14 +51,29 @@ fn ms(duration: Duration) -> i64 {
 }
 
 impl Inner {
-    /// Fails when the device is signed out or the account is banned.
-    pub fn check_device(&self, device: u64, account: u64) -> Result<(), AppError> {
-        let cache = self.cache.read().unwrap_or_else(|e| e.into_inner());
-        if cache.devices.get(&device) != Some(&account) {
+    /// Fails when the device is signed out or the account is banned. A device this node has
+    /// not seen yet, because it signed in through another node, is looked up in the store.
+    pub async fn check_device(&self, device: u64, account: u64) -> Result<(), AppError> {
+        let known = {
+            let cache = self.cache.read().unwrap_or_else(|e| e.into_inner());
+            cache.devices.get(&device).copied()
+        };
+        let owner = match known {
+            Some(owner) => Some(owner),
+            None => {
+                let owner = db::device_owner(&self.db, device).await?;
+                if let Some(owner) = owner {
+                    self.cache_device(device, owner);
+                }
+                owner
+            }
+        };
+        if owner != Some(account) {
             return Err(AppError::unauthorized(
                 "This device is signed out. Sign in again.",
             ));
         }
+        let cache = self.cache.read().unwrap_or_else(|e| e.into_inner());
         if let Some(until) = cache.bans.get(&account).copied()
             && until.is_none_or(|t| t > util::now())
         {
@@ -111,19 +126,19 @@ impl Inner {
                 tracing::error!("no virtual address is free");
                 Push::Close {
                     code: 1013,
-                    reason: "no virtual address is free",
+                    reason: "no virtual address is free".into(),
                 }
             }
             Err(error) => {
                 tracing::error!(error = %error.body.message, "cannot record an event connection");
                 Push::Close {
                     code: 1011,
-                    reason: "the cloud cannot reach its store",
+                    reason: "the cloud cannot reach its store".into(),
                 }
             }
         };
         let welcomed = matches!(first, Push::Event(_));
-        let pushes = self.news.attach(account, device, serial, first);
+        let pushes = self.news.attach(account, device, serial, first).await;
         if welcomed {
             self.refresh_presence([account]).await;
         }
@@ -145,7 +160,7 @@ impl Inner {
     /// Called when an event connection ends. The account stays online for a grace period; the
     /// sweep takes it offline after that.
     pub async fn disconnect(&self, account: u64, device: u64, serial: u64) {
-        if !self.news.detach(device, serial) {
+        if !self.news.detach(device, serial).await {
             return;
         }
         let closed = async {
@@ -279,17 +294,38 @@ impl Inner {
 
     // Devices, bans, deletion
 
-    /// Signs a device out: forgets it and closes its event connection.
+    /// Signs a device out: forgets it and closes its event connection, wherever it is.
     pub async fn sign_out_device(&self, device: u64) -> Result<(), AppError> {
+        let owner = db::device_owner(&self.db, device).await?;
         db::delete_device(&self.db, device).await?;
         self.uncache_device(device);
-        self.news.close_device(
-            device,
-            Some(Event::SignedOut),
-            close::SIGNED_OUT,
-            "signed out",
-        );
+        self.news.tell_nodes(&AuthNote::DeviceGone { device });
+        if let Some(account) = owner {
+            self.news.close_device(
+                account,
+                device,
+                Some(Event::SignedOut),
+                close::SIGNED_OUT,
+                "signed out",
+            );
+        }
         Ok(())
+    }
+
+    /// Applies what another node changed about devices and bans.
+    pub fn apply_note(&self, note: AuthNote) {
+        let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
+        match note {
+            AuthNote::DeviceGone { device } => {
+                cache.devices.remove(&device);
+            }
+            AuthNote::Banned { account, until } => {
+                cache.bans.insert(account, until);
+            }
+            AuthNote::Unbanned { account } => {
+                cache.bans.remove(&account);
+            }
+        }
     }
 
     /// Applies a ban to what is running: closes connections and takes the account out of its
@@ -299,6 +335,7 @@ impl Inner {
             let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
             cache.bans.insert(account, until);
         }
+        self.news.tell_nodes(&AuthNote::Banned { account, until });
         self.news
             .close_account(account, &Event::Banned { until }, close::BANNED, "banned");
         let mut dirty = self.leave_everything(account).await?;
@@ -315,8 +352,11 @@ impl Inner {
     }
 
     pub fn lift_ban(&self, account: u64) {
-        let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
-        cache.bans.remove(&account);
+        {
+            let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
+            cache.bans.remove(&account);
+        }
+        self.news.tell_nodes(&AuthNote::Unbanned { account });
     }
 
     /// Deletes an account everywhere.
@@ -337,6 +377,11 @@ impl Inner {
             for device in &devices {
                 cache.devices.remove(&device.id());
             }
+        }
+        for device in &devices {
+            self.news.tell_nodes(&AuthNote::DeviceGone {
+                device: device.id(),
+            });
         }
         let offline = Event::Presence {
             account: anyplay_api::AccountId(account),
@@ -366,6 +411,7 @@ impl Inner {
     /// the grace periods, and invitations, challenges and leases that ran out. Every node runs it.
     pub async fn sweep(&self) -> Result<(), AppError> {
         self.limiter.sweep();
+        self.reload_bans().await?;
         let now = util::now_ms();
         let (offline, gone, leaving) = {
             let mut conn = self.db.acquire().await?;
@@ -388,6 +434,23 @@ impl Inner {
             dirty.extend(self.leave_everything(account).await?);
         }
         self.refresh_presence(dirty).await;
+        Ok(())
+    }
+}
+
+impl Inner {
+    /// Reads the bans that apply now, so that a ban another node did not manage to tell still
+    /// holds here.
+    async fn reload_bans(&self) -> Result<(), AppError> {
+        let now = util::now();
+        let bans: HashMap<u64, Option<u64>> = db::all_bans(&self.db)
+            .await?
+            .into_iter()
+            .filter(|ban| ban.active(now))
+            .map(|ban| (ban.account_id as u64, ban.until()))
+            .collect();
+        let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
+        cache.bans = bans;
         Ok(())
     }
 }
