@@ -15,7 +15,7 @@ use iroh_relay::server::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::TicketAccess;
+use crate::{AdmissionLimits, TicketAccess};
 
 /// How the relay gets its TLS certificate.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,9 +73,25 @@ pub struct Config {
     pub cert_dir: PathBuf,
     /// Use Let's Encrypt's staging service, whose certificates no client trusts.
     pub letsencrypt_staging: bool,
-    /// Limit what one client may send, in bytes per second.
+    /// Limit what one client may send, in bytes per second. `0` is no limit.
     pub client_bytes_per_second: Option<u32>,
+    /// How much one client may send at once before the limit above holds it back, in bytes. `0`
+    /// leaves it to iroh-relay (a tenth of a second of the rate).
+    pub client_burst_bytes: Option<u32>,
+    /// Connections this relay carries at once. `0` is no limit.
+    pub max_clients: usize,
+    /// Connections one account may hold at once. `0` is no limit.
+    pub max_connections_per_account: usize,
+    /// The longest a ticket may still be valid for when a client presents it, in seconds. `0` is
+    /// no limit.
+    pub max_ticket_lifetime_secs: u64,
+    /// Where Prometheus metrics are served. Without it there are none.
+    pub metrics_bind: Option<SocketAddr>,
 }
+
+/// One mebibyte per second is about eight megabits: far more than a game needs through a relay.
+const DEFAULT_CLIENT_BYTES_PER_SECOND: u32 = 1024 * 1024;
+const DEFAULT_CLIENT_BURST_BYTES: u32 = 2 * 1024 * 1024;
 
 impl Default for Config {
     fn default() -> Self {
@@ -94,7 +110,12 @@ impl Default for Config {
             contact: None,
             cert_dir: PathBuf::from("certs"),
             letsencrypt_staging: false,
-            client_bytes_per_second: None,
+            client_bytes_per_second: Some(DEFAULT_CLIENT_BYTES_PER_SECOND),
+            client_burst_bytes: Some(DEFAULT_CLIENT_BURST_BYTES),
+            max_clients: AdmissionLimits::DEFAULT_MAX_CLIENTS,
+            max_connections_per_account: AdmissionLimits::DEFAULT_MAX_CONNECTIONS_PER_ACCOUNT,
+            max_ticket_lifetime_secs: AdmissionLimits::DEFAULT_MAX_TICKET_LIFETIME_SECS,
+            metrics_bind: None,
         }
     }
 }
@@ -170,6 +191,21 @@ impl Config {
         if let Some(v) = get("CLIENT_BYTES_PER_SECOND") {
             self.client_bytes_per_second = Some(parse("CLIENT_BYTES_PER_SECOND", &v)?);
         }
+        if let Some(v) = get("CLIENT_BURST_BYTES") {
+            self.client_burst_bytes = Some(parse("CLIENT_BURST_BYTES", &v)?);
+        }
+        if let Some(v) = get("MAX_CLIENTS") {
+            self.max_clients = parse("MAX_CLIENTS", &v)?;
+        }
+        if let Some(v) = get("MAX_CONNECTIONS_PER_ACCOUNT") {
+            self.max_connections_per_account = parse("MAX_CONNECTIONS_PER_ACCOUNT", &v)?;
+        }
+        if let Some(v) = get("MAX_TICKET_LIFETIME_SECS") {
+            self.max_ticket_lifetime_secs = parse("MAX_TICKET_LIFETIME_SECS", &v)?;
+        }
+        if let Some(v) = get("METRICS_BIND") {
+            self.metrics_bind = Some(parse("METRICS_BIND", &v)?);
+        }
         Ok(())
     }
 
@@ -202,17 +238,39 @@ impl Config {
         }
     }
 
+    /// The admission check with this configuration's limits.
+    pub fn access(&self, verifier: Verifier) -> Arc<TicketAccess> {
+        Arc::new(TicketAccess::with_limits(
+            verifier,
+            AdmissionLimits {
+                max_clients: self.max_clients,
+                max_connections_per_account: self.max_connections_per_account,
+                max_ticket_lifetime_secs: self.max_ticket_lifetime_secs,
+            },
+        ))
+    }
+
+    /// The per-client receive limit, if there is one.
+    pub fn client_rate_limit(&self) -> Option<ClientRateLimit> {
+        let rate = self.client_bytes_per_second.and_then(NonZeroU32::new)?;
+        let mut limit = ClientRateLimit::new(rate);
+        limit.max_burst_bytes = self.client_burst_bytes.and_then(NonZeroU32::new);
+        Some(limit)
+    }
+
     /// Everything `iroh-relay` needs to start.
     pub async fn server_config(&self, verifier: Verifier) -> Result<ServerConfig> {
+        self.server_config_with(self.access(verifier)).await
+    }
+
+    /// Like [`Config::server_config`], for a caller that keeps the `access` to read its counters.
+    pub async fn server_config_with(&self, access: Arc<TicketAccess>) -> Result<ServerConfig> {
         let mut relay = RelayConfig::new(self.http_bind);
-        relay.access = Arc::new(TicketAccess::new(verifier));
+        relay.access = access;
         relay.key_cache_capacity = Some(1024);
-        if let Some(rate) = self.client_bytes_per_second {
-            let rate = NonZeroU32::new(rate).context("client_bytes_per_second must not be 0")?;
-            let mut limits = Limits::default();
-            limits.client_rx = Some(ClientRateLimit::new(rate));
-            relay.limits = limits;
-        }
+        let mut limits = Limits::default();
+        limits.client_rx = self.client_rate_limit();
+        relay.limits = limits;
 
         let mut quic = None;
         if self.tls != TlsMode::None {
@@ -355,6 +413,45 @@ mod tests {
     }
 
     #[test]
+    fn the_limits_are_on_by_default_and_settable() {
+        let config = Config::default();
+        let rate = config.client_rate_limit().expect("a rate limit by default");
+        assert_eq!(rate.bytes_per_second.get(), 1024 * 1024);
+        assert_eq!(rate.max_burst_bytes.map(|b| b.get()), Some(2 * 1024 * 1024));
+        assert_eq!(config.max_clients, 10_000);
+        assert_eq!(config.max_connections_per_account, 16);
+        assert_eq!(config.max_ticket_lifetime_secs, 25 * 60 * 60);
+
+        let mut config = config;
+        config
+            .apply_env(|name| {
+                Some(
+                    match name {
+                        "CLIENT_BYTES_PER_SECOND" => "2000",
+                        "CLIENT_BURST_BYTES" => "0",
+                        "MAX_CLIENTS" => "5",
+                        "MAX_CONNECTIONS_PER_ACCOUNT" => "2",
+                        "MAX_TICKET_LIFETIME_SECS" => "60",
+                        "METRICS_BIND" => "127.0.0.1:9187",
+                        _ => return None,
+                    }
+                    .into(),
+                )
+            })
+            .unwrap();
+        let rate = config.client_rate_limit().unwrap();
+        assert_eq!(rate.bytes_per_second.get(), 2000);
+        assert_eq!(rate.max_burst_bytes, None, "0 leaves the burst to iroh");
+        assert_eq!(config.max_clients, 5);
+        assert_eq!(config.max_connections_per_account, 2);
+        assert_eq!(config.max_ticket_lifetime_secs, 60);
+        assert_eq!(config.metrics_bind, Some("127.0.0.1:9187".parse().unwrap()));
+
+        config.client_bytes_per_second = Some(0);
+        assert!(config.client_rate_limit().is_none(), "0 turns it off");
+    }
+
+    #[test]
     fn unknown_settings_and_bad_values_are_errors() {
         assert!(toml::from_str::<Config>("colour = 1").is_err());
         let mut config = Config::default();
@@ -363,6 +460,30 @@ mod tests {
                 .apply_env(|n| (n == "TLS").then(|| "maybe".into()))
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn the_rate_limit_reaches_the_relay_server() {
+        let verifier = anyplay_ticket::Signer::generate().verifier();
+        let config = Config {
+            tls: TlsMode::None,
+            ..Config::default()
+        };
+        let server = config.server_config(verifier.clone()).await.unwrap();
+        let limit = server
+            .relay
+            .unwrap()
+            .limits
+            .client_rx
+            .expect("on by default");
+        assert_eq!(limit.bytes_per_second.get(), 1024 * 1024);
+        let off = Config {
+            tls: TlsMode::None,
+            client_bytes_per_second: Some(0),
+            ..Config::default()
+        };
+        let server = off.server_config(verifier).await.unwrap();
+        assert!(server.relay.unwrap().limits.client_rx.is_none());
     }
 
     #[tokio::test]

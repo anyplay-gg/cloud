@@ -69,6 +69,15 @@ pub async fn relay_tickets(
             "The endpoint is 64 lowercase hex digits.",
         ));
     }
+    let rates = &state.tuning.rates;
+    state
+        .limiter
+        .hit(
+            &format!("relay-tickets:{}", auth.account),
+            rates.relay_tickets_per_account,
+            rates.relay_ticket_window,
+        )
+        .map_err(AppError::rate_limited)?;
     let expires = now() + state.tuning.relay_ttl_secs;
     let token = state
         .signer

@@ -76,6 +76,42 @@ async fn relay_tickets_are_bound_to_the_endpoint_and_verify_with_the_public_key(
 }
 
 #[tokio::test]
+async fn relay_tickets_are_limited_per_account_not_per_endpoint() {
+    let cloud = TestCloud::with(
+        |_| {},
+        |tuning| {
+            tuning.rates.relay_tickets_per_account = 3;
+            tuning.rates.relay_ticket_window = Duration::from_secs(1);
+        },
+    )
+    .await;
+    let a = cloud.sign_up("Alec").await;
+    let b = cloud.sign_up("Bea").await;
+    let ask = |token: String, n: usize| {
+        let cloud = &cloud;
+        async move {
+            // A new endpoint every time: the limit does not care.
+            let endpoint = format!("{n:02x}").repeat(32);
+            cloud
+                .post("/v1/relays/tickets", &token, json!({"endpoint": endpoint}))
+                .await
+        }
+    };
+    for n in 0..3 {
+        ask(a.token().to_owned(), n).await.ok(200);
+    }
+    let refused = ask(a.token().to_owned(), 3).await;
+    refused.is_error("rate_limited", 429);
+    assert_eq!(refused.headers["retry-after"], "1");
+    // Another account has its own allowance.
+    ask(b.token().to_owned(), 0).await.ok(200);
+
+    // When the window ends the account may ask again.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    ask(a.token().to_owned(), 4).await.ok(200);
+}
+
+#[tokio::test]
 async fn too_many_requests_get_429_with_retry_after() {
     let cloud = TestCloud::with(
         |_| {},

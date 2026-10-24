@@ -51,7 +51,7 @@ A ban signs the account's event connections out at once, takes it out of its ses
 
 ### Fixed values
 
-These come from the API specification and are not settings: a sign-in code has 6 digits, lives 10 minutes and allows 5 tries; an access token lives 15 minutes; a relay ticket 24 hours; an invitation 15 minutes; an account stays online 10 seconds after its last event connection closes and keeps its sessions for 30 seconds; a virtual address is kept 10 minutes after an account goes offline; the cloud pings every 20 seconds. At most 10 devices stay signed in per account; a new one replaces the one used least recently.
+These come from the API specification and are not settings: a sign-in code has 6 digits, lives 10 minutes and allows 5 tries; an access token lives 15 minutes; a relay ticket 24 hours, and an account may ask for 20 of them per hour; an invitation 15 minutes; an account stays online 10 seconds after its last event connection closes and keeps its sessions for 30 seconds; a virtual address is kept 10 minutes after an account goes offline; the cloud pings every 20 seconds. At most 10 devices stay signed in per account; a new one replaces the one used least recently.
 
 ## The relay
 
@@ -70,7 +70,12 @@ These come from the API specification and are not settings: a sign-in code has 6
 | `contact` | none | An e-mail address Let's Encrypt can reach, for `letsencrypt`. |
 | `cert_dir` | `certs` | Where Let's Encrypt data is kept. |
 | `letsencrypt_staging` | `false` | Use Let's Encrypt's test service. Its certificates are not trusted by any client. |
-| `client_bytes_per_second` | none | Limit what one client may send. |
+| `client_bytes_per_second` | `1048576` | What one client may send through the relay, in bytes per second (about 8 Mbit/s). Over it the relay stops reading from that client until it is within the rate, which slows the sender down. `0` turns the limit off. |
+| `client_burst_bytes` | `2097152` | How much a client may send at once before the rate holds it back. `0` leaves it to iroh-relay, a tenth of a second of the rate. |
+| `max_clients` | `10000` | The most clients this relay carries at once. Past it, new clients are refused with `relay is full` and try another relay. Keep it below what the open-files limit allows (see below). `0` is no limit. |
+| `max_connections_per_account` | `16` | The most connections one account may hold on this relay, over all its devices. The account is read from the signed ticket. `0` is no limit. |
+| `max_ticket_lifetime_secs` | `90000` | A ticket that is still valid for longer than this when the client presents it is refused. The cloud issues 24 hours; the default adds one hour of slack. `0` is no limit. |
+| `metrics_bind` | none | An address such as `0.0.0.0:9091` where `/metrics` answers in the Prometheus text format. Keep it off the internet. |
 
 ### Which TLS mode
 
@@ -79,3 +84,34 @@ These come from the API specification and are not settings: a sign-in code has 6
 When the relay shares an address with a proxy that already holds port 443, let the proxy fetch the certificate and use `reloading` with the proxy's certificate files, on another port such as 8443. The compose file in `deploy/` does this with Caddy. Clients reach such a relay at `https://relay.example.com:8443`, and that is the URL to list in the cloud's `relays`.
 
 The relay admits a client only with a ticket that the cloud signed for that client's own endpoint. It checks the ticket itself with the public key and never calls the cloud, so it keeps working while the cloud restarts.
+
+A ticket is checked once, when the client connects. A client that is connected stays until it disconnects, even after its ticket has run out; the ticket's short life only matters when the client comes back.
+
+### Metrics
+
+With `metrics_bind` set, `GET /metrics` answers these. No label holds an account or an endpoint ID.
+
+| Metric | Meaning |
+|---|---|
+| `anyplay_relay_clients` | Clients connected now. |
+| `anyplay_relay_accounts` | Accounts with a client connected now. |
+| `anyplay_relay_max_clients` | The setting `max_clients`, to alert on how full the relay is. |
+| `anyplay_relay_bytes_in_total`, `anyplay_relay_bytes_out_total` | Bytes received from and sent to clients. Egress is what the provider bills. |
+| `anyplay_relay_packets_dropped_total` | Packets dropped because the receiver was gone. |
+| `anyplay_relay_rate_limited_bytes_total`, `anyplay_relay_rate_limited_connections_total` | Bytes and connections held back by `client_bytes_per_second`. |
+| `anyplay_relay_ticket_checks_total{result}` | Every connection attempt once, by `ok`, `missing`, `malformed`, `signature`, `kind`, `expired`, `endpoint` or `lifetime`. |
+| `anyplay_relay_refusals_total{reason}` | Connections turned away, by `ticket` (the checks say which), `account_limit` or `relay_full`. |
+
+Worth an alert: `relay_full` refusals above zero (add a relay), `anyplay_relay_clients` above 80 % of `anyplay_relay_max_clients`, and a rise in `signature` checks (tickets from another key, or someone guessing).
+
+### Running a relay
+
+**Sizing.** A relay costs bandwidth and sockets, not CPU. Every relayed packet passes through once in and once out, so a relay with 1,000 clients that each send 100 kB/s moves about 100 MB/s (800 Mbit/s) in and the same out. Plan the port speed and the provider's traffic allowance for the sum of what clients send, and watch `anyplay_relay_bytes_out_total` for the real figure; the per-client limit is a ceiling, not an average. Memory per client has not been measured yet; start with 2 GB for `max_clients = 10000` and look at the process.
+
+**Ports.** TCP 443 (or the port in `https_bind`, such as 8443 behind Caddy) for clients, and UDP 7842 for address discovery. TCP 80 is needed only if you use `http_bind` for something; with `tls = "letsencrypt"` the certificate check runs on 443. The metrics port is never published; scrape it from inside the host or the private network.
+
+**Open files.** Each client is a socket. Allow at least `2 * max_clients + 1024` open files: `ulimit -n 30000` for the default, `LimitNOFILE=30000` in a systemd unit, or `ulimits: nofile: 30000` in a compose file. With the usual default of 1,024 the relay runs out of sockets long before `max_clients`.
+
+**UDP buffers.** Address discovery shares one UDP socket among all clients. Raise the kernel's buffers so bursts are not dropped: `sysctl -w net.core.rmem_max=7500000 net.core.wmem_max=7500000`, and keep it in `/etc/sysctl.d/`.
+
+**DDoS.** The relay can refuse a client only after the TLS and WebSocket handshakes, so a flood of new connections costs it work before any limit applies; `iroh-relay` 1.4 has a setting for the rate of new connections but does not implement it. Put the volumetric filtering where it belongs: pick a provider whose DDoS protection covers TCP and UDP for the relay's address, and allow only the ports above. A per-address limit on new connections (for example `nftables` `ct count` or `limit rate` on port 443) is the next layer. Refused connections show up in the counters above and never in the log.

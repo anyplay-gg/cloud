@@ -236,6 +236,7 @@ dependencies = [
  "anyhow",
  "anyplay-ticket",
  "clap",
+ "http",
  "iroh-base",
  "iroh-dns",
  "iroh-relay",
