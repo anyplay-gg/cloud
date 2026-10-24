@@ -389,3 +389,44 @@ async fn each_presence_change_comes_with_a_higher_revision_and_the_lists_show_th
     let friends = lists(cloud.get("/v1/friends", b.token()).await);
     assert_eq!(friends.friends[0].presence.revision, playing);
 }
+
+/// On PostgreSQL a change that waits too long for another change to the same account is refused
+/// with `rate_limited` instead of holding its store connection for as long as the other runs.
+#[tokio::test]
+async fn a_friend_request_that_waits_too_long_for_the_account_is_refused() {
+    let cloud = TestCloud::start().await;
+    if cloud.state.config.database_url.is_none() {
+        eprintln!("SQLite has no row locks; skipped");
+        return;
+    }
+    let alec = cloud.sign_up("Alec").await;
+    let sam = cloud.sign_up("Sam").await;
+    // Another transaction holds Alec's row.
+    let mut other = cloud.state.db.begin().await.unwrap();
+    sqlx::query("SELECT id FROM accounts WHERE id = $1 FOR UPDATE")
+        .bind(alec.id as i64)
+        .execute(&mut *other)
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    let reply = cloud
+        .post(
+            "/v1/friends/requests",
+            alec.token(),
+            json!({"handle": sam.handle}),
+        )
+        .await;
+    let waited = started.elapsed();
+    reply.is_error("rate_limited", 429);
+    assert!(waited < Duration::from_secs(5), "waited {waited:?}");
+    other.rollback().await.unwrap();
+    // Once the other is done, the request goes through.
+    cloud
+        .post(
+            "/v1/friends/requests",
+            alec.token(),
+            json!({"handle": sam.handle}),
+        )
+        .await
+        .ok(200);
+}
