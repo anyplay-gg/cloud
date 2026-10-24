@@ -263,15 +263,26 @@ pub async fn schedule_deletion(pool: &Pool, id: u64, at: u64) -> sqlx::Result<()
     Ok(())
 }
 
-/// Cancels a scheduled deletion; true when there was one.
-pub async fn cancel_deletion(pool: &Pool, id: u64) -> sqlx::Result<bool> {
-    let result = sqlx::query(
-        "UPDATE accounts SET deletion_at = NULL WHERE id = $1 AND deletion_at IS NOT NULL",
-    )
-    .bind(i(id))
-    .execute(pool)
-    .await?;
+/// Cancels a scheduled deletion that is not due yet; true when there was one. From the time on
+/// the sweep deletes the account and nothing cancels it, so a cancel and the sweep cannot race.
+pub async fn cancel_deletion(pool: &Pool, id: u64, now: u64) -> sqlx::Result<bool> {
+    let result =
+        sqlx::query("UPDATE accounts SET deletion_at = NULL WHERE id = $1 AND deletion_at > $2")
+            .bind(i(id))
+            .bind(i(now))
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() == 1)
+}
+
+/// Moves a due deletion to `at`, when the sweep could not carry it out.
+pub async fn postpone_deletion(pool: &Pool, id: u64, at: u64) -> sqlx::Result<()> {
+    sqlx::query("UPDATE accounts SET deletion_at = $2 WHERE id = $1 AND deletion_at IS NOT NULL")
+        .bind(i(id))
+        .bind(i(at))
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// The accounts whose deletion is due at `now`, the longest overdue first.

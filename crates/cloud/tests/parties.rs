@@ -555,7 +555,7 @@ async fn banning_or_deleting_an_account_takes_it_out_of_its_party() {
     let (lead, friends) = leader_and_friends(&cloud, 2).await;
     gather(&cloud, &lead, &[&friends[0], &friends[1]]).await;
 
-    cloud.delete("/v1/me", friends[0].token()).await.ok(204);
+    cloud.delete_account_now(&friends[0]).await;
     let party: Party = party_of(&cloud, &lead).await.ok(200).json();
     assert_eq!(party.members.len(), 2);
     cloud

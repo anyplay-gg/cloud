@@ -366,6 +366,19 @@ impl TestCloud {
         .await
     }
 
+    /// Deletes the account the way the player does and lets the grace period pass: asks for the
+    /// deletion, then makes it due and runs the sweep.
+    pub async fn delete_account_now(&self, user: &User) {
+        let answer = self.delete("/v1/me", user.token()).await.ok(200);
+        assert!(answer.body["deletion"]["at"].is_u64(), "{}", answer.body);
+        sqlx::query("UPDATE accounts SET deletion_at = 1 WHERE id = $1")
+            .bind(user.id as i64)
+            .execute(&self.state.db)
+            .await
+            .unwrap();
+        self.state.sweep().await.unwrap();
+    }
+
     /// Signs a new account up by e-mail code.
     pub async fn sign_up(&self, handle: &str) -> User {
         let email = format!("{}@example.com", handle.to_lowercase());

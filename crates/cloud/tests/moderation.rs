@@ -1073,7 +1073,7 @@ async fn a_report_survives_the_deletion_of_the_reported_account() {
     let mona = moderator(&cloud, "Mona").await;
     let (kim, sam) = (cloud.sign_up("Kim").await, cloud.sign_up("Sam").await);
     file_report(&cloud, &kim, &sam).await;
-    cloud.delete("/v1/me", sam.token()).await.ok(204);
+    cloud.delete_account_now(&sam).await;
 
     let open = queue(&cloud, mona.token(), "open").await;
     assert_eq!(open.len(), 1, "the evidence stays");
@@ -1083,7 +1083,7 @@ async fn a_report_survives_the_deletion_of_the_reported_account() {
     assert_eq!(open[0].reporter.as_ref().unwrap().handle, "Kim");
     assert!(open[0].content.contains("Sam"));
     // The reporter leaving does not take it either; only the reporter is forgotten.
-    cloud.delete("/v1/me", kim.token()).await.ok(204);
+    cloud.delete_account_now(&kim).await;
     let open = queue(&cloud, mona.token(), "open").await;
     assert_eq!(open.len(), 1);
     assert!(open[0].reporter.is_none());

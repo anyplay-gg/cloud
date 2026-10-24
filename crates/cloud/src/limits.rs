@@ -41,6 +41,9 @@ pub struct Rates {
     /// Reads of public profiles on the web portal per address and `portal_public_window`.
     pub portal_public: u32,
     pub portal_public_window: Duration,
+    /// Sessions the web portal starts for a client address per `auth_window`: every page load
+    /// without a cookie starts one, and many players can share an address, so this is generous.
+    pub portal_sessions_per_ip: u32,
 }
 
 impl Default for Rates {
@@ -69,6 +72,7 @@ impl Default for Rates {
             appeal_window: Duration::from_secs(60 * 60),
             portal_public: 120,
             portal_public_window: Duration::from_secs(60),
+            portal_sessions_per_ip: 300,
         }
     }
 }

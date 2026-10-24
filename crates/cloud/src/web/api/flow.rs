@@ -229,7 +229,12 @@ pub async fn session(
             token: None,
         },
         Ok(None) => {
-            limit_ip_api(&state, "session", ip, state.tuning.rates.code_per_ip)?;
+            limit_ip_api(
+                &state,
+                "session",
+                ip,
+                state.tuning.rates.portal_sessions_per_ip,
+            )?;
             fresh_visit(&state, SessionData::default()).await?
         }
         Err(_) => return Err(AppError::internal().into()),

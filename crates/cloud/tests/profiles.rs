@@ -999,7 +999,7 @@ async fn export_holds_the_profile_and_deletion_removes_it() {
         ])
     );
 
-    cloud.delete("/v1/me", alec.token()).await.ok(204);
+    cloud.delete_account_now(&alec).await;
     picture(&cloud, &hash).await.is_error("not_found", 404);
     let db = &cloud.state.db;
     for table in ["profiles", "avatars", "playtime", "privacy"] {

@@ -226,11 +226,18 @@ pub async fn delete(
         };
         return Ok(super::page(&state, &visit, StatusCode::BAD_REQUEST, html));
     }
-    state.delete_account(account.id()).await?;
+    // The account is deleted when the grace period ends. Until then this browser stays signed
+    // in; every device and every other browser is signed out.
+    state
+        .schedule_deletion(account.id(), Some(&session.id_hash))
+        .await?;
+    let days = state.tuning.deletion_grace.as_secs() / 86_400;
     let page = WebError::page(
         StatusCode::OK,
-        "Account deleted",
-        "Your account and its data are gone from this cloud.",
+        "Account deletion scheduled",
+        &format!(
+            "Your account and its data will be deleted from this cloud in {days} days. Every              device and every other browser is signed out. To keep the account, sign in on the              AnyPlay portal and cancel the deletion before then."
+        ),
     );
-    Ok(without_cookie(&state, page.into_response()))
+    Ok(page.into_response())
 }

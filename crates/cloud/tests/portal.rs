@@ -984,6 +984,7 @@ async fn an_e_mail_change_needs_a_fresh_session_and_a_code_from_the_new_address(
     let alec = cloud.sign_up("Alec").await;
     let bob = cloud.sign_up("Bob").await;
     let portal = Portal::signed_in(&cloud, &alec).await;
+    let other = Portal::signed_in(&cloud, &alec).await;
 
     portal.age(&cloud).await;
     portal
@@ -1033,11 +1034,20 @@ async fn an_e_mail_change_needs_a_fresh_session_and_a_code_from_the_new_address(
     let account = portal.get("/account").await.ok(200);
     assert_eq!(account["account"]["email"], "new@example.com");
     assert_eq!(account["pending_email"], Value::Null);
-    cloud.get("/v1/me", alec.token()).await.ok(200);
-    assert_eq!(
-        cloud.get("/v1/me", alec.token()).await.body["email"],
-        "new@example.com"
-    );
+    // The old address is told, in plain words; the new one is named.
+    let (subject, text) = cloud.mail.last_notice(&alec.email).expect("a notice");
+    assert!(subject.contains("changed") && !subject.contains("new@example.com"));
+    assert!(text.contains("new@example.com") && text.contains("If it was not you"));
+    assert!(cloud.mail.last_notice("new@example.com").is_none());
+    // Whatever else was signed in is not any more: the other browser and the device. The browser
+    // that confirmed stays.
+    other.get("/account").await.error(401, "unauthorized");
+    cloud
+        .get("/v1/me", alec.token())
+        .await
+        .is_error("unauthorized", 401);
+    let again = cloud.sign_in("new@example.com", "pc").await;
+    assert_eq!(again.me.email, "new@example.com");
 
     // An address another account has: the code goes to the owner, and the change is refused
     // with the same words as any other address that cannot be used.
@@ -1450,4 +1460,299 @@ async fn the_app_opened_by_the_launcher_goes_on_in_the_portal_only_when_there_is
             .unwrap();
         assert_eq!(refused.status().as_u16(), 400);
     }
+}
+
+// Review fixes
+
+#[tokio::test]
+async fn every_way_to_delete_the_account_waits_for_the_grace_period() {
+    let cloud = TestCloud::start().await;
+    let alec = cloud.sign_up("Alec").await;
+    let other_device = cloud.sign_in(&alec.email, "Laptop").await;
+    let portal = Portal::signed_in(&cloud, &alec).await;
+    let elsewhere = Portal::signed_in(&cloud, &alec).await;
+
+    // The HTML delete form, with the token of the portal session (the same cookie).
+    let form = portal
+        .dispatch(
+            portal
+                .client
+                .post(portal.url("/web/account/delete"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(format!("csrf={}&handle=Alec", portal.token())),
+        )
+        .await;
+    assert_eq!(form.status, 200, "{}", form.text());
+    assert!(form.text().contains("scheduled"), "{}", form.text());
+    assert!(
+        anyplay_cloud::db::account(&cloud.state.db, alec.id)
+            .await
+            .unwrap()
+            .is_some(),
+        "nothing is deleted at once"
+    );
+    let at = anyplay_cloud::db::deletion_of(&cloud.state.db, alec.id)
+        .await
+        .unwrap()
+        .expect("scheduled");
+    assert!(at > now() + 29 * 24 * 3600);
+    // Devices and other browsers are out; the browser that asked can cancel.
+    cloud
+        .get("/v1/me", alec.token())
+        .await
+        .is_error("unauthorized", 401);
+    cloud
+        .get("/v1/me", &other_device.tokens.access)
+        .await
+        .is_error("unauthorized", 401);
+    elsewhere.get("/account").await.error(401, "unauthorized");
+    assert_eq!(portal.get("/account").await.ok(200)["deletion"]["at"], at);
+
+    // The API of the launcher answers with the scheduled time, and keeps the first one.
+    let renewed = cloud.sign_in(&alec.email, "Desk").await;
+    let answer = cloud.delete("/v1/me", &renewed.tokens.access).await.ok(200);
+    assert_eq!(answer.body["deletion"]["at"], at);
+    assert!(
+        anyplay_cloud::db::account(&cloud.state.db, alec.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    cloud
+        .get("/v1/me", &renewed.tokens.access)
+        .await
+        .is_error("unauthorized", 401);
+
+    // The tokens are refused from now on: the "not before" time moved.
+    let valid = anyplay_cloud::binding::all_tokens_valid_from(&cloud.state.db)
+        .await
+        .unwrap();
+    assert!(valid.iter().any(|(id, from)| *id == alec.id && *from > 0));
+
+    // That signed every browser out too. The player signs in again and cancels in the portal.
+    portal.get("/account").await.error(401, "unauthorized");
+    let back = Portal::signed_in(&cloud, &alec).await;
+    assert_eq!(back.get("/account").await.ok(200)["deletion"]["at"], at);
+    back.delete("/account/deletion").await.ok(200);
+    assert_eq!(
+        anyplay_cloud::db::deletion_of(&cloud.state.db, alec.id)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn a_cancel_wins_before_the_time_and_the_sweep_wins_after() {
+    let cloud = TestCloud::start().await;
+    let alec = cloud.sign_up("Alec").await;
+    let bob = cloud.sign_up("Bob").await;
+    let a = Portal::signed_in(&cloud, &alec).await;
+    let b = Portal::signed_in(&cloud, &bob).await;
+    a.post("/account/deletion", json!({"handle": "Alec"}))
+        .await
+        .ok(200);
+    b.post("/account/deletion", json!({"handle": "Bob"}))
+        .await
+        .ok(200);
+    // Alec cancels in time and the sweep leaves the account alone.
+    a.delete("/account/deletion").await.ok(200);
+    // Bob's time has come: the sweep is certain, a cancel is too late.
+    sqlx::query("UPDATE accounts SET deletion_at = 1 WHERE id = $1")
+        .bind(bob.id as i64)
+        .execute(&cloud.state.db)
+        .await
+        .unwrap();
+    b.delete("/account/deletion").await.error(403, "forbidden");
+    cloud.state.sweep().await.unwrap();
+    let db = &cloud.state.db;
+    assert!(
+        anyplay_cloud::db::account(db, alec.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        anyplay_cloud::db::account(db, bob.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // An account the sweep cannot delete is moved back, so it does not hold the others up.
+    let cleo = cloud.sign_up("Cleo").await;
+    sqlx::query("UPDATE accounts SET deletion_at = 1 WHERE id = $1")
+        .bind(cleo.id as i64)
+        .execute(db)
+        .await
+        .unwrap();
+    anyplay_cloud::db::postpone_deletion(db, cleo.id, now() + 600)
+        .await
+        .unwrap();
+    assert!(
+        anyplay_cloud::db::deletions_due(db, now(), 20)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_stale_session_cannot_export_or_end_anything_but_itself() {
+    let cloud = TestCloud::start().await;
+    let alec = cloud.sign_up("Alec").await;
+    let device = cloud.sign_in(&alec.email, "Laptop").await;
+    let victim = Portal::signed_in(&cloud, &alec).await;
+    let thief = Portal::signed_in(&cloud, &alec).await;
+    let account = thief.get("/account").await.ok(200);
+    let victims = |account: &Value, current: bool| {
+        account["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["current"] == current)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let id_of_victim = victims(&account, false);
+    let own = victims(&account, true);
+    let device_id = account["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "Laptop")
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    thief.age(&cloud).await;
+
+    thief
+        .get("/account/export")
+        .await
+        .error(403, "step_up_required");
+    thief
+        .delete(&format!("/account/sessions/{id_of_victim}"))
+        .await
+        .error(403, "step_up_required");
+    thief
+        .delete(&format!("/account/devices/{device_id}"))
+        .await
+        .error(403, "step_up_required");
+    // Nothing happened to the owner's sessions and devices.
+    victim.get("/account").await.ok(200);
+    cloud.get("/v1/me", &device.tokens.access).await.ok(200);
+
+    // After a step-up the export and the sign-outs work.
+    thief.post("/step-up/email", json!({})).await.ok(200);
+    let code = cloud.mail.last_code(&alec.email).unwrap();
+    thief
+        .post("/step-up/code", json!({"code": code}))
+        .await
+        .ok(200);
+    assert_eq!(thief.get("/account/export").await.status, 200);
+    thief
+        .delete(&format!("/account/sessions/{id_of_victim}"))
+        .await
+        .ok(200);
+    victim.get("/account").await.error(401, "unauthorized");
+
+    // A browser may always sign itself out, fresh or not.
+    thief.age(&cloud).await;
+    thief
+        .delete(&format!("/account/sessions/{own}"))
+        .await
+        .ok(200);
+}
+
+#[tokio::test]
+async fn cookieless_page_loads_have_a_bucket_of_their_own() {
+    let cloud = TestCloud::with(|_| {}, |t| t.rates.portal_sessions_per_ip = 3).await;
+    let alec = cloud.sign_up("Alec").await;
+    // The sign-in code limits are not the bucket of page loads: ten loads do not use them up.
+    for _ in 0..3 {
+        Portal::new(&cloud).get("/session").await.ok(200);
+    }
+    Portal::new(&cloud)
+        .get("/session")
+        .await
+        .error(429, "rate_limited");
+    // A browser that has its session is not counted, and asking for a code still works.
+    let (token, _) = anyplay_cloud::web::store::create_session(
+        &cloud.state.db,
+        None,
+        &anyplay_cloud::web::store::SessionData::default(),
+        Duration::from_secs(600),
+    )
+    .await
+    .unwrap();
+    let portal = Portal::new(&cloud);
+    portal
+        .cookies
+        .lock()
+        .unwrap()
+        .insert("anyplay_web".into(), token);
+    portal.session().await;
+    portal
+        .post("/sign-in/email", json!({"email": alec.email}))
+        .await
+        .ok(200);
+}
+
+#[tokio::test]
+async fn a_read_of_the_session_does_not_undo_what_another_request_wrote() {
+    use anyplay_cloud::web::store::{
+        EmailChange, SessionData, create_session, load_session, save_data,
+    };
+    let cloud = TestCloud::start().await;
+    let pool = &cloud.state.db;
+    let alec = cloud.sign_up("Alec").await;
+    let idle = Duration::from_secs(600);
+    let max = Duration::from_secs(3600);
+    let (token, _) = create_session(
+        pool,
+        Some(alec.id),
+        &SessionData {
+            notice: Some("hello".into()),
+            ..SessionData::default()
+        },
+        idle,
+    )
+    .await
+    .unwrap();
+    // Two requests load the same session.
+    let mut reader = load_session(pool, &token, idle, max)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut writer = load_session(pool, &token, idle, max)
+        .await
+        .unwrap()
+        .unwrap();
+    // The writer proves who the player is again and starts an e-mail change.
+    writer.data.verified_ms = Some(12_345);
+    writer.data.email_change = Some(EmailChange {
+        challenge: "c".into(),
+        email: "new@example.com".into(),
+    });
+    save_data(pool, &writer).await.unwrap();
+    // The reader, which had loaded before, takes the notice and saves.
+    reader.data.notice = None;
+    save_data(pool, &reader).await.unwrap();
+
+    let stored = load_session(pool, &token, idle, max)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.data.notice, None, "the reader's change is kept");
+    assert_eq!(
+        stored.data.verified_ms,
+        Some(12_345),
+        "the writer's is not undone"
+    );
+    assert_eq!(
+        stored.data.email_change.map(|c| c.email).as_deref(),
+        Some("new@example.com")
+    );
 }
