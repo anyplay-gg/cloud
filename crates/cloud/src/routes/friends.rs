@@ -39,16 +39,36 @@ fn notify(state: &AppState, accounts: &[u64]) {
     }
 }
 
+/// How long a change waits for another change to the same account on PostgreSQL before it is
+/// refused. Without a limit, a burst at one popular account would hold a store connection per
+/// waiting request and could take the whole pool.
+const LOCK_TIMEOUT: &str = "SET LOCAL lock_timeout = '2s'";
+
 /// Starts a transaction that holds accounts `a` and `b` until it ends: another change that holds
-/// either of them waits for it. On PostgreSQL it locks their rows, in the order of their IDs so
-/// that two changes never wait for each other; SQLite has one writer, which the transaction
-/// already is.
-async fn hold(state: &AppState, a: u64, b: u64) -> Result<WriteTx> {
+/// either of them waits for it. Every change to friends, requests and blocks must start here, or
+/// the limits it checks no longer count what the others write. On PostgreSQL it locks the two
+/// accounts' rows, in the order of their IDs so that two changes never wait for each other, and a
+/// change that waits longer than [`LOCK_TIMEOUT`] is answered `rate_limited`; SQLite has one
+/// writer, which the transaction already is. Fails with `not_found` when either account is gone,
+/// unless `missing_ok`.
+async fn hold(state: &AppState, a: u64, b: u64, missing_ok: bool) -> Result<WriteTx> {
     let mut tx = state.begin_write().await?;
-    if state.config.database_url.is_some() {
-        db::lock_accounts(&mut tx, a, b).await?;
+    let postgres = state.config.database_url.is_some();
+    if postgres {
+        sqlx::query(LOCK_TIMEOUT).execute(&mut *tx).await?;
     }
-    Ok(tx)
+    match db::lock_accounts(&mut tx, a, b, postgres).await {
+        Ok(true) => Ok(tx),
+        Ok(false) if missing_ok => Ok(tx),
+        Ok(false) => Err(AppError::not_found()),
+        Err(error) if is_lock_timeout(&error) => Err(AppError::rate_limited(1)),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// PostgreSQL's `lock_not_available`, which a `lock_timeout` raises.
+fn is_lock_timeout(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(e) if e.code().as_deref() == Some("55P03"))
 }
 
 /// The friend lists with the friends' presence. All of it is read on one store connection: under
@@ -109,7 +129,7 @@ pub async fn request(
         state: FriendState::Friends,
     });
     let rules = crate::moderation::friend_request_rules(&state, me).await?;
-    let mut tx = hold(&state, me, them).await?;
+    let mut tx = hold(&state, me, them, false).await?;
     // A block stays private: the answer is the same and nothing happens.
     if db::has_blocked(&mut *tx, them, me).await? {
         return Ok(requested);
@@ -165,7 +185,7 @@ pub async fn accept(
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
     let them = parse_id(&id)?;
-    let mut tx = hold(&state, auth.account, them).await?;
+    let mut tx = hold(&state, auth.account, them, false).await?;
     if !db::request_exists(&mut tx, them, auth.account).await? {
         return Err(AppError::not_found());
     }
@@ -183,7 +203,7 @@ pub async fn cancel(
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
     let them = parse_id(&id)?;
-    let mut tx = hold(&state, auth.account, them).await?;
+    let mut tx = hold(&state, auth.account, them, false).await?;
     let removed = db::delete_request(&mut tx, them, auth.account).await?
         || db::delete_request(&mut tx, auth.account, them).await?;
     if !removed {
@@ -200,7 +220,7 @@ pub async fn unfriend(
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
     let them = parse_id(&id)?;
-    let mut tx = hold(&state, auth.account, them).await?;
+    let mut tx = hold(&state, auth.account, them, false).await?;
     if !db::remove_friendship(&mut tx, auth.account, them).await? {
         return Err(AppError::not_found());
     }
@@ -224,7 +244,7 @@ pub async fn block(
     if db::account(&state.db, them).await?.is_none() {
         return Err(AppError::not_found());
     }
-    let mut tx = hold(&state, auth.account, them).await?;
+    let mut tx = hold(&state, auth.account, them, false).await?;
     if !db::has_blocked(&mut *tx, auth.account, them).await?
         && db::count_blocks(&mut tx, auth.account).await? >= MAX_BLOCKS
     {
@@ -253,7 +273,7 @@ pub async fn unblock(
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
     let them = parse_id(&id)?;
-    let mut tx = hold(&state, auth.account, them).await?;
+    let mut tx = hold(&state, auth.account, them, true).await?;
     let removed = db::unblock(&mut tx, auth.account, them).await?;
     tx.commit().await?;
     if removed {

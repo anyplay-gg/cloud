@@ -582,23 +582,31 @@ pub async fn are_friends<'e>(
     Ok(row.is_some())
 }
 
-/// Locks the rows of two accounts (or one, when they are the same) until the transaction ends,
-/// in the order of their IDs, so that two transactions that lock the same pair never wait for
-/// each other. PostgreSQL only: SQLite has no row locks.
-pub async fn lock_accounts(conn: &mut Conn, a: u64, b: u64) -> sqlx::Result<()> {
+/// Whether both accounts (or the one, when they are the same) exist. With `lock` (PostgreSQL) it
+/// also locks their rows until the transaction ends, in the order of their IDs, so that two
+/// transactions that lock the same pair never wait for each other; SQLite has no row locks, and
+/// its write transaction holds the whole store already.
+pub async fn lock_accounts(conn: &mut Conn, a: u64, b: u64, lock: bool) -> sqlx::Result<bool> {
     let (low, high) = (a.min(b), a.max(b));
     let ids = if low == high {
         vec![low]
     } else {
         vec![low, high]
     };
+    let query = if lock {
+        "SELECT id FROM accounts WHERE id = $1 FOR UPDATE"
+    } else {
+        "SELECT id FROM accounts WHERE id = $1"
+    };
+    let mut found = true;
     for id in ids {
-        sqlx::query("SELECT id FROM accounts WHERE id = $1 FOR UPDATE")
+        let row: Option<(i64,)> = sqlx::query_as(query)
             .bind(i(id))
-            .execute(&mut *conn)
+            .fetch_optional(&mut *conn)
             .await?;
+        found &= row.is_some();
     }
-    Ok(())
+    Ok(found)
 }
 
 pub async fn count_friends(conn: &mut Conn, account: u64) -> sqlx::Result<i64> {
