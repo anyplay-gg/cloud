@@ -12,7 +12,10 @@ use anyplay_api::{
     GrantModerator, Moderator, ReportView, Rule, path,
 };
 
-use crate::routes::admin::{ACTIONS, ActionByHandle, BAN, BANS, BanAnswer, BanRequest, REPORTS};
+use crate::routes::admin::{
+    ACTIONS, ActionByHandle, BAN, BANS, BanAnswer, BanRequest, MAIL_TEST, MailTestAnswer,
+    MailTestRequest, REPORTS,
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about = "The central services of the AnyPlay network")]
@@ -116,6 +119,12 @@ pub enum AdminAction {
         reverse: bool,
         #[arg(long)]
         reason: String,
+    },
+    /// Send one test mail through the mail settings of the running cloud, and print `sent` or
+    /// the error class and SMTP status.
+    MailTest {
+        /// The address to send to.
+        address: String,
     },
     /// Show the newest lines of the audit log.
     Log {
@@ -322,6 +331,17 @@ pub async fn admin(config: &Config, url: Option<String>, action: AdminAction) ->
             let _: AppealView = read(response).await?;
             println!("Decided appeal {id}.");
         }
+        AdminAction::MailTest { address } => {
+            let response = post(MAIL_TEST.to_owned())
+                .json(&MailTestRequest { to: address })
+                .send()
+                .await?;
+            let answer: MailTestAnswer = read(response).await?;
+            println!("{}", mail_test_line(&answer));
+            if !answer.sent {
+                std::process::exit(1);
+            }
+        }
         AdminAction::Log { limit } => {
             let response = get(format!("{}?limit={limit}", path::MOD_LOG))
                 .send()
@@ -341,6 +361,25 @@ pub async fn admin(config: &Config, url: Option<String>, action: AdminAction) ->
         }
     }
     Ok(())
+}
+
+/// What `admin mail-test` prints.
+fn mail_test_line(answer: &MailTestAnswer) -> String {
+    if answer.sent {
+        return match answer.mode.as_str() {
+            "log" => "sent (mail = log: written to the log, not delivered)".into(),
+            _ => "sent".into(),
+        };
+    }
+    let class = answer.class.map_or("other", |c| c.as_str());
+    let line = match answer.status {
+        Some(status) => format!("failed: {class} (SMTP {status})"),
+        None => format!("failed: {class}"),
+    };
+    match &answer.reply {
+        Some(reply) => format!("{line}\nserver said: {reply}"),
+        None => line,
+    }
 }
 
 async fn check(response: reqwest::Response) -> Result<reqwest::Response> {
@@ -381,4 +420,59 @@ fn rule(name: Option<String>) -> Result<Option<Rule>> {
         })
     })
     .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mail::MailClass;
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(std::iter::once("anyplay-cloud").chain(args.iter().copied())).unwrap()
+    }
+
+    #[test]
+    fn mail_test_takes_an_address() {
+        let cli = parse(&["admin", "mail-test", "someone@example.com"]);
+        match cli.command {
+            Some(Command::Admin {
+                url: None,
+                action: AdminAction::MailTest { address },
+            }) => assert_eq!(address, "someone@example.com"),
+            other => panic!("unexpected {other:?}"),
+        }
+        let with_url = parse(&["admin", "--url", "http://cloud:8080", "mail-test", "a@b.c"]);
+        assert!(matches!(
+            with_url.command,
+            Some(Command::Admin { url: Some(_), .. })
+        ));
+        assert!(Cli::try_parse_from(["anyplay-cloud", "admin", "mail-test"]).is_err());
+    }
+
+    #[test]
+    fn mail_test_prints_sent_or_class_and_status() {
+        let answer = |sent, class, status, mode: &str| MailTestAnswer {
+            mode: mode.into(),
+            sent,
+            class,
+            status,
+            reply: None,
+        };
+        assert_eq!(mail_test_line(&answer(true, None, None, "smtp")), "sent");
+        assert!(mail_test_line(&answer(true, None, None, "log")).contains("not delivered"));
+        assert_eq!(
+            mail_test_line(&answer(false, Some(MailClass::Auth), Some(535), "smtp")),
+            "failed: auth (SMTP 535)"
+        );
+        assert_eq!(
+            mail_test_line(&answer(false, Some(MailClass::Connect), None, "smtp")),
+            "failed: connect"
+        );
+        let mut refused = answer(false, Some(MailClass::RejectedSender), Some(403), "smtp");
+        refused.reply = Some("domain is not verified".into());
+        assert_eq!(
+            mail_test_line(&refused),
+            "failed: rejected_sender (SMTP 403)\nserver said: domain is not verified"
+        );
+    }
 }

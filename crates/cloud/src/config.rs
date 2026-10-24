@@ -34,13 +34,13 @@ pub enum LogFormat {
 }
 
 /// How the connection to the SMTP server is secured.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SmtpTls {
     /// Start in plain text and switch to TLS (usually port 587).
-    #[default]
     Starttls,
-    /// TLS from the first byte (usually port 465).
+    /// TLS from the first byte (usually port 465). Also written `implicit`.
+    #[serde(alias = "implicit")]
     Tls,
     /// No encryption. Only for a server on the same machine.
     None,
@@ -77,7 +77,8 @@ pub struct Config {
     pub smtp_port: Option<u16>,
     pub smtp_username: Option<String>,
     pub smtp_password: Option<String>,
-    pub smtp_tls: SmtpTls,
+    /// Absent: derived from the port (`tls` on 465, `starttls` otherwise).
+    pub smtp_tls: Option<SmtpTls>,
     pub signup: Signup,
     pub privacy_url: Option<String>,
     pub terms_url: Option<String>,
@@ -157,7 +158,7 @@ impl Default for Config {
             smtp_port: None,
             smtp_username: None,
             smtp_password: None,
-            smtp_tls: SmtpTls::Starttls,
+            smtp_tls: None,
             signup: Signup::Open,
             privacy_url: None,
             terms_url: None,
@@ -199,7 +200,23 @@ fn parse_word<T: for<'de> Deserialize<'de>>(name: &str, text: &str) -> Result<T>
     serde_json::from_value(word).map_err(|e| anyhow::anyhow!("ANYPLAY_CLOUD_{name}: {e}"))
 }
 
+impl SmtpTls {
+    /// The mode to use: the one asked for, else implicit TLS on port 465 and STARTTLS on any
+    /// other port.
+    pub fn resolve(asked: Option<SmtpTls>, port: Option<u16>) -> SmtpTls {
+        asked.unwrap_or(match port {
+            Some(465) => SmtpTls::Tls,
+            _ => SmtpTls::Starttls,
+        })
+    }
+}
+
 impl Config {
+    /// How to secure the connection to the SMTP server.
+    pub fn smtp_tls(&self) -> SmtpTls {
+        SmtpTls::resolve(self.smtp_tls, self.smtp_port)
+    }
+
     /// Reads the file, if any, then applies the environment and checks the result.
     pub fn load(path: Option<&Path>) -> Result<Self> {
         let mut config = match path {
@@ -274,7 +291,7 @@ impl Config {
             self.smtp_password = Some(v);
         }
         if let Some(v) = get("SMTP_TLS") {
-            self.smtp_tls = parse_word("SMTP_TLS", &v)?;
+            self.smtp_tls = Some(parse_word("SMTP_TLS", &v)?);
         }
         if let Some(v) = get("SIGNUP") {
             self.signup = parse_word("SIGNUP", &v)?;
@@ -668,6 +685,37 @@ impl Default for Tuning {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tls_mode_follows_the_port_unless_it_is_set() {
+        let mut config = Config::default();
+        assert_eq!(config.smtp_tls(), SmtpTls::Starttls);
+        config.smtp_port = Some(587);
+        assert_eq!(config.smtp_tls(), SmtpTls::Starttls);
+        config.smtp_port = Some(465);
+        assert_eq!(config.smtp_tls(), SmtpTls::Tls);
+        config.smtp_tls = Some(SmtpTls::Starttls);
+        assert_eq!(
+            config.smtp_tls(),
+            SmtpTls::Starttls,
+            "an explicit mode wins"
+        );
+        config.smtp_port = None;
+        config.smtp_tls = Some(SmtpTls::None);
+        assert_eq!(config.smtp_tls(), SmtpTls::None);
+    }
+
+    #[test]
+    fn implicit_is_another_word_for_tls() {
+        let mut config = Config::default();
+        config
+            .apply_env(|name| (name == "SMTP_TLS").then(|| "Implicit".into()))
+            .unwrap();
+        assert_eq!(config.smtp_tls, Some(SmtpTls::Tls));
+        let file: Config = toml::from_str("smtp_tls = \"implicit\"").unwrap();
+        assert_eq!(file.smtp_tls(), SmtpTls::Tls);
+        assert!(toml::from_str::<Config>("smtp_tls = \"ssl\"").is_err());
+    }
 
     #[test]
     fn the_environment_beats_the_file() {

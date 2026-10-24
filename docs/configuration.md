@@ -27,7 +27,7 @@ Without a file, the defaults apply. The cloud runs that way for development: sig
 | `smtp_host` | none | The SMTP server. Required with `mail = "smtp"`. |
 | `smtp_port` | by `smtp_tls` | `587` for `starttls`, `465` for `tls`, `25` for `none`. |
 | `smtp_username`, `smtp_password` | none | Log-in for the SMTP server. Set both or neither. |
-| `smtp_tls` | `starttls` | `starttls` (switch to TLS), `tls` (TLS from the first byte) or `none` (only for a server on the same machine). |
+| `smtp_tls` | by `smtp_port` | `starttls` (plain start, then switch to TLS; port 587), `tls` (TLS from the first byte, also written `implicit`; port 465, SMTPS) or `none` (only for a server on the same machine). Not set: `tls` when `smtp_port` is `465`, `starttls` on any other port. A mode that does not fit the port (`starttls` on 465, `tls` on 587) is logged as a warning at start. |
 | `signup` | `open` | `closed` stops new accounts. Existing accounts can still sign in. |
 | `privacy_url`, `terms_url` | none | Links the launcher shows before sign-up, and the account web in its footer and next to the terms checkbox. |
 | `terms_version` | none | The version of the terms in force, such as `2026-10` (at most 64 characters). The account web asks a new player to accept it and records it with the time; a player who accepted another version, or none, is asked again at their next sign-in on the web. Without it the web asks nothing and no version is recorded. |
@@ -44,6 +44,21 @@ The `admin` and `healthcheck` commands read the same settings to find the cloud 
 ### Sign-in mails
 
 With `mail = "smtp"` the cloud never writes addresses or codes to its log above debug level. With `mail = "log"` it does, at info level, because that is the point of the mode.
+
+When a mail cannot be sent, the cloud logs one line at error level, such as `cannot send a sign-in code class=auth status=535`, and the player sees the same generic error as before. `class` is one of:
+
+| Class | Meaning |
+|---|---|
+| `connect` | No connection: DNS, refused, unreachable or dropped. |
+| `tls` | The TLS handshake failed, or the server wants a different `smtp_tls` (for example "must issue a STARTTLS command first"). |
+| `auth` | The server refused `smtp_username` or `smtp_password` (530, 534, 535, 538 or 454). |
+| `rejected_recipient` | The server refused the address (550 to 554). A best guess from the reply. |
+| `rejected_sender` | The server refused `mail_from` (550 to 554 with the sender named). A best guess from the reply. |
+| `invalid_recipient` | The address is not an address. Nothing was sent. |
+| `timeout` | The server or the cloud ran out of time (15 seconds per SMTP step, 20 seconds per mail). |
+| `other` | Anything else. `status` still says what the server answered, if it did. |
+
+The line carries the SMTP `status` when the server answered with one, and `reply`, the server's own words with every e-mail address taken out (such as `domain is not verified`). It never carries the address, the code or a secret. A mail the server accepted is logged at info level as `sign-in code accepted by the mail server`; if that line appears and the mail never arrives, the problem is behind the server (sender domain, spam filtering), not in the cloud. To try the settings without a player, run `anyplay-cloud admin mail-test <address>` (needs `admin_token`); it sends one short mail through the running cloud and prints `sent` or `failed: <class> (SMTP <status>)` and the server's reply.
 
 ### Moderation settings
 

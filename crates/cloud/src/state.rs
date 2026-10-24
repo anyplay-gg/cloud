@@ -426,13 +426,13 @@ impl Inner {
     /// Sends a notice about an account to an address. A failure is logged and does not stop
     /// what the notice is about.
     pub async fn send_notice(&self, to: &str, subject: &str, body: &str) {
-        let sent = tokio::time::timeout(
+        let sent = crate::mail::within(
             Duration::from_secs(20),
             self.mailer.send_notice(to, subject, body),
         )
         .await;
-        if !matches!(sent, Ok(Ok(()))) {
-            tracing::error!("cannot send a notice");
+        if let Err(e) = sent {
+            tracing::error!(class = %e.class, status = e.status, reply = e.detail.as_deref(), "cannot send a notice");
         }
     }
 

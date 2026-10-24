@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::db;
 use crate::error::{AppError, Result};
 use crate::http::{ApiJson, ClientIp, bearer};
+use crate::mail::{self, MailClass};
 use crate::moderation::{self, Actor};
 use crate::state::AppState;
 use crate::util::ct_eq;
@@ -21,6 +22,7 @@ pub const BANS: &str = "/admin/v1/bans";
 pub const BAN: &str = "/admin/v1/bans/{handle}";
 pub const REPORTS: &str = "/admin/v1/reports";
 pub const ACTIONS: &str = "/admin/v1/actions";
+pub const MAIL_TEST: &str = "/admin/v1/mail-test";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BanRequest {
@@ -54,6 +56,28 @@ pub struct ActionByHandle {
 pub struct BanAnswer {
     pub account: Account,
     pub until: Option<u64>,
+}
+
+/// Send one test mail through the configured transport.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MailTestRequest {
+    pub to: String,
+}
+
+/// How the test mail went. A failure is an answer, not an HTTP error: it is what the operator
+/// asked for.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MailTestAnswer {
+    /// `smtp`, or `log` when the cloud only writes mail to its log.
+    pub mode: String,
+    pub sent: bool,
+    #[serde(default)]
+    pub class: Option<MailClass>,
+    #[serde(default)]
+    pub status: Option<u16>,
+    /// The server's reply, with addresses taken out.
+    #[serde(default)]
+    pub reply: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -140,6 +164,48 @@ pub async fn act(
         )
         .await?,
     ))
+}
+
+pub async fn mail_test(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<MailTestRequest>,
+) -> Result<Json<MailTestAnswer>> {
+    authorize(&state, ip, &headers)?;
+    let name = &state.config.name;
+    let result = mail::within(
+        std::time::Duration::from_secs(20),
+        state.mailer.send_notice(
+            request.to.trim(),
+            &format!("{name} mail test"),
+            &format!(
+                "This is a test mail from {name}. If you can read it, sign-in codes can reach you.\n"
+            ),
+        ),
+    )
+    .await;
+    let mode = match state.config.mail {
+        crate::config::MailMode::Smtp => "smtp",
+        crate::config::MailMode::Log => "log",
+    };
+    match &result {
+        Ok(()) => tracing::info!(mode, "mail test sent"),
+        Err(e) => tracing::warn!(
+            mode,
+            class = %e.class,
+            status = e.status,
+            reply = e.detail.as_deref(),
+            "mail test failed"
+        ),
+    }
+    Ok(Json(MailTestAnswer {
+        mode: mode.into(),
+        sent: result.is_ok(),
+        class: result.as_ref().err().map(|e| e.class),
+        status: result.as_ref().err().and_then(|e| e.status),
+        reply: result.err().and_then(|e| e.detail),
+    }))
 }
 
 pub async fn unban(
