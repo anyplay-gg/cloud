@@ -332,6 +332,7 @@ struct PresenceRow {
     account_id: i64,
     online: i64,
     activity: Option<String>,
+    revision: i64,
 }
 
 #[derive(FromRow)]
@@ -344,8 +345,12 @@ struct JoinableRow {
 }
 
 fn presence(row: &PresenceRow, joinable: &[JoinableRow]) -> Presence {
+    let revision = u(row.revision);
     if row.online == 0 {
-        return Presence::default();
+        return Presence {
+            revision,
+            ..Presence::default()
+        };
     }
     let activity = row
         .activity
@@ -367,6 +372,7 @@ fn presence(row: &PresenceRow, joinable: &[JoinableRow]) -> Presence {
     Presence {
         online: true,
         activity,
+        revision,
     }
 }
 
@@ -376,18 +382,19 @@ const JOINABLE: &str = "SELECT m.account_id AS account_id, s.id AS id, s.title_i
      FROM members m JOIN sessions s ON s.id = m.session_id \
      WHERE s.visibility = 'friends' AND m.account_id";
 
-/// What the friends of an account see of it now.
+/// What the friends of an account see of it now, with the revision they were last told.
 pub async fn presence_of(conn: &mut Conn, account: u64) -> sqlx::Result<Presence> {
-    let row: Option<PresenceRow> =
-        sqlx::query_as("SELECT account_id, online, activity FROM presence WHERE account_id = $1")
-            .bind(i(account))
-            .fetch_optional(&mut *conn)
-            .await?;
+    let row: Option<PresenceRow> = sqlx::query_as(
+        "SELECT account_id, online, activity, revision FROM presence WHERE account_id = $1",
+    )
+    .bind(i(account))
+    .fetch_optional(&mut *conn)
+    .await?;
     let Some(row) = row else {
         return Ok(Presence::default());
     };
     if row.online == 0 {
-        return Ok(Presence::default());
+        return Ok(presence(&row, &[]));
     }
     let joinable: Vec<JoinableRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{JOINABLE} = $1 ORDER BY s.created, s.id"
@@ -406,7 +413,7 @@ pub async fn presence_of_friends(
     let friend = "(SELECT CASE WHEN f.low = $1 THEN f.high ELSE f.low END FROM friends f \
                   WHERE f.low = $1 OR f.high = $1)";
     let rows: Vec<PresenceRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT account_id, online, activity FROM presence WHERE account_id IN {friend}"
+        "SELECT account_id, online, activity, revision FROM presence WHERE account_id IN {friend}"
     )))
     .bind(i(account))
     .fetch_all(&mut *conn)
@@ -423,20 +430,29 @@ pub async fn presence_of_friends(
         .collect())
 }
 
-/// Records that friends are told about this presence now. False when they were told it already,
-/// by this node or another: then nobody sends it again.
-pub async fn mark_sent(conn: &mut Conn, account: u64, presence: &Presence) -> sqlx::Result<bool> {
-    let text = serde_json::to_string(presence).unwrap_or_default();
-    let changed = sqlx::query(
+/// Records that friends are told about this presence now, and returns the revision to tell them
+/// with. `None` when they were told it already, by this node or another: then nobody sends it
+/// again.
+pub async fn mark_sent(
+    conn: &mut Conn,
+    account: u64,
+    presence: &Presence,
+) -> sqlx::Result<Option<u64>> {
+    // What friends saw, without the revision it was told with.
+    let text = serde_json::to_string(&Presence {
+        revision: 0,
+        ..presence.clone()
+    })
+    .unwrap_or_default();
+    let revision: Option<(i64,)> = sqlx::query_as(
         "UPDATE presence SET sent = $2, revision = revision + 1 \
-         WHERE account_id = $1 AND sent <> $2",
+         WHERE account_id = $1 AND sent <> $2 RETURNING revision",
     )
     .bind(i(account))
     .bind(text)
-    .execute(conn)
-    .await?
-    .rows_affected();
-    Ok(changed == 1)
+    .fetch_optional(conn)
+    .await?;
+    Ok(revision.map(|(r,)| u(r)))
 }
 
 /// Takes accounts offline whose grace period ended before `cut_ms`. Their leases start to run
@@ -617,6 +633,8 @@ pub struct SessionRow {
     pub visibility: String,
     pub properties: String,
     pub created: i64,
+    /// Rises with every change; 0 for a new session.
+    pub revision: i64,
 }
 
 #[derive(Clone, Debug, FromRow)]
@@ -683,6 +701,7 @@ impl SessionState {
                 })
                 .collect(),
             created: u(self.row.created),
+            revision: u(self.row.revision),
         }
     }
 }
@@ -703,8 +722,8 @@ fn visibility_from(text: &str) -> Visibility {
     }
 }
 
-const SESSION_COLUMNS: &str =
-    "id, title_id, title, version, build, leader, max_members, visibility, properties, created";
+const SESSION_COLUMNS: &str = "id, title_id, title, version, build, leader, max_members, \
+     visibility, properties, created, revision";
 
 async fn members_of(conn: &mut Conn, id: &str) -> sqlx::Result<Vec<MemberRow>> {
     sqlx::query_as(

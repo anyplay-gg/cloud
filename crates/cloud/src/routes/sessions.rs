@@ -124,6 +124,7 @@ pub async fn create(
         visibility: live::visibility_text(request.visibility).to_owned(),
         properties: request.properties,
         created,
+        revision: 0,
     };
     let member = MemberRow {
         account_id: auth.account as i64,

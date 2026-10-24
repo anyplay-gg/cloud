@@ -199,10 +199,11 @@ impl Inner {
     async fn refresh_one(&self, account: u64) -> Result<(), AppError> {
         let presence = {
             let mut conn = self.db.acquire().await?;
-            let presence = live::presence_of(&mut conn, account).await?;
-            if !live::mark_sent(&mut conn, account, &presence).await? {
+            let mut presence = live::presence_of(&mut conn, account).await?;
+            let Some(revision) = live::mark_sent(&mut conn, account, &presence).await? else {
                 return Ok(());
-            }
+            };
+            presence.revision = revision;
             presence
         };
         let event = Event::Presence {

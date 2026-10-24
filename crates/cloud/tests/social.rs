@@ -364,3 +364,26 @@ async fn virtual_addresses_come_from_the_range_and_stay_with_the_account() {
     let again = cloud.events(a.token()).await;
     assert_eq!(again.address, addr_a.to_string());
 }
+
+#[tokio::test]
+async fn each_presence_change_comes_with_a_higher_revision_and_the_lists_show_the_last() {
+    let cloud = TestCloud::start().await;
+    let (a, b) = cloud.friends("Alec", "Sam").await;
+    // Sam listens first, so he hears Alec come online.
+    let mut eb = cloud.events(b.token()).await;
+    let _ea = cloud.events(a.token()).await;
+    let revision_of = |event: Event| match event {
+        Event::Presence { presence, .. } => presence.revision,
+        _ => unreachable!(),
+    };
+    let online = revision_of(eb.until(|e| matches!(e, Event::Presence { .. })).await);
+    cloud
+        .put("/v1/presence", a.token(), Some(activity("GAME00001")))
+        .await
+        .ok(204);
+    let playing = revision_of(eb.until(|e| matches!(e, Event::Presence { .. })).await);
+    assert!(online > 0);
+    assert!(playing > online);
+    let friends = lists(cloud.get("/v1/friends", b.token()).await);
+    assert_eq!(friends.friends[0].presence.revision, playing);
+}
