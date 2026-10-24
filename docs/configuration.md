@@ -47,7 +47,8 @@ The model, the commands and what players see are in [moderation.md](moderation.m
 | Setting | Default | Meaning |
 |---|---|---|
 | `ban_secret` | none | A secret of at least 16 characters for the keyed hash of banned e-mail addresses. Without it the cloud makes a random key in `data_dir/ban.key`. All nodes of a cluster need the same one; back it up. |
-| `new_account_hours` | `24` | An account must be this old to send a friend request, and later to write to strangers. `0` turns the rule off. |
+| `new_account_hours` | `24` | An account is new for this long. A new account cannot start a conversation with someone who is not its friend, and may send only `new_account_friend_requests_per_day` friend requests. `0` turns the rule off. |
+| `new_account_friend_requests_per_day` | `10` | Friend requests an account may send while it is new (see `new_account_hours`). A muted account sends none. |
 | `appeal_days` | `183` | How long after an action the player may appeal (6 months, the DSA minimum for the internal complaint system). |
 | `report_limit_per_day` | `20` | Reports one account may file in 24 hours. |
 | `retention_bans_days` | `183` | Days a temporary ban, a mute, a warning, a lifted action and their appeals are kept after they end (after they were given, for a warning). Not shorter than `appeal_days`. A ban for good is kept until lifted. |

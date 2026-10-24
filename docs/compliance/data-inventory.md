@@ -110,7 +110,7 @@ The endpoint ID is a stable key. A player who keeps the net service's data folde
 
 | | |
 |---|---|
-| What | A report about another account: reporter, reported account, a reason (`cheating`, `harassment`, `spam`, `name`, `other`), free text up to 1,000 characters, a snapshot of what was reported, the time, and once decided the outcome, the time and the moderator. |
+| What | A report about another account: reporter, reported account, a reason (`cheating`, `harassment`, `spam`, `name`, `other`), free text up to 1,000 characters, a snapshot of what was reported (the reported handle and, for a reported message, its text), the time, and once decided the outcome, the time and the moderator. |
 | Where | `reports` (`id`, `reporter`, `reporter_handle`, `reported`, `reported_handle`, `reason`, `details`, `content`, `created`, `status`, `outcome`, `decided`, `decided_by`, `decided_by_handle`, `action_id`). Filed with `POST /v1/reports`; at most 20 per reporter per day (`report_limit_per_day`) and 5 per 10 minutes, one open report per pair. |
 | Why | Moderation of abuse; evidence for bans. |
 | Basis (proposed) | Art. 6(1)(f): the operator and other players have an interest in a safe service. The free text about a third party rests on the same basis. For notices under the DSA also Art. 6(1)(c) ([dsa.md](dsa.md)). |

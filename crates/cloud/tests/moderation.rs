@@ -207,6 +207,43 @@ async fn at_most_the_daily_number_of_reports_is_taken() {
         .is_error("limit", 409);
 }
 
+async fn open_chat(cloud: &TestCloud, from: &User, with: &User) -> common::Reply {
+    cloud
+        .post(
+            "/v1/conversations",
+            from.token(),
+            json!({"accounts": [with.id]}),
+        )
+        .await
+}
+
+async fn say(cloud: &TestCloud, user: &User, conversation: &str, text: &str) -> common::Reply {
+    cloud
+        .post(
+            &format!("/v1/conversations/{conversation}/messages"),
+            user.token(),
+            json!({"text": text}),
+        )
+        .await
+}
+
+async fn report_message(
+    cloud: &TestCloud,
+    from: &User,
+    about: &User,
+    conversation: Value,
+    seq: Value,
+) -> common::Reply {
+    cloud
+        .post(
+            "/v1/reports",
+            from.token(),
+            json!({"account": about.id, "reason": "harassment",
+                   "conversation": conversation, "seq": seq}),
+        )
+        .await
+}
+
 // Who may moderate
 
 #[tokio::test]
@@ -1372,21 +1409,28 @@ async fn banned_addresses_are_stored_as_keyed_hashes_and_older_hashes_still_matc
 // New accounts
 
 #[tokio::test]
-async fn a_new_account_may_not_send_friend_requests_during_its_first_day() {
+async fn a_new_account_may_send_ten_friend_requests_on_its_first_day_and_not_an_eleventh() {
     let cloud = TestCloud::with(|c| c.new_account_hours = 24, |_| {}).await;
-    let (old, new, other) = (
-        cloud.sign_up("Olga").await,
-        cloud.sign_up("Nils").await,
-        cloud.sign_up("Pat").await,
-    );
-    age(&cloud, &old).await;
-    age(&cloud, &other).await;
-
+    let nils = cloud.sign_up("Nils").await;
+    let mut targets = Vec::new();
+    for k in 0..11 {
+        targets.push(cloud.sign_up(&format!("Pal{k}")).await);
+    }
+    for target in &targets[..10] {
+        cloud
+            .post(
+                "/v1/friends/requests",
+                nils.token(),
+                json!({"handle": target.handle}),
+            )
+            .await
+            .ok(200);
+    }
     let refused = cloud
         .post(
             "/v1/friends/requests",
-            new.token(),
-            json!({"handle": old.handle}),
+            nils.token(),
+            json!({"handle": targets[10].handle}),
         )
         .await;
     refused.is_error("restricted", 403);
@@ -1396,67 +1440,224 @@ async fn a_new_account_may_not_send_friend_requests_during_its_first_day() {
         until > now() + 23 * 3600 && until <= now() + 24 * 3600,
         "until {until}"
     );
-    // Nothing was stored.
-    assert!(
-        cloud.get("/v1/friends", new.token()).await.ok(200).body["outgoing"]
+    assert_eq!(
+        cloud.get("/v1/friends", nils.token()).await.ok(200).body["outgoing"]
             .as_array()
             .unwrap()
-            .is_empty()
+            .len(),
+        10,
+        "the refused request was not stored"
     );
-
-    // An old account may write to a new one, and the new one may answer: that is no stranger.
+    // Answering a request that waits is no new request: the eleventh asks him first.
     cloud
         .post(
             "/v1/friends/requests",
-            old.token(),
-            json!({"handle": new.handle}),
-        )
-        .await
-        .ok(200);
-    let answer = cloud
-        .post(
-            "/v1/friends/requests",
-            new.token(),
-            json!({"handle": old.handle}),
-        )
-        .await
-        .ok(200);
-    assert_eq!(answer.body["state"], "friends");
-    cloud
-        .post(
-            "/v1/friends/requests",
-            old.token(),
-            json!({"handle": other.handle}),
+            targets[10].token(),
+            json!({"handle": nils.handle}),
         )
         .await
         .ok(200);
     cloud
         .post_empty(
-            &format!("/v1/friends/requests/{}/accept", old.id),
-            other.token(),
+            &format!("/v1/friends/requests/{}/accept", targets[10].id),
+            nils.token(),
         )
         .await
         .ok(204);
-
-    // The rule is a function the messages of the next phase can call.
-    let err = moderation::may_write_to_strangers(&cloud.state, new.id)
-        .await
-        .unwrap_err();
-    assert_eq!(err.body.error.as_str(), "restricted");
-    moderation::may_write_to_strangers(&cloud.state, old.id)
-        .await
-        .unwrap();
-
     // When the day is over the request goes through.
-    age(&cloud, &new).await;
+    age(&cloud, &nils).await;
+    let more = cloud.sign_up("Late").await;
+    cloud
+        .post(
+            "/v1/friends/requests",
+            nils.token(),
+            json!({"handle": more.handle}),
+        )
+        .await
+        .ok(200);
+}
+
+#[tokio::test]
+async fn an_old_account_is_not_counted_and_the_allowance_is_a_setting() {
+    let cloud = TestCloud::with(
+        |c| {
+            c.new_account_hours = 24;
+            c.new_account_friend_requests_per_day = 2;
+        },
+        |_| {},
+    )
+    .await;
+    let old = cloud.sign_up("Olga").await;
+    age(&cloud, &old).await;
+    let new = cloud.sign_up("Nils").await;
+    for k in 0..4 {
+        let other = cloud.sign_up(&format!("Pal{k}")).await;
+        cloud
+            .post(
+                "/v1/friends/requests",
+                old.token(),
+                json!({"handle": other.handle}),
+            )
+            .await
+            .ok(200);
+    }
+    let a = cloud.sign_up("Ann").await;
+    let b = cloud.sign_up("Bob").await;
+    let c = cloud.sign_up("Cid").await;
+    for target in [&a, &b] {
+        cloud
+            .post(
+                "/v1/friends/requests",
+                new.token(),
+                json!({"handle": target.handle}),
+            )
+            .await
+            .ok(200);
+    }
     cloud
         .post(
             "/v1/friends/requests",
             new.token(),
-            json!({"handle": other.handle}),
+            json!({"handle": c.handle}),
+        )
+        .await
+        .is_error("restricted", 403);
+    assert_eq!(
+        count(&cloud, "SELECT COUNT(*) FROM new_account_requests").await,
+        2,
+        "only the new account is recorded"
+    );
+}
+
+#[tokio::test]
+async fn a_new_account_cannot_message_a_stranger_but_can_message_a_friend() {
+    let cloud = TestCloud::with(|c| c.new_account_hours = 24, |_| {}).await;
+    let (nils, bea) = cloud.friends("Nils", "Bea").await;
+    let stranger = cloud.sign_up("Sam").await;
+    let refused = open_chat(&cloud, &nils, &stranger).await;
+    refused.is_error("restricted", 403);
+    assert_eq!(refused.body["restriction"], "new_account");
+    assert!(refused.body["until"].as_u64().unwrap() > now());
+    // A friend is fine at once.
+    let chat = open_chat(&cloud, &nils, &bea).await.ok(200).body;
+    let id = chat["id"].as_str().unwrap().to_owned();
+    cloud
+        .post(
+            &format!("/v1/conversations/{id}/messages"),
+            nils.token(),
+            json!({"text": "hello"}),
         )
         .await
         .ok(200);
+    // One function, one setting.
+    let err = moderation::may_write_to_strangers(&cloud.state, nils.id)
+        .await
+        .unwrap_err();
+    assert_eq!(err.body.error.as_str(), "restricted");
+    // A day later a stranger may be written to.
+    age(&cloud, &nils).await;
+    open_chat(&cloud, &nils, &stranger).await.ok(200);
+}
+
+#[tokio::test]
+async fn a_muted_account_sends_no_friend_request_and_no_message() {
+    let cloud = cloud().await;
+    let (sam, kim) = cloud.friends("Sam", "Kim").await;
+    let lee = cloud.sign_up("Lee").await;
+    let chat = cloud
+        .post(
+            "/v1/conversations",
+            sam.token(),
+            json!({"accounts": [kim.id]}),
+        )
+        .await
+        .ok(200)
+        .body;
+    let id = chat["id"].as_str().unwrap().to_owned();
+    say(&cloud, &sam, &id, "before").await.ok(200);
+    take_action(
+        &cloud,
+        ADMIN,
+        json!({"account": sam.id, "kind": "mute", "rule": "spam", "reason": "Quiet.", "days": 1}),
+    )
+    .await;
+    let refused = say(&cloud, &sam, &id, "after").await;
+    refused.is_error("restricted", 403);
+    assert_eq!(refused.body["restriction"], "muted");
+    cloud
+        .post(
+            "/v1/conversations",
+            sam.token(),
+            json!({"accounts": [lee.id]}),
+        )
+        .await
+        .is_error("restricted", 403);
+    cloud
+        .post(
+            "/v1/friends/requests",
+            sam.token(),
+            json!({"handle": lee.handle}),
+        )
+        .await
+        .is_error("restricted", 403);
+    // His friend can still write to him.
+    say(&cloud, &kim, &id, "hi").await.ok(200);
+}
+
+#[tokio::test]
+async fn a_report_about_a_message_keeps_its_text() {
+    let cloud = cloud().await;
+    let mona = moderator(&cloud, "Mona").await;
+    let (alec, bea) = cloud.friends("Alec", "Bea").await;
+    let outsider = cloud.sign_up("Zed").await;
+    let chat = cloud
+        .post(
+            "/v1/conversations",
+            alec.token(),
+            json!({"accounts": [bea.id]}),
+        )
+        .await
+        .ok(200)
+        .body;
+    let id = chat["id"].as_str().unwrap().to_owned();
+    say(&cloud, &alec, &id, "fine").await.ok(200);
+    let rude = say(&cloud, &bea, &id, "you are the worst")
+        .await
+        .ok(200)
+        .body["seq"]
+        .as_u64()
+        .unwrap();
+    // Both fields or none; a message of the other account; a conversation the reporter is not in.
+    report_message(&cloud, &alec, &bea, json!(id), Value::Null)
+        .await
+        .is_error("bad_request", 400);
+    report_message(&cloud, &alec, &bea, json!(id), json!(1))
+        .await
+        .is_error("bad_request", 400);
+    report_message(&cloud, &alec, &bea, json!(id), json!(99))
+        .await
+        .is_error("not_found", 404);
+    report_message(&cloud, &outsider, &bea, json!(id), json!(rude))
+        .await
+        .is_error("not_found", 404);
+    report_message(&cloud, &alec, &bea, json!(id), json!(rude))
+        .await
+        .ok(204);
+    let open = queue(&cloud, mona.token(), "open").await;
+    assert_eq!(open.len(), 1, "the refused reports left nothing");
+    assert!(
+        open[0].content.contains("you are the worst"),
+        "{}",
+        open[0].content
+    );
+    assert!(open[0].content.contains(&id));
+    // The message goes with its retention; the report keeps the words.
+    sqlx::query("DELETE FROM messages")
+        .execute(&cloud.state.db)
+        .await
+        .unwrap();
+    let again = queue(&cloud, mona.token(), "open").await;
+    assert!(again[0].content.contains("you are the worst"));
 }
 
 #[tokio::test]

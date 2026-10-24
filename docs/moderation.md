@@ -50,11 +50,11 @@ anyplay-cloud admin log [--limit N]
 - The **reason** is written for the player: they read it word for word. Do not put the reporter's name, other players' private data or internal notes in it. It has 1 to 500 characters and is required for every action.
 - `--report` links the action to the report it decides. A report is decided once. Other reports about the same account stay open until someone dismisses them or acts on them.
 - A ban signs the account out on every node at once, takes it out of its sessions and stops the same e-mail address from signing up, even after the account is deleted. Without `--days` it is for good.
-- A mute stops friend requests (and, once they exist, messages to people who are not friends). The player can still play, accept requests and talk to friends.
+- A mute stops friend requests and messages, also to friends. The player can still play, accept requests and read.
 
 ### What a report holds
 
-The report keeps the reporter and the reported account with the handles they had, the reason, the reporter's text, the time, and a **snapshot of what was reported** (today the reported handle and the account's creation time; messages and profile text will be added when they exist). It does not vanish when an account is deleted:
+The report keeps the reporter and the reported account with the handles they had, the reason, the reporter's text, the time, and a **snapshot of what was reported**: the reported handle and the account's creation time and, when the reporter names a message (`conversation` and `seq`), its text. The reporter must be in that conversation and able to read the message, and the account reported must have written it. The snapshot stays when the message is swept by its retention or the account is deleted; that is its point, and the lawyer should know that it holds message text for as long as the report does. It does not vanish when an account is deleted:
 
 - If the **reported** account is deleted, the report stays with its handle and ID so that the evidence and any ban remain, and the queue marks it `reported_deleted`.
 - If the **reporter** deletes their account, the link and the handle are erased from their reports. The report stays.
@@ -75,7 +75,13 @@ A banned person cannot sign in, so the `banned` error carries an **appeal token*
 
 ## New and muted accounts
 
-An account younger than `new_account_hours` (24) cannot send a **friend request**. The answer is `restricted` with `restriction: "new_account"` and `until`, the time it may. Accepting a request that waits for you, or answering it with your own, is not writing to a stranger and stays allowed. The rule is the function `moderation::may_write_to_strangers`; messages to people who are not friends will call it too. A muted account gets `restricted` with `restriction: "muted"`. Set `new_account_hours = 0` to turn the age rule off.
+One rule for new accounts, `moderation::may_write_to_strangers`, and one setting, `new_account_hours` (24). A new account is younger than that.
+
+- **Messages:** a new account cannot start a conversation with someone who is not its friend. The answer is `restricted` with `restriction: "new_account"` and `until`, the time it may. It can write to its friends at once. The message code calls the same function.
+- **Friend requests:** a new account may send them, but at most `new_account_friend_requests_per_day` (10) while it is new. The next one answers `restricted` with the same `until`. Accepting a waiting request, or answering it with your own, does not count. The requests of new accounts are counted in `new_account_requests`, and old lines are swept.
+- **Muted accounts** send no friend requests and no messages at all, also to friends. Receiving still works. The answer is `restricted` with `restriction: "muted"` and the end of the mute.
+
+Set `new_account_hours = 0` to turn the age rule and the allowance off.
 
 ## Limits on reports
 

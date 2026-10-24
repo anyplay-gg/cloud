@@ -58,13 +58,11 @@ impl AppError {
     }
 
     /// The account may not do this yet (a new account) or for now (a mute).
-    pub fn restricted(restriction: anyplay_api::Restriction, until: Option<u64>) -> Self {
-        let message = match restriction {
-            anyplay_api::Restriction::NewAccount => {
-                "This account is too new to send friend requests. Try again later."
-            }
-            anyplay_api::Restriction::Muted => "A moderator muted this account.",
-        };
+    pub fn restricted(
+        restriction: anyplay_api::Restriction,
+        until: Option<u64>,
+        message: impl Into<String>,
+    ) -> Self {
         let mut error = Self::new(ErrorCode::Restricted, message);
         error.body.restriction = Some(restriction);
         error.body.until = until;

@@ -15,7 +15,7 @@ const DAY: i64 = 24 * 60 * 60 * 1000;
 
 /// A cloud where new accounts may write to strangers at once.
 async fn open_cloud() -> TestCloud {
-    TestCloud::with(|c| c.stranger_min_age_hours = 0, |_| {}).await
+    TestCloud::with(|c| c.new_account_hours = 0, |_| {}).await
 }
 
 async fn befriend(cloud: &TestCloud, a: &User, b: &User) {
@@ -447,12 +447,12 @@ async fn a_stranger_cannot_pile_up_messages_before_an_answer() {
 
 #[tokio::test]
 async fn a_new_account_may_not_write_to_strangers_but_may_write_to_friends() {
-    let cloud = TestCloud::start().await;
+    let cloud = TestCloud::with(|c| c.new_account_hours = 24, |_| {}).await;
     let alec = cloud.sign_up("Alec").await;
     let sam = cloud.sign_up("Sam").await;
     open(&cloud, &alec, &[&sam])
         .await
-        .is_error("forbidden", 403);
+        .is_error("restricted", 403);
     // Friends are fine at once.
     let bea = cloud.sign_up("Bea").await;
     befriend(&cloud, &alec, &bea).await;
@@ -469,7 +469,7 @@ async fn a_new_account_may_not_write_to_strangers_but_may_write_to_friends() {
 
 #[tokio::test]
 async fn stranger_conversations_are_rate_limited() {
-    let cloud = TestCloud::with(|c| c.stranger_min_age_hours = 0, |t| t.rates.strangers = 2).await;
+    let cloud = TestCloud::with(|c| c.new_account_hours = 0, |t| t.rates.strangers = 2).await;
     let alec = cloud.sign_up("Alec").await;
     for n in 0..2 {
         let other = cloud.sign_up(&format!("Other{n}")).await;
@@ -809,7 +809,7 @@ async fn writers_at_the_same_moment_never_get_the_same_number() {
 async fn old_messages_and_empty_conversations_are_swept_away() {
     let cloud = TestCloud::with(
         |c| {
-            c.stranger_min_age_hours = 0;
+            c.new_account_hours = 0;
             c.message_retention_days = 30;
         },
         |_| {},

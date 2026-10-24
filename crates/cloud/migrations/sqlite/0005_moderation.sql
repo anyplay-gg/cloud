@@ -124,3 +124,12 @@ UPDATE bans SET action_id =
 INSERT INTO audit_log (created, actor, actor_handle, action, target, target_handle, reason, rule, ref_kind, ref_id)
 SELECT x.created, NULL, 'operator', 'banned', x.account_id, x.account_handle, x.reason, x.rule, 'action', x.id
 FROM actions x;
+
+-- Friend requests a new account sent in its first day, kept to count them: the request itself
+-- goes when it is answered. Only new accounts are recorded; the sweep deletes old lines.
+CREATE TABLE new_account_requests (
+    account_id INTEGER NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
+    sent       INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX new_account_requests_account ON new_account_requests (account_id, sent);

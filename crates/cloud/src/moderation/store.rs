@@ -549,6 +549,45 @@ pub async fn entries(conn: &mut Conn, before: u64, limit: i64) -> sqlx::Result<V
     .await
 }
 
+// New accounts
+
+/// Friend requests a new account sent since `since`.
+pub async fn count_new_account_requests(
+    conn: &mut Conn,
+    account: u64,
+    since: u64,
+) -> sqlx::Result<i64> {
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM new_account_requests WHERE account_id = $1 AND sent >= $2",
+    )
+    .bind(i(account))
+    .bind(i(since))
+    .fetch_one(conn)
+    .await?;
+    Ok(n)
+}
+
+pub async fn insert_new_account_request(
+    conn: &mut Conn,
+    account: u64,
+    now: u64,
+) -> sqlx::Result<()> {
+    sqlx::query("INSERT INTO new_account_requests (account_id, sent) VALUES ($1, $2)")
+        .bind(i(account))
+        .bind(i(now))
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+pub async fn delete_old_new_account_requests(conn: &mut Conn, cutoff: u64) -> sqlx::Result<u64> {
+    let result = sqlx::query("DELETE FROM new_account_requests WHERE sent < $1")
+        .bind(i(cutoff))
+        .execute(conn)
+        .await?;
+    Ok(result.rows_affected())
+}
+
 // Retention
 
 /// What a retention sweep deleted.

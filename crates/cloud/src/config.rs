@@ -89,8 +89,12 @@ pub struct Config {
     /// A secret for the keyed hash of banned e-mail addresses. Without it the cloud makes one in
     /// `data_dir/ban.key`.
     pub ban_secret: Option<String>,
-    /// Hours before a new account may send friend requests; 0 turns the rule off.
+    /// Hours an account counts as new: it may not write to people who are not its friends, and
+    /// it may send only `new_account_friend_requests_per_day` friend requests. 0 turns the rule
+    /// off.
     pub new_account_hours: u64,
+    /// Friend requests a new account may send while it is new.
+    pub new_account_friend_requests_per_day: u32,
     /// Days after an action in which the player may appeal.
     pub appeal_days: u64,
     /// Reports one account may file per day.
@@ -135,6 +139,7 @@ impl Default for Config {
             message_retention_days: 30,
             ban_secret: None,
             new_account_hours: 24,
+            new_account_friend_requests_per_day: 10,
             appeal_days: 183,
             report_limit_per_day: 20,
             retention_bans_days: 183,
@@ -259,6 +264,10 @@ impl Config {
         }
         if let Some(v) = get("NEW_ACCOUNT_HOURS") {
             self.new_account_hours = parse("NEW_ACCOUNT_HOURS", &v)?;
+        }
+        if let Some(v) = get("NEW_ACCOUNT_FRIEND_REQUESTS_PER_DAY") {
+            self.new_account_friend_requests_per_day =
+                parse("NEW_ACCOUNT_FRIEND_REQUESTS_PER_DAY", &v)?;
         }
         if let Some(v) = get("APPEAL_DAYS") {
             self.appeal_days = parse("APPEAL_DAYS", &v)?;
@@ -462,17 +471,20 @@ mod tests {
     fn messages_are_kept_30_days_and_new_accounts_wait_a_day_by_default() {
         let config = Config::default();
         assert_eq!(config.message_retention_days, 30);
-        assert_eq!(config.stranger_min_age_hours, 24);
+        assert_eq!(config.new_account_hours, 24);
+        assert_eq!(config.new_account_friend_requests_per_day, 10);
         let mut config = Config::default();
         config
             .apply_env(|name| match name {
                 "MESSAGE_RETENTION_DAYS" => Some("7".into()),
-                "STRANGER_MIN_AGE_HOURS" => Some("0".into()),
+                "NEW_ACCOUNT_HOURS" => Some("0".into()),
+                "NEW_ACCOUNT_FRIEND_REQUESTS_PER_DAY" => Some("3".into()),
                 _ => None,
             })
             .unwrap();
         assert_eq!(config.message_retention_days, 7);
-        assert_eq!(config.stranger_min_age_hours, 0);
+        assert_eq!(config.new_account_hours, 0);
+        assert_eq!(config.new_account_friend_requests_per_day, 3);
         config.validate().unwrap();
         config.message_retention_days = 0;
         assert!(config.validate().is_err());

@@ -125,11 +125,18 @@ pub async fn file_report(state: &AppState, reporter: u64, request: api::Report) 
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
         .unwrap_or_else(|| "other".into());
-    // What a moderator would otherwise have to look up: the reported account as it is now.
-    let content = format!(
+    // What a moderator would otherwise have to look up: the reported account as it is now, and
+    // the message when one is named.
+    let mut content = format!(
         "handle: {}\naccount created: {}",
         reported.handle, reported.created
     );
+    if let Some(message) = reported_message(&mut conn, reporter, target, &request).await? {
+        content.push_str(&format!(
+            "\nmessage {} in conversation {} (sent {}):\n{}",
+            message.seq, message.conversation, message.created, message.text
+        ));
+    }
     store::insert_report(
         &mut conn,
         &store::NewReport {
@@ -145,6 +152,44 @@ pub async fn file_report(state: &AppState, reporter: u64, request: api::Report) 
     )
     .await?;
     Ok(())
+}
+
+/// The message a report names, as the reporter sees it. `None` when the report names none.
+/// The reporter must be in the conversation and able to read the message, and `account` must have
+/// written it.
+async fn reported_message(
+    conn: &mut crate::live::Conn,
+    reporter: u64,
+    account: u64,
+    request: &api::Report,
+) -> Result<Option<api::Message>> {
+    let (conversation, seq) = match (&request.conversation, request.seq) {
+        (None, None) => return Ok(None),
+        (Some(conversation), Some(seq)) if seq > 0 => (conversation, seq),
+        _ => {
+            return Err(AppError::bad_request(
+                "Name a message with both conversation and seq.",
+            ));
+        }
+    };
+    let members = crate::chat::members(conn, conversation).await?;
+    let me = members
+        .iter()
+        .find(|m| m.id() == reporter && m.state != crate::chat::DECLINED)
+        .ok_or_else(AppError::not_found)?;
+    let floor = (me.from_seq.max(0) as u64).max(seq - 1);
+    let message = crate::chat::messages_after(conn, conversation, reporter, floor, 1)
+        .await?
+        .into_iter()
+        .next()
+        .filter(|m| m.seq == seq)
+        .ok_or_else(AppError::not_found)?;
+    if message.sender.id.0 != account {
+        return Err(AppError::bad_request(
+            "The message was written by another account.",
+        ));
+    }
+    Ok(Some(message))
 }
 
 /// The reports a moderator reads. `status` is `open` (oldest first), `decided` or `all`.
@@ -752,25 +797,75 @@ pub async fn revoke(state: &AppState, actor: &Actor, account: u64) -> Result<()>
 
 // What an account may do
 
-/// The rule for writing to someone who is not a friend, as friend requests use it now and
-/// messages to strangers will: the account must be older than the configured age and not muted.
-pub async fn may_write_to_strangers(state: &AppState, account: u64) -> Result<()> {
+/// The end of the time an account counts as new, or `None` when it is old enough (or the rule is
+/// off).
+async fn new_until(state: &crate::state::Inner, account: u64) -> Result<Option<u64>> {
     let hours = state.config.new_account_hours;
-    let now = now();
-    if hours > 0
-        && let Some(row) = db::account(&state.db, account).await?
-    {
-        let allowed_from = u(row.created) + hours * 60 * 60;
-        if now < allowed_from {
-            return Err(AppError::restricted(
-                Restriction::NewAccount,
-                Some(allowed_from),
-            ));
-        }
+    if hours == 0 {
+        return Ok(None);
     }
+    let Some(row) = db::account(&state.db, account).await? else {
+        return Ok(None);
+    };
+    let until = u(row.created) + hours * 60 * 60;
+    Ok((now() < until).then_some(until))
+}
+
+/// Fails with `restricted` while a moderator's mute on the account runs.
+pub async fn ensure_not_muted(state: &crate::state::Inner, account: u64) -> Result<()> {
     let mut conn = state.db.acquire().await?;
-    if let Some(until) = store::active_mute(&mut conn, account, now).await? {
-        return Err(AppError::restricted(Restriction::Muted, until));
+    match store::active_mute(&mut conn, account, now()).await? {
+        Some(until) => Err(AppError::restricted(
+            Restriction::Muted,
+            until,
+            "A moderator muted this account.",
+        )),
+        None => Ok(()),
+    }
+}
+
+/// The one rule for writing to someone who is not a friend, which is how a conversation with a
+/// stranger starts: the account must be older than `new_account_hours` and not muted.
+pub async fn may_write_to_strangers(state: &crate::state::Inner, account: u64) -> Result<()> {
+    if let Some(until) = new_until(state, account).await? {
+        return Err(AppError::restricted(
+            Restriction::NewAccount,
+            Some(until),
+            "A new account cannot write to people who are not its friends yet. Try again later.",
+        ));
+    }
+    ensure_not_muted(state, account).await
+}
+
+/// Whether the account may send one more friend request. A muted account sends none; a new
+/// account sends `new_account_friend_requests_per_day` while it is new. Call
+/// [`friend_request_sent`] once the request is stored.
+pub async fn may_send_friend_request(state: &crate::state::Inner, account: u64) -> Result<()> {
+    ensure_not_muted(state, account).await?;
+    let Some(until) = new_until(state, account).await? else {
+        return Ok(());
+    };
+    let since = until.saturating_sub(state.config.new_account_hours * 60 * 60);
+    let mut conn = state.db.acquire().await?;
+    let sent = store::count_new_account_requests(&mut conn, account, since).await?;
+    if sent >= i64::from(state.config.new_account_friend_requests_per_day) {
+        return Err(AppError::restricted(
+            Restriction::NewAccount,
+            Some(until),
+            format!(
+                "A new account may send {} friend requests on its first day. Try again later.",
+                state.config.new_account_friend_requests_per_day
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Counts a friend request against a new account's allowance. Nothing for an old account.
+pub async fn friend_request_sent(state: &crate::state::Inner, account: u64) -> Result<()> {
+    if new_until(state, account).await?.is_some() {
+        let mut conn = state.db.acquire().await?;
+        store::insert_new_account_request(&mut conn, account, now()).await?;
     }
     Ok(())
 }
@@ -792,6 +887,8 @@ pub async fn sweep_retention(state: &crate::state::Inner) -> Result<store::Swept
     )
     .await?;
     let log_lines = store::delete_old_log(&mut conn, ago(config.retention_audit_days)).await?;
+    // The allowance of a new account only matters for its first day.
+    store::delete_old_new_account_requests(&mut conn, ago(2)).await?;
     Ok(store::Swept {
         bans,
         actions,
