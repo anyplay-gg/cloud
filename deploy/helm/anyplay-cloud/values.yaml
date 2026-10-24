@@ -31,6 +31,11 @@ config:
   signup: open
   privacyUrl: ""
   termsUrl: ""
+  # The address players reach the cloud at, such as https://play.example.com (the same as the
+  # Ingress host). It switches on the account web and passkeys.
+  publicUrl: ""
+  # The version of the terms in force; players who accepted another are asked again.
+  termsVersion: ""
   # The nodes sit behind an Ingress or load balancer that sets X-Forwarded-For.
   trustProxy: true
   databaseConnections: 16

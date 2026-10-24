@@ -33,6 +33,8 @@ pub struct AuthCache {
     pub devices: HashMap<u64, u64>,
     /// Account to the end of the ban (`None`: for good).
     pub bans: HashMap<u64, Option<u64>>,
+    /// Account to the time before which its access tokens are refused.
+    pub valid_from: HashMap<u64, u64>,
 }
 
 pub struct Inner {
@@ -45,6 +47,8 @@ pub struct Inner {
     pub limiter: RateLimiter,
     pub cache: RwLock<AuthCache>,
     pub news: News,
+    /// The account web, when the cloud has a public address.
+    pub web: Option<crate::web::Web>,
     /// This process in the store's `nodes` table, new at every start.
     pub node: String,
     /// Serializes changes to friendships and blocks, which check limits before they write.
@@ -66,8 +70,13 @@ fn ms(duration: Duration) -> i64 {
 impl Inner {
     /// Fails when the device is signed out or the account is banned. A device this node has
     /// not seen yet, because it signed in through another node, is looked up in the store.
-    pub async fn check_device(&self, device: u64, account: u64) -> Result<(), AppError> {
-        self.check_device_owner(device, account).await?;
+    pub async fn check_device(
+        &self,
+        device: u64,
+        account: u64,
+        issued: u64,
+    ) -> Result<(), AppError> {
+        self.check_device_owner(device, account, issued).await?;
         let cache = self.cache.read().unwrap_or_else(|e| e.into_inner());
         if let Some(until) = cache.bans.get(&account).copied()
             && until.is_none_or(|t| t > util::now())
@@ -77,9 +86,15 @@ impl Inner {
         Ok(())
     }
 
-    /// Fails when the device is signed out or belongs to another account. A ban does not matter
-    /// here: a banned person may still read their statements and appeal.
-    pub async fn check_device_owner(&self, device: u64, account: u64) -> Result<(), AppError> {
+    /// Fails when the device is signed out, belongs to another account or holds a token from
+    /// before the account signed out everywhere. A ban does not matter here: a banned person may
+    /// still read their statements and appeal.
+    pub async fn check_device_owner(
+        &self,
+        device: u64,
+        account: u64,
+        issued: u64,
+    ) -> Result<(), AppError> {
         let known = {
             let cache = self.cache.read().unwrap_or_else(|e| e.into_inner());
             cache.devices.get(&device).copied()
@@ -97,6 +112,16 @@ impl Inner {
         if owner != Some(account) {
             return Err(AppError::unauthorized(
                 "This device is signed out. Sign in again.",
+            ));
+        }
+        let cache = self.cache.read().unwrap_or_else(|e| e.into_inner());
+        if cache
+            .valid_from
+            .get(&account)
+            .is_some_and(|from| issued < *from)
+        {
+            return Err(AppError::unauthorized(
+                "This token was issued before the account signed out everywhere. Sign in again.",
             ));
         }
         Ok(())
@@ -347,7 +372,29 @@ impl Inner {
             AuthNote::Unbanned { account } => {
                 cache.bans.remove(&account);
             }
+            AuthNote::NotBefore { account, at } => {
+                let entry = cache.valid_from.entry(account).or_insert(0);
+                *entry = (*entry).max(at);
+            }
         }
+    }
+
+    /// Signs the account out of every device and every browser session, and refuses the access
+    /// tokens it has issued so far: the "not before" time is now.
+    pub async fn sign_out_everywhere(&self, account: u64) -> Result<(), AppError> {
+        let at = util::now();
+        crate::binding::set_tokens_valid_from(&self.db, account, at).await?;
+        {
+            let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
+            let entry = cache.valid_from.entry(account).or_insert(0);
+            *entry = (*entry).max(at);
+        }
+        self.news.tell_nodes(&AuthNote::NotBefore { account, at });
+        for device in db::devices_of(&self.db, account).await? {
+            self.sign_out_device(device.id()).await?;
+        }
+        crate::web::store::end_sessions_of(&self.db, account).await?;
+        Ok(())
     }
 
     /// Applies a ban to what is running: closes connections and takes the account out of its

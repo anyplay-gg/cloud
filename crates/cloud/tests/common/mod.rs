@@ -201,12 +201,17 @@ impl TestCloud {
             ],
             ..Config::default()
         };
+        // The account web and passkeys need a public address; a test cloud answers on localhost.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        cfg.public_url = Some(format!(
+            "http://localhost:{}",
+            listener.local_addr().unwrap().port()
+        ));
         config(&mut cfg);
         let mut tun = fast_tuning();
         tuning(&mut tun);
         let mail = Arc::new(MemoryMailer::default());
         let state = open(cfg, tun, mail.clone()).await.unwrap();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
         let server = tokio::spawn(serve(listener, state.clone(), std::future::pending()));
         Self {

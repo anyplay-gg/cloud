@@ -49,7 +49,10 @@ pub async fn events(
             code: close::TOKEN_EXPIRED,
             reason: "access token expired",
         },
-        Ok(auth) => match state.check_device(auth.device, auth.account).await {
+        Ok(auth) => match state
+            .check_device(auth.device, auth.account, auth.issued)
+            .await
+        {
             Ok(()) => {
                 count_request(&state, auth.account)?;
                 Verdict::Open(auth)

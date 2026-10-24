@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 anyplay-api.workspace = true
+anyplay-proof.workspace = true
 anyplay-ticket.workspace = true
 async-nats.workspace = true
 axum.workspace = true
@@ -24,15 +25,22 @@ reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# webauthn-rs links OpenSSL. The vendored feature builds it from source and links it statically,
+# so the image needs no libssl and a Windows build needs no installed OpenSSL (it needs Perl and a
+# C compiler, which CI and the container build have).
+openssl.workspace = true
+serde_urlencoded.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 subtle.workspace = true
 tokio.workspace = true
+webauthn-rs.workspace = true
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
 flate2.workspace = true
+webauthn-authenticator-rs.workspace = true
 tempfile.workspace = true
 tokio-tungstenite.workspace = true

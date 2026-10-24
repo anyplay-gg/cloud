@@ -66,7 +66,7 @@ async fn a_client_with_a_ticket_for_its_endpoint_is_admitted() {
     let signer = Signer::generate();
     let (_server, url) = start(&signer).await;
     let key = SecretKey::generate();
-    let ticket = signer.issue(&Claims::relay(1, hex(&key), now() + 3600));
+    let ticket = signer.issue(&Claims::relay(1, hex(&key), now(), now() + 3600));
     connect(&url, key, Some(&ticket)).await.expect("admitted");
 }
 
@@ -83,26 +83,31 @@ async fn clients_without_a_good_ticket_are_denied() {
         "garbage"
     );
 
-    let expired = signer.issue(&Claims::relay(1, hex(&key), now().saturating_sub(5)));
+    let expired = signer.issue(&Claims::relay(
+        1,
+        hex(&key),
+        now().saturating_sub(10),
+        now().saturating_sub(5),
+    ));
     assert!(
         denied(connect(&url, key.clone(), Some(&expired)).await),
         "expired"
     );
 
-    let foreign = Signer::generate().issue(&Claims::relay(1, hex(&key), now() + 3600));
+    let foreign = Signer::generate().issue(&Claims::relay(1, hex(&key), now(), now() + 3600));
     assert!(
         denied(connect(&url, key.clone(), Some(&foreign)).await),
         "signed by another cloud"
     );
 
     let other_key = SecretKey::generate();
-    let borrowed = signer.issue(&Claims::relay(1, hex(&other_key), now() + 3600));
+    let borrowed = signer.issue(&Claims::relay(1, hex(&other_key), now(), now() + 3600));
     assert!(
         denied(connect(&url, key.clone(), Some(&borrowed)).await),
         "a ticket for somebody else's endpoint"
     );
 
-    let access = signer.issue(&Claims::access(1, 2, now() + 3600));
+    let access = signer.issue(&Claims::access(1, 2, now(), now() + 3600));
     assert!(
         denied(connect(&url, key, Some(&access)).await),
         "an access token is not a relay ticket"
@@ -174,7 +179,7 @@ async fn an_account_at_its_limit_is_turned_away_until_a_connection_ends() {
         account: u64,
     ) -> Result<iroh_relay::client::Client, ConnectError> {
         let key = SecretKey::generate();
-        let ticket = signer.issue(&Claims::relay(account, hex(&key), now() + 3600));
+        let ticket = signer.issue(&Claims::relay(account, hex(&key), now(), now() + 3600));
         let tls = CaTlsConfig::default()
             .client_config(default_provider())
             .unwrap();

@@ -35,9 +35,21 @@ pub enum Push {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "note", rename_all = "snake_case")]
 pub enum AuthNote {
-    DeviceGone { device: u64 },
-    Banned { account: u64, until: Option<u64> },
-    Unbanned { account: u64 },
+    DeviceGone {
+        device: u64,
+    },
+    Banned {
+        account: u64,
+        until: Option<u64>,
+    },
+    Unbanned {
+        account: u64,
+    },
+    /// "Sign out everywhere": access tokens issued before `at` stop working.
+    NotBefore {
+        account: u64,
+        at: u64,
+    },
 }
 
 /// What one node tells the nodes holding an account's connections.

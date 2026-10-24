@@ -108,6 +108,16 @@ pub struct Config {
     pub retention_open_reports_days: u64,
     /// Days to keep a line of the audit log.
     pub retention_audit_days: u64,
+    /// The address players reach this cloud at, such as `https://play.example.com`: the origin of
+    /// the account web and the relying party of passkeys. Without it there is no account web and
+    /// no passkeys.
+    pub public_url: Option<String>,
+    /// The version of the terms in force. A player who accepted another one is asked again at the
+    /// next sign-in on the web. Empty or absent when there are no terms.
+    pub terms_version: Option<String>,
+    /// For how many days a device may sign in without a device key, and so refresh without a
+    /// proof. 0 makes the key mandatory ([ADR 0016 of the network]).
+    pub legacy_device_days: u64,
 }
 
 impl Default for Config {
@@ -146,6 +156,9 @@ impl Default for Config {
             retention_reports_days: 183,
             retention_open_reports_days: 365,
             retention_audit_days: 1095,
+            public_url: None,
+            terms_version: None,
+            legacy_device_days: 30,
         }
     }
 }
@@ -287,6 +300,15 @@ impl Config {
         if let Some(v) = get("RETENTION_AUDIT_DAYS") {
             self.retention_audit_days = parse("RETENTION_AUDIT_DAYS", &v)?;
         }
+        if let Some(v) = get("PUBLIC_URL") {
+            self.public_url = Some(v);
+        }
+        if let Some(v) = get("TERMS_VERSION") {
+            self.terms_version = Some(v);
+        }
+        if let Some(v) = get("LEGACY_DEVICE_DAYS") {
+            self.legacy_device_days = parse("LEGACY_DEVICE_DAYS", &v)?;
+        }
         Ok(())
     }
 
@@ -369,7 +391,33 @@ impl Config {
         if self.name.trim().is_empty() || self.name.len() > 64 {
             bail!("name must have 1 to 64 characters");
         }
+        if let Some(url) = &self.public_url {
+            check_public_url(url)?;
+        }
+        if let Some(version) = &self.terms_version
+            && (version.len() > 64 || version.chars().any(char::is_control))
+        {
+            bail!("terms_version must be at most 64 printable characters");
+        }
+        if self.legacy_device_days > 365 {
+            bail!("legacy_device_days must be at most 365");
+        }
         Ok(())
+    }
+
+    /// The origin of the account web, without a trailing slash, when this cloud has one.
+    pub fn web_origin(&self) -> Option<String> {
+        self.public_url
+            .as_deref()
+            .and_then(|url| check_public_url(url).ok())
+    }
+
+    /// The version of the terms in force, if there are any.
+    pub fn terms(&self) -> Option<&str> {
+        self.terms_version
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
     }
 
     /// The URL the admin commands use to reach this cloud on the same machine.
@@ -387,6 +435,34 @@ impl Config {
         };
         format!("http://{ip}:{}", self.listen.port())
     }
+}
+
+/// Checks `public_url` and returns it as an origin: scheme, host and port, no trailing slash. A
+/// passkey needs a domain name (not an IP address) and a secure origin, so `http` is accepted
+/// for `localhost` only.
+pub fn check_public_url(text: &str) -> Result<String> {
+    let url = reqwest::Url::parse(text.trim())
+        .map_err(|e| anyhow::anyhow!("public_url: {text:?} is not a URL ({e})"))?;
+    let plain_path = matches!(url.path(), "" | "/");
+    if !plain_path
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        bail!(
+            "public_url must be an origin such as https://play.example.com, without path, query or user"
+        );
+    }
+    let Some(host) = url.domain() else {
+        bail!("public_url needs a domain name, not an IP address: passkeys are tied to one");
+    };
+    match url.scheme() {
+        "https" => {}
+        "http" if host == "localhost" => {}
+        _ => bail!("public_url must be https (http only for localhost)"),
+    }
+    Ok(url.origin().ascii_serialization())
 }
 
 /// Timings and limits that tests shorten. Not part of the settings file.
@@ -411,6 +487,18 @@ pub struct Tuning {
     pub rates: Rates,
     /// How long a party member may stay disconnected before it leaves the party.
     pub party_grace: Duration,
+    /// How long a browser session on the account web may sit unused.
+    pub web_idle: Duration,
+    /// The longest a browser session lives.
+    pub web_max: Duration,
+    /// How long a one-time code from the browser sign-in or an account link lives.
+    pub link_ttl: Duration,
+    /// How long a passkey ceremony may take, from the browser asking to the authenticator
+    /// answering.
+    pub ceremony_ttl: Duration,
+    /// A browser session younger than this may do sensitive things (remove a passkey, sign out
+    /// everywhere, delete the account); an older one signs in again first.
+    pub fresh_for: Duration,
 }
 
 impl Default for Tuning {
@@ -430,6 +518,11 @@ impl Default for Tuning {
             node_timeout: Duration::from_secs(30),
             rates: Rates::default(),
             party_grace: Duration::from_secs(15 * 60),
+            web_idle: Duration::from_secs(30 * 60),
+            web_max: Duration::from_secs(4 * 60 * 60),
+            link_ttl: Duration::from_secs(60),
+            ceremony_ttl: Duration::from_secs(5 * 60),
+            fresh_for: Duration::from_secs(15 * 60),
         }
     }
 }
@@ -567,5 +660,63 @@ mod tests {
     #[test]
     fn the_local_url_replaces_a_wildcard_address() {
         assert_eq!(Config::default().local_url(), "http://127.0.0.1:8080");
+    }
+
+    #[test]
+    fn the_public_url_is_an_origin_with_a_domain_name() {
+        for (text, origin) in [
+            ("https://play.example.com", "https://play.example.com"),
+            ("https://play.example.com/", "https://play.example.com"),
+            (
+                "https://Play.Example.com:8443",
+                "https://play.example.com:8443",
+            ),
+            ("http://localhost:8080", "http://localhost:8080"),
+        ] {
+            assert_eq!(check_public_url(text).unwrap(), origin, "{text}");
+        }
+        for bad in [
+            "",
+            "play.example.com",
+            "http://play.example.com",
+            "https://127.0.0.1",
+            "https://[::1]",
+            "https://play.example.com/web",
+            "https://play.example.com/?x=1",
+            "https://play.example.com/#x",
+            "https://user@play.example.com",
+            "ftp://play.example.com",
+        ] {
+            assert!(check_public_url(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_account_web_settings_are_read_and_checked() {
+        let mut config = Config::default();
+        config
+            .apply_env(|name| match name {
+                "PUBLIC_URL" => Some("https://play.example.com".into()),
+                "TERMS_VERSION" => Some(" 2026-10 ".into()),
+                "LEGACY_DEVICE_DAYS" => Some("0".into()),
+                _ => None,
+            })
+            .unwrap();
+        config.validate().unwrap();
+        assert_eq!(
+            config.web_origin().as_deref(),
+            Some("https://play.example.com")
+        );
+        assert_eq!(config.terms(), Some("2026-10"));
+        assert_eq!(config.legacy_device_days, 0);
+
+        config.terms_version = Some("  ".into());
+        assert_eq!(config.terms(), None, "an empty version is no version");
+        config.public_url = Some("http://example.com".into());
+        assert!(config.validate().is_err());
+        config.public_url = None;
+        config.legacy_device_days = 400;
+        assert!(config.validate().is_err());
+        assert_eq!(Config::default().web_origin(), None);
     }
 }

@@ -15,6 +15,7 @@ use anyplay_ticket::Signer;
 use tokio::net::TcpListener;
 
 pub mod avatar;
+pub mod binding;
 pub mod chat;
 pub mod cli;
 pub mod config;
@@ -32,6 +33,7 @@ pub mod social;
 pub mod state;
 pub mod util;
 pub mod visibility;
+pub mod web;
 
 mod error;
 
@@ -120,6 +122,9 @@ pub async fn open(
     for (device, account) in db::all_devices(&pool).await? {
         cache.devices.insert(device, account);
     }
+    for (account, from) in binding::all_tokens_valid_from(&pool).await? {
+        cache.valid_from.insert(account, from);
+    }
     let now = util::now();
     for ban in db::all_bans(&pool).await? {
         if ban.active(now) {
@@ -127,6 +132,7 @@ pub async fn open(
         }
     }
 
+    let web = web::Web::new(&config).context("public_url")?;
     let state = Arc::new(Inner {
         verifier: signer.verifier(),
         signer,
@@ -137,6 +143,7 @@ pub async fn open(
         limiter: limits::RateLimiter::default(),
         cache: RwLock::new(cache),
         news,
+        web,
         node,
         social: tokio::sync::Mutex::new(()),
         metrics: metrics::Metrics::default(),

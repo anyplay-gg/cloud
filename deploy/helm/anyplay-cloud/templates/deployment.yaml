@@ -90,6 +90,14 @@ spec:
             - name: ANYPLAY_CLOUD_TERMS_URL
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.config.publicUrl }}
+            - name: ANYPLAY_CLOUD_PUBLIC_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.termsVersion }}
+            - name: ANYPLAY_CLOUD_TERMS_VERSION
+              value: {{ . | quote }}
+            {{- end }}
             {{- if eq .Values.config.mail "smtp" }}
             - name: ANYPLAY_CLOUD_SMTP_HOST
               value: {{ .Values.config.smtpHost | quote }}

@@ -83,7 +83,9 @@ impl FromRequestParts<AppState> for Concerned {
                 ));
             }
         };
-        state.check_device_owner(auth.device, auth.account).await?;
+        state
+            .check_device_owner(auth.device, auth.account, auth.issued)
+            .await?;
         count_request(state, auth.account)?;
         Ok(Concerned(auth.account))
     }
