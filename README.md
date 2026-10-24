@@ -2,7 +2,7 @@
 
 The services behind the [AnyPlay network](https://github.com/anyplay-gg/network): accounts, friends, presence, sessions, invitations and moderation, plus relays that carry game traffic when two players cannot reach each other directly. One program runs a whole cloud on a home server with `docker compose up`. The same program is being built to run as a cluster that carries a network of millions of players.
 
-**Status: version 0.** Everything in the [cloud API](https://github.com/anyplay-gg/network/blob/main/spec/cloud-api.md) works and is tested end to end. No public cloud runs yet, and the API may still change until one does. The road from one process to a cluster is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+**Status: version 0.** Everything in the [cloud API](https://github.com/anyplay-gg/network/blob/main/spec/cloud-api.md) works and is tested end to end. No public cloud runs yet, and the API may still change until one does. The road from one process to a cluster is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Questions and ideas: the [AnyPlay Discord](https://discord.gg/nSHbHBRdS).
 
 ## What it does
 
@@ -14,6 +14,7 @@ The services behind the [AnyPlay network](https://github.com/anyplay-gg/network)
 | Sessions | Create, join and leave, with capacity, a leader, opaque game properties and a version guard: only the same game version and AnyPS5 build play together. | works |
 | Invitations | Invite friends into a session; the invitation ends with the session. | works |
 | Trophies | Records of earned trophies (title, number, grade, time; no names or art), rarity once 10 players own a title, gamer cards with counts by grade. Private by default: friends see them, and each player can show them to everyone or nobody. | works |
+| Profiles | A short text (160 characters, no links), up to 3 favourite titles, an avatar and playtime per title, each with its own visibility (friends by default, everyone or nobody). Avatars are PNG or JPEG up to 1 MB, decoded with limits against decompression bombs, cropped square, scaled to 256 by 256 and stored again as PNG without metadata, in the database, served by content hash with long cache headers; 5 uploads per account and hour. Playtime keeps the highest minutes seen per title and day, so uploads can repeat. | works |
 | Relays | Signed tickets that let one endpoint use one relay for 24 hours. Relays check them offline and never call the cloud. | works |
 | Moderation | Reports, bans per account and e-mail address, rate limits on every route, and an admin command line. | works |
 | Matchmaking, leaderboards, save backups, chat | | planned |
@@ -46,6 +47,7 @@ The services behind the [AnyPlay network](https://github.com/anyplay-gg/network)
 | `crates/relay` | `anyplay-relay`, an iroh relay that admits only endpoints with a ticket |
 | `crates/ticket` | `anyplay-ticket`, the token format the cloud and the relay share |
 | `crates/e2e` | a whole network in one process: the cloud, a relay that checks tickets, two net services and two fake games that exchange packets through a tunnel |
+| `crates/load` | `anyplay-load`, a load harness that plays thousands of players against the API and event WebSockets; [numbers and method](docs/LOAD.md) |
 | `deploy/` | Dockerfile, `compose.yaml`, Caddyfile and an example `.env` |
 | `deploy/helm/` | the [Helm chart](docs/kubernetes.md) that runs the cloud as a cluster on Kubernetes, with an example CloudNativePG database and the files for the kind test |
 | `fuzz/` | [fuzz targets](fuzz/README.md) for the token check, run every night |

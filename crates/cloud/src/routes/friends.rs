@@ -205,6 +205,9 @@ pub async fn block(
     let had_relation = db::block(&state.db, auth.account, them, now()).await?;
     let gone = live::take_between(&mut *state.db.acquire().await?, auth.account, them).await?;
     state.invitations_gone(&gone);
+    let gone =
+        crate::party::take_between(&mut *state.db.acquire().await?, auth.account, them).await?;
+    state.party_invitations_gone(&gone);
     state.news.push(auth.account, &Event::Friends);
     // The blocked account learns only what it would see anyway: a friend or request is gone.
     if had_relation {

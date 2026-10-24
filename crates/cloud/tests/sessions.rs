@@ -789,3 +789,45 @@ async fn every_change_to_a_session_raises_its_revision() {
         .json();
     assert_eq!(read.revision, changed.revision, "reading changes nothing");
 }
+
+/// A join checks blocks on its own transaction. Asking the pool for a second connection while it
+/// held one stalled every join until the pool's timeout once as many joins ran at once as the pool
+/// had connections (the load harness found it), so here more joins than connections run together.
+#[tokio::test]
+async fn joins_at_once_never_wait_on_each_other_for_a_connection() {
+    let cloud = TestCloud::with(|c| c.database_connections = 2, |_| {}).await;
+    let host = cloud.sign_up("Host").await;
+    let mut joiners = Vec::new();
+    for n in 0..8 {
+        let joiner = cloud.sign_up(&format!("Joiner{n}")).await;
+        cloud
+            .post(
+                "/v1/friends/requests",
+                host.token(),
+                json!({"handle": joiner.handle}),
+            )
+            .await
+            .ok(200);
+        cloud
+            .post_empty(
+                &format!("/v1/friends/requests/{}/accept", host.id),
+                joiner.token(),
+            )
+            .await
+            .ok(204);
+        joiners.push(joiner);
+    }
+    let session = create(&cloud, &host, 1, 16, "friends").await;
+    let joins = joiners
+        .iter()
+        .zip(2u8..)
+        .map(|(joiner, n)| join(&cloud, joiner, &session.id, n));
+    let joined = tokio::time::timeout(
+        Duration::from_secs(10),
+        futures_util::future::join_all(joins),
+    )
+    .await
+    .expect("the joins finish without waiting for the pool");
+    let last = joined.iter().max_by_key(|s| s.members.len()).unwrap();
+    assert_eq!(last.members.len(), 9);
+}

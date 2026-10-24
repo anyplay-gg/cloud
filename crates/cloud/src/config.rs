@@ -83,6 +83,11 @@ pub struct Config {
     pub terms_url: Option<String>,
     pub trust_proxy: bool,
     pub admin_token: Option<String>,
+    /// How many days messages are kept before the sweeps delete them.
+    pub message_retention_days: u64,
+    /// How many hours old an account must be before it may write to people who are not its
+    /// friends. 0 lets new accounts write at once.
+    pub stranger_min_age_hours: u64,
 }
 
 impl Default for Config {
@@ -111,6 +116,8 @@ impl Default for Config {
             terms_url: None,
             trust_proxy: false,
             admin_token: None,
+            message_retention_days: 30,
+            stranger_min_age_hours: 24,
         }
     }
 }
@@ -221,10 +228,19 @@ impl Config {
         if let Some(v) = get("ADMIN_TOKEN") {
             self.admin_token = Some(v);
         }
+        if let Some(v) = get("MESSAGE_RETENTION_DAYS") {
+            self.message_retention_days = parse("MESSAGE_RETENTION_DAYS", &v)?;
+        }
+        if let Some(v) = get("STRANGER_MIN_AGE_HOURS") {
+            self.stranger_min_age_hours = parse("STRANGER_MIN_AGE_HOURS", &v)?;
+        }
         Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.message_retention_days == 0 {
+            bail!("message_retention_days must be at least 1");
+        }
         if let Some(url) = &self.database_url
             && !(url.starts_with("postgres://") || url.starts_with("postgresql://"))
         {
@@ -311,6 +327,8 @@ pub struct Tuning {
     /// How long a node may miss its heartbeat before its connections count as closed.
     pub node_timeout: Duration,
     pub rates: Rates,
+    /// How long a party member may stay disconnected before it leaves the party.
+    pub party_grace: Duration,
 }
 
 impl Default for Tuning {
@@ -329,6 +347,7 @@ impl Default for Tuning {
             sweep_interval: Duration::from_secs(5),
             node_timeout: Duration::from_secs(30),
             rates: Rates::default(),
+            party_grace: Duration::from_secs(15 * 60),
         }
     }
 }
@@ -364,6 +383,26 @@ mod tests {
         assert!(config.trust_proxy);
         assert_eq!(config.signup, Signup::Closed);
         assert_eq!(config.admin_token, None);
+    }
+
+    #[test]
+    fn messages_are_kept_30_days_and_new_accounts_wait_a_day_by_default() {
+        let config = Config::default();
+        assert_eq!(config.message_retention_days, 30);
+        assert_eq!(config.stranger_min_age_hours, 24);
+        let mut config = Config::default();
+        config
+            .apply_env(|name| match name {
+                "MESSAGE_RETENTION_DAYS" => Some("7".into()),
+                "STRANGER_MIN_AGE_HOURS" => Some("0".into()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(config.message_retention_days, 7);
+        assert_eq!(config.stranger_min_age_hours, 0);
+        config.validate().unwrap();
+        config.message_retention_days = 0;
+        assert!(config.validate().is_err());
     }
 
     #[test]

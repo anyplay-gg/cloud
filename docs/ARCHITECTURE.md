@@ -47,6 +47,8 @@ A node holds nothing that another node needs. Any node can answer any request, a
 | Sign-in challenges and sign-up permissions | store | a code requested through one node is entered through another |
 | Presence: which devices hold an event connection, through which node, and the activity | store | friends on other nodes read it; a dead node's devices count as gone |
 | Sessions, members, invitations | store | joins from many nodes must see one capacity and one member list |
+| Parties, party members, party invitations | store | one party per account and 8 members, whichever node writes |
+| Conversations, messages, read marks | store | durable for 30 days; the conversation's counter gives each message its number |
 | Virtual address leases | store | unique across the network |
 | Event connections (the sockets) | the node that holds them | they cannot move |
 | Who is signed in, who is banned | a cache in each node, filled from the store | checked on every request; changes arrive as news |
@@ -67,7 +69,9 @@ The pattern is the one Riot's messaging service and Roblox's notification stream
 ## Concurrency across nodes
 
 - **One session, one writer at a time.** Every change to a session starts by touching its row (`UPDATE sessions SET revision = revision + 1 … RETURNING …`). That holds a row lock in Postgres and the write lock in SQLite until the transaction ends, so blocks, visibility, the version guard and capacity are checked against a state nobody else is changing. The same statement yields the new revision.
-- **Sweeps without a leader.** Presence grace, expired invitations, challenges and leases, and the connections of dead nodes are swept by every node. Each step is one conditional statement, so it takes effect once, and the node whose statement changed rows sends the news.
+- **One conversation, one counter.** A message takes the next number with an `UPDATE` of its conversation's row inside the transaction that stores it. The row lock serializes writers on all nodes, so numbers are never used twice, and a lower number is always committed before a higher one. A client that holds number N asks for what comes after N and misses nothing. Events for messages are pointers (conversation and number); a party is a versioned state like a session ([network ADR 0013](https://github.com/anyplay-gg/network/blob/main/docs/adr/0013-messages-are-numbered-per-conversation.md)).
+- **One party, one writer at a time.** Every change to a party starts by touching its row, as for a session. The unique account in `party_members` keeps an account in one party whichever node writes.
+- **Sweeps without a leader.** Presence grace, expired invitations (session and party), party members gone too long, messages past their retention, challenges and leases, and the connections of dead nodes are swept by every node. Each step is one conditional statement, so it takes effect once, and the node whose statement changed rows sends the news.
 - **Dead nodes.** Each node writes a heartbeat. The connections of a node whose heartbeat is older than its timeout count as closed, and the usual grace period follows.
 
 ## Deploys and failures
@@ -123,7 +127,7 @@ Game traffic goes directly between players where the network allows it and throu
 | 3 | Revisions on sessions and presence; clients spread their reconnects | done |
 | 4 | Operations: health, readiness, metrics, drain, JSON logs | done |
 | 5 | Kubernetes: a Helm chart, tried on a kind cluster in CI ([guide](kubernetes.md)) | done |
-| 6 | Load harness and published numbers | |
+| 6 | Load harness and first numbers: [docs/LOAD.md](LOAD.md) (one laptop, up to 5,000 players; a real cluster is not measured yet) | first numbers |
 | 7 | Regions and cells | |
 
 ### Known limits
