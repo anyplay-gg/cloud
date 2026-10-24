@@ -47,7 +47,7 @@ The services behind the [AnyPlay network](https://github.com/anyplay-gg/network)
 | `crates/e2e` | a whole network in one process: the cloud, a relay that checks tickets, two net services and two fake games that exchange packets through a tunnel |
 | `deploy/` | Dockerfile, `compose.yaml`, Caddyfile and an example `.env` |
 | `fuzz/` | [fuzz targets](fuzz/README.md) for the token check, run every night |
-| `docs/` | [architecture](docs/ARCHITECTURE.md), [settings](docs/configuration.md) and [decisions](docs/adr) |
+| `docs/` | [architecture](docs/ARCHITECTURE.md), [settings](docs/configuration.md), [decisions](docs/adr) and [EU compliance drafts](docs/compliance/README.md) |
 
 ## Host your own
 
