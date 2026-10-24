@@ -51,13 +51,17 @@ async fn hold(state: &AppState, a: u64, b: u64) -> Result<Transaction<'static, A
     Ok(tx)
 }
 
+/// The friend lists with the friends' presence. All of it is read on one store connection: under
+/// load a handler waits for each connection it asks the pool for, and this one is asked for by
+/// every player who comes back after a reconnect.
 pub async fn list(State(state): State<AppState>, auth: Auth) -> Result<Json<FriendLists>> {
-    let friends = db::friends_of(&state.db, auth.account).await?;
-    let incoming = db::incoming_requests(&state.db, auth.account).await?;
-    let outgoing = db::outgoing_requests(&state.db, auth.account).await?;
-    let blocked = db::blocked_by(&state.db, auth.account).await?;
-    let mut presence =
-        live::presence_of_friends(&mut *state.db.acquire().await?, auth.account).await?;
+    let mut conn = state.db.acquire().await?;
+    let friends = db::friends_of(&mut *conn, auth.account).await?;
+    let incoming = db::incoming_requests(&mut *conn, auth.account).await?;
+    let outgoing = db::outgoing_requests(&mut *conn, auth.account).await?;
+    let blocked = db::blocked_by(&mut *conn, auth.account).await?;
+    let mut presence = live::presence_of_friends(&mut conn, auth.account).await?;
+    drop(conn);
     Ok(Json(FriendLists {
         friends: friends
             .iter()

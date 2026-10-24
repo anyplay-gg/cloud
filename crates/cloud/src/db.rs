@@ -455,14 +455,17 @@ fn pair(a: u64, b: u64) -> (i64, i64) {
     (i(a.min(b)), i(a.max(b)))
 }
 
-pub async fn friends_of(pool: &Pool, account: u64) -> sqlx::Result<Vec<Related>> {
+pub async fn friends_of<'e>(
+    db: impl sqlx::Executor<'e, Database = sqlx::Any>,
+    account: u64,
+) -> sqlx::Result<Vec<Related>> {
     sqlx::query_as(
         "SELECT a.id AS id, a.handle AS handle, f.since AS since FROM friends f \
          JOIN accounts a ON a.id = CASE WHEN f.low = $1 THEN f.high ELSE f.low END \
          WHERE f.low = $1 OR f.high = $1 ORDER BY a.handle_key",
     )
     .bind(i(account))
-    .fetch_all(pool)
+    .fetch_all(db)
     .await
 }
 
@@ -578,23 +581,29 @@ pub async fn delete_request(conn: &mut Conn, from: u64, to: u64) -> sqlx::Result
     Ok(result.rows_affected() == 1)
 }
 
-pub async fn incoming_requests(pool: &Pool, account: u64) -> sqlx::Result<Vec<Related>> {
+pub async fn incoming_requests<'e>(
+    db: impl sqlx::Executor<'e, Database = sqlx::Any>,
+    account: u64,
+) -> sqlx::Result<Vec<Related>> {
     sqlx::query_as(
         "SELECT a.id AS id, a.handle AS handle, r.since AS since FROM friend_requests r \
          JOIN accounts a ON a.id = r.from_id WHERE r.to_id = $1 ORDER BY r.since DESC",
     )
     .bind(i(account))
-    .fetch_all(pool)
+    .fetch_all(db)
     .await
 }
 
-pub async fn outgoing_requests(pool: &Pool, account: u64) -> sqlx::Result<Vec<Related>> {
+pub async fn outgoing_requests<'e>(
+    db: impl sqlx::Executor<'e, Database = sqlx::Any>,
+    account: u64,
+) -> sqlx::Result<Vec<Related>> {
     sqlx::query_as(
         "SELECT a.id AS id, a.handle AS handle, r.since AS since FROM friend_requests r \
          JOIN accounts a ON a.id = r.to_id WHERE r.from_id = $1 ORDER BY r.since DESC",
     )
     .bind(i(account))
-    .fetch_all(pool)
+    .fetch_all(db)
     .await
 }
 
@@ -616,13 +625,16 @@ pub async fn count_outgoing(conn: &mut Conn, account: u64) -> sqlx::Result<i64> 
 
 // Blocks
 
-pub async fn blocked_by(pool: &Pool, blocker: u64) -> sqlx::Result<Vec<Related>> {
+pub async fn blocked_by<'e>(
+    db: impl sqlx::Executor<'e, Database = sqlx::Any>,
+    blocker: u64,
+) -> sqlx::Result<Vec<Related>> {
     sqlx::query_as(
         "SELECT a.id AS id, a.handle AS handle, b.since AS since FROM blocks b \
          JOIN accounts a ON a.id = b.blocked WHERE b.blocker = $1 ORDER BY a.handle_key",
     )
     .bind(i(blocker))
-    .fetch_all(pool)
+    .fetch_all(db)
     .await
 }
 
