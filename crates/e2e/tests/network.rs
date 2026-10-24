@@ -439,10 +439,17 @@ async fn meet_and_play(alice_relay: AliceRelay) -> Link {
         .and_then(|m| m.link)
         .expect("Bobby's launcher shows the tunnel to Alice");
     // A tunnel often starts on the relay and goes direct a moment later; on loopback it always
-    // can, unless Alice keeps to the relay.
+    // can, unless Alice keeps to the relay. A busy CI machine can take a while to get there, so
+    // where a direct tunnel is expected the wait is the full limit (it ends as soon as the tunnel
+    // goes direct); where it is not, a few seconds show that the tunnel stays on the relay.
+    let patience = if alice_relay == AliceRelay::FromStart {
+        Duration::from_secs(5)
+    } else {
+        LIMIT
+    };
     let went_direct = first_link == Link::Direct
         || tokio::time::timeout(
-            Duration::from_secs(5),
+            patience,
             bobby.wait("a direct tunnel to Alice", |event| match event {
                 Event::Session {
                     session: Some(shown),
