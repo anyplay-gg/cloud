@@ -8,6 +8,7 @@
 //! on another site cannot send.
 //!
 //! * [`flow`]: the session, and signing in or up as steps of the flow of [`super::flow`].
+//! * [`link`]: the one-time link of the app's account button.
 //! * [`account`]: the account, its passkeys, devices and sessions, step-up, export, deletion.
 //! * [`social`]: friends, the player's own profile and trophies, and public profiles.
 //! * [`links`]: connections, the player's linked Discord and Steam accounts.
@@ -31,6 +32,7 @@ use crate::state::AppState;
 
 pub mod account;
 pub mod flow;
+pub mod link;
 pub mod links;
 pub mod social;
 
@@ -228,6 +230,8 @@ pub fn router() -> Router<AppState> {
         .route("/passkey/sign-in/finish", post(flow::passkey_finish))
         .route("/ban", get(flow::show_ban))
         .route("/ban/appeal", post(flow::appeal))
+        // The link of the app's account button
+        .route("/link/{code}", get(link::peek).post(link::open))
         // The account
         .route("/account", get(account::get))
         .route("/account/passkeys/start", post(account::passkey_start))
