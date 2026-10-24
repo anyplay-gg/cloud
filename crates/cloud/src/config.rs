@@ -40,6 +40,10 @@ pub enum SmtpTls {
 pub struct Config {
     pub listen: SocketAddr,
     pub data_dir: PathBuf,
+    /// A `postgres://` URL. Without it the store is a SQLite file in `data_dir`.
+    pub database_url: Option<String>,
+    /// The most connections the store keeps open.
+    pub database_connections: u32,
     pub name: String,
     pub relays: Vec<String>,
     pub mail: MailMode,
@@ -61,6 +65,8 @@ impl Default for Config {
         Self {
             listen: ([0, 0, 0, 0], 8080).into(),
             data_dir: PathBuf::from("data"),
+            database_url: None,
+            database_connections: 16,
             name: "AnyPlay cloud".into(),
             relays: Vec::new(),
             mail: MailMode::Log,
@@ -118,6 +124,12 @@ impl Config {
         if let Some(v) = get("DATA_DIR") {
             self.data_dir = v.into();
         }
+        if let Some(v) = get("DATABASE_URL") {
+            self.database_url = Some(v);
+        }
+        if let Some(v) = get("DATABASE_CONNECTIONS") {
+            self.database_connections = parse("DATABASE_CONNECTIONS", &v)?;
+        }
         if let Some(v) = get("NAME") {
             self.name = v;
         }
@@ -168,6 +180,16 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if let Some(url) = &self.database_url
+            && !(url.starts_with("postgres://") || url.starts_with("postgresql://"))
+        {
+            bail!(
+                "database_url must be a postgres:// URL; without it the store is a file in data_dir"
+            );
+        }
+        if self.database_connections == 0 {
+            bail!("database_connections must be at least 1");
+        }
         for url in &self.relays {
             if !crate::util::is_http_url(url) {
                 bail!("relays: {url:?} is not an http or https URL");
@@ -311,6 +333,19 @@ mod tests {
             ..Config::default()
         };
         assert!(relay.validate().is_err());
+        let mysql = Config {
+            database_url: Some("mysql://db.example/cloud".into()),
+            ..Config::default()
+        };
+        assert!(
+            mysql.validate().is_err(),
+            "only Postgres stands in for the file"
+        );
+        let postgres = Config {
+            database_url: Some("postgres://cloud@db.example/cloud".into()),
+            ..Config::default()
+        };
+        assert!(postgres.validate().is_ok());
         assert!(Config::default().validate().is_ok());
     }
 

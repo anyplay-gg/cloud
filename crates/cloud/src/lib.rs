@@ -61,7 +61,12 @@ pub async fn open(
     if created {
         tracing::info!("created a new signing key");
     }
-    let pool = db::open(&config.data_dir.join(DATABASE_FILE))
+    let file = config.data_dir.join(DATABASE_FILE);
+    let location = match &config.database_url {
+        Some(url) => db::Location::Postgres(url),
+        None => db::Location::File(&file),
+    };
+    let pool = db::open(location, config.database_connections)
         .await
         .context("cannot open the database")?;
 

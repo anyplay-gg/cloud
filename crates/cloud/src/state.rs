@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use anyplay_api::{Event, close};
 use anyplay_ticket::{Signer, Verifier};
-use sqlx::SqlitePool;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::config::{Config, Tuning};
@@ -51,7 +50,7 @@ pub struct AuthCache {
 pub struct Inner {
     pub config: Config,
     pub tuning: Tuning,
-    pub db: SqlitePool,
+    pub db: db::Pool,
     pub signer: Signer,
     pub verifier: Verifier,
     pub mailer: Arc<dyn Mailer>,
