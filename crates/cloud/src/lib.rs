@@ -147,7 +147,6 @@ pub async fn open(
         news,
         web,
         node,
-        social: tokio::sync::Mutex::new(()),
         metrics: metrics::Metrics::default(),
         draining: std::sync::atomic::AtomicBool::new(false),
         ban_key,

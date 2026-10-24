@@ -4,6 +4,7 @@
 
 mod common;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyplay_api::{Event, Session, close};
@@ -529,4 +530,43 @@ async fn members_joining_one_session_through_both_nodes_at_once_get_different_ad
     let distinct: std::collections::HashSet<_> =
         session.members.iter().map(|m| m.address.clone()).collect();
     assert_eq!(distinct.len(), 9, "{:?}", session.members);
+}
+
+#[tokio::test]
+async fn a_new_accounts_friend_requests_at_once_on_two_nodes_stay_within_its_allowance() {
+    let Some(mut nodes) = TestCloud::cluster(2, |c| c.new_account_hours = 24).await else {
+        eprintln!("no test database and NATS server; skipped");
+        return;
+    };
+    let (two, one) = (
+        Arc::new(nodes.pop().unwrap()),
+        Arc::new(nodes.pop().unwrap()),
+    );
+    let nils = one.sign_up("Nils").await;
+    let mut handles = Vec::new();
+    for k in 0..20 {
+        handles.push(one.sign_up(&format!("Pal{k}")).await.handle);
+    }
+    // Twenty requests at once, half through each node; a new account may send ten.
+    let mut sent = Vec::new();
+    for (k, handle) in handles.into_iter().enumerate() {
+        let node = if k % 2 == 0 { one.clone() } else { two.clone() };
+        let token = nils.token().to_owned();
+        sent.push(tokio::spawn(async move {
+            node.post("/v1/friends/requests", &token, json!({"handle": handle}))
+                .await
+                .status
+        }));
+    }
+    let mut statuses = Vec::new();
+    for request in sent {
+        statuses.push(request.await.unwrap());
+    }
+    let taken = statuses.iter().filter(|s| **s == 200).count();
+    let refused = statuses.iter().filter(|s| **s == 403).count();
+    assert_eq!((taken, refused), (10, 10), "statuses {statuses:?}");
+    let outgoing = one.get("/v1/friends", nils.token()).await.ok(200).body["outgoing"]
+        .as_array()
+        .map(Vec::len);
+    assert_eq!(outgoing, Some(10));
 }

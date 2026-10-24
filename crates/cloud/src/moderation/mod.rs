@@ -838,37 +838,72 @@ pub async fn may_write_to_strangers(state: &crate::state::Inner, account: u64) -
     ensure_not_muted(state, account).await
 }
 
-/// Whether the account may send one more friend request. A muted account sends none; a new
-/// account sends `new_account_friend_requests_per_day` while it is new. Call
-/// [`friend_request_sent`] once the request is stored.
-pub async fn may_send_friend_request(state: &crate::state::Inner, account: u64) -> Result<()> {
-    ensure_not_muted(state, account).await?;
-    let Some(until) = new_until(state, account).await? else {
-        return Ok(());
-    };
-    let since = until.saturating_sub(state.config.new_account_hours * 60 * 60);
-    let mut conn = state.db.acquire().await?;
-    let sent = store::count_new_account_requests(&mut conn, account, since).await?;
-    if sent >= i64::from(state.config.new_account_friend_requests_per_day) {
-        return Err(AppError::restricted(
-            Restriction::NewAccount,
-            Some(until),
-            format!(
-                "A new account may send {} friend requests on its first day. Try again later.",
-                state.config.new_account_friend_requests_per_day
-            ),
-        ));
-    }
-    Ok(())
+/// The rules for one more friend request by an account, read before the request's transaction
+/// (which must not wait for a second store connection while it holds one) and applied inside it
+/// by [`FriendRequestRules::check`]. A muted account sends none; a new account sends
+/// `new_account_friend_requests_per_day` while it is new.
+pub async fn friend_request_rules(
+    state: &crate::state::Inner,
+    account: u64,
+) -> Result<FriendRequestRules> {
+    let mute = store::active_mute(&mut *state.db.acquire().await?, account, now()).await?;
+    let new = new_until(state, account).await?.map(|until| NewAccount {
+        until,
+        since: until.saturating_sub(state.config.new_account_hours * 60 * 60),
+        per_day: state.config.new_account_friend_requests_per_day,
+    });
+    Ok(FriendRequestRules { account, mute, new })
 }
 
-/// Counts a friend request against a new account's allowance. Nothing for an old account.
-pub async fn friend_request_sent(state: &crate::state::Inner, account: u64) -> Result<()> {
-    if new_until(state, account).await?.is_some() {
-        let mut conn = state.db.acquire().await?;
-        store::insert_new_account_request(&mut conn, account, now()).await?;
+/// What [`friend_request_rules`] read.
+pub struct FriendRequestRules {
+    account: u64,
+    /// A running mute, and its end if it has one.
+    mute: Option<Option<u64>>,
+    new: Option<NewAccount>,
+}
+
+struct NewAccount {
+    until: u64,
+    since: u64,
+    per_day: u32,
+}
+
+impl FriendRequestRules {
+    /// Fails when a mute runs or a new account used up its allowance. Call it in the transaction
+    /// that holds the account, so that two requests at once cannot both take the last one.
+    pub async fn check(&self, conn: &mut sqlx::AnyConnection) -> Result<()> {
+        if let Some(until) = self.mute {
+            return Err(AppError::restricted(
+                Restriction::Muted,
+                until,
+                "A moderator muted this account.",
+            ));
+        }
+        let Some(new) = &self.new else {
+            return Ok(());
+        };
+        let sent = store::count_new_account_requests(conn, self.account, new.since).await?;
+        if sent >= i64::from(new.per_day) {
+            return Err(AppError::restricted(
+                Restriction::NewAccount,
+                Some(new.until),
+                format!(
+                    "A new account may send {} friend requests on its first day. Try again later.",
+                    new.per_day
+                ),
+            ));
+        }
+        Ok(())
     }
-    Ok(())
+
+    /// Counts a stored request against a new account's allowance, in the same transaction.
+    pub async fn record(&self, conn: &mut sqlx::AnyConnection) -> Result<()> {
+        if self.new.is_some() {
+            store::insert_new_account_request(conn, self.account, now()).await?;
+        }
+        Ok(())
+    }
 }
 
 // Retention
@@ -991,13 +1026,7 @@ fn report_view(row: &ReportRow) -> ReportView {
     }
 }
 
-/// Starts a transaction that will write. SQLite must take its write lock at the start: a
-/// transaction that reads first and writes later fails with "database is locked" when another
-/// writer commits in between, and waiting does not help. PostgreSQL has no such trouble.
+/// Starts a transaction that will write; see [`crate::state::Inner::begin_write`].
 async fn begin(state: &crate::state::Inner) -> sqlx::Result<sqlx::Transaction<'static, sqlx::Any>> {
-    if state.config.database_url.is_none() {
-        state.db.begin_with("BEGIN IMMEDIATE").await
-    } else {
-        state.db.begin().await
-    }
+    state.begin_write().await
 }

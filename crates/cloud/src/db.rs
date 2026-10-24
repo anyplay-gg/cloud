@@ -16,6 +16,7 @@ use sqlx::{ConnectOptions as _, Connection as _, Executor as _, FromRow};
 pub mod profiles;
 
 pub type Pool = sqlx::AnyPool;
+type Conn = sqlx::AnyConnection;
 
 /// Where the store keeps its data.
 #[derive(Clone, Copy, Debug)]
@@ -475,34 +476,57 @@ pub async fn friend_ids(pool: &Pool, account: u64) -> sqlx::Result<Vec<u64>> {
     Ok(rows.into_iter().map(|(id,)| u(id)).collect())
 }
 
-pub async fn are_friends(pool: &Pool, a: u64, b: u64) -> sqlx::Result<bool> {
+pub async fn are_friends<'e>(
+    db: impl sqlx::Executor<'e, Database = sqlx::Any>,
+    a: u64,
+    b: u64,
+) -> sqlx::Result<bool> {
     let (low, high) = pair(a, b);
     let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM friends WHERE low = $1 AND high = $2")
         .bind(low)
         .bind(high)
-        .fetch_optional(pool)
+        .fetch_optional(db)
         .await?;
     Ok(row.is_some())
 }
 
-pub async fn count_friends(pool: &Pool, account: u64) -> sqlx::Result<i64> {
+/// Locks the rows of two accounts (or one, when they are the same) until the transaction ends,
+/// in the order of their IDs, so that two transactions that lock the same pair never wait for
+/// each other. PostgreSQL only: SQLite has no row locks.
+pub async fn lock_accounts(conn: &mut Conn, a: u64, b: u64) -> sqlx::Result<()> {
+    let (low, high) = (a.min(b), a.max(b));
+    let ids = if low == high {
+        vec![low]
+    } else {
+        vec![low, high]
+    };
+    for id in ids {
+        sqlx::query("SELECT id FROM accounts WHERE id = $1 FOR UPDATE")
+            .bind(i(id))
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
+pub async fn count_friends(conn: &mut Conn, account: u64) -> sqlx::Result<i64> {
     let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM friends WHERE low = $1 OR high = $1")
         .bind(i(account))
-        .fetch_one(pool)
+        .fetch_one(conn)
         .await?;
     Ok(n)
 }
 
-/// Turns a request into a friendship, or adds one directly. Removes requests both ways.
-pub async fn make_friends(pool: &Pool, a: u64, b: u64, now: u64) -> sqlx::Result<()> {
+/// Turns a request into a friendship, or adds one directly. Removes requests both ways. Runs in
+/// the caller's transaction.
+pub async fn make_friends(conn: &mut Conn, a: u64, b: u64, now: u64) -> sqlx::Result<()> {
     let (low, high) = pair(a, b);
-    let mut tx = pool.begin().await?;
     sqlx::query(
         "DELETE FROM friend_requests WHERE (from_id = $1 AND to_id = $2) OR (from_id = $2 AND to_id = $1)",
     )
     .bind(low)
     .bind(high)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
     sqlx::query(
         "INSERT INTO friends (low, high, since) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
@@ -510,46 +534,46 @@ pub async fn make_friends(pool: &Pool, a: u64, b: u64, now: u64) -> sqlx::Result
     .bind(low)
     .bind(high)
     .bind(i(now))
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
-    tx.commit().await
+    Ok(())
 }
 
-pub async fn remove_friendship(pool: &Pool, a: u64, b: u64) -> sqlx::Result<bool> {
+pub async fn remove_friendship(conn: &mut Conn, a: u64, b: u64) -> sqlx::Result<bool> {
     let (low, high) = pair(a, b);
     let result = sqlx::query("DELETE FROM friends WHERE low = $1 AND high = $2")
         .bind(low)
         .bind(high)
-        .execute(pool)
+        .execute(conn)
         .await?;
     Ok(result.rows_affected() == 1)
 }
 
-pub async fn request_exists(pool: &Pool, from: u64, to: u64) -> sqlx::Result<bool> {
+pub async fn request_exists(conn: &mut Conn, from: u64, to: u64) -> sqlx::Result<bool> {
     let row: Option<(i64,)> =
         sqlx::query_as("SELECT 1 FROM friend_requests WHERE from_id = $1 AND to_id = $2")
             .bind(i(from))
             .bind(i(to))
-            .fetch_optional(pool)
+            .fetch_optional(conn)
             .await?;
     Ok(row.is_some())
 }
 
-pub async fn insert_request(pool: &Pool, from: u64, to: u64, now: u64) -> sqlx::Result<()> {
+pub async fn insert_request(conn: &mut Conn, from: u64, to: u64, now: u64) -> sqlx::Result<()> {
     sqlx::query("INSERT INTO friend_requests (from_id, to_id, since) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
         .bind(i(from))
         .bind(i(to))
         .bind(i(now))
-        .execute(pool)
+        .execute(conn)
         .await?;
     Ok(())
 }
 
-pub async fn delete_request(pool: &Pool, from: u64, to: u64) -> sqlx::Result<bool> {
+pub async fn delete_request(conn: &mut Conn, from: u64, to: u64) -> sqlx::Result<bool> {
     let result = sqlx::query("DELETE FROM friend_requests WHERE from_id = $1 AND to_id = $2")
         .bind(i(from))
         .bind(i(to))
-        .execute(pool)
+        .execute(conn)
         .await?;
     Ok(result.rows_affected() == 1)
 }
@@ -574,18 +598,18 @@ pub async fn outgoing_requests(pool: &Pool, account: u64) -> sqlx::Result<Vec<Re
     .await
 }
 
-pub async fn count_incoming(pool: &Pool, account: u64) -> sqlx::Result<i64> {
+pub async fn count_incoming(conn: &mut Conn, account: u64) -> sqlx::Result<i64> {
     let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM friend_requests WHERE to_id = $1")
         .bind(i(account))
-        .fetch_one(pool)
+        .fetch_one(conn)
         .await?;
     Ok(n)
 }
 
-pub async fn count_outgoing(pool: &Pool, account: u64) -> sqlx::Result<i64> {
+pub async fn count_outgoing(conn: &mut Conn, account: u64) -> sqlx::Result<i64> {
     let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM friend_requests WHERE from_id = $1")
         .bind(i(account))
-        .fetch_one(pool)
+        .fetch_one(conn)
         .await?;
     Ok(n)
 }
@@ -602,42 +626,45 @@ pub async fn blocked_by(pool: &Pool, blocker: u64) -> sqlx::Result<Vec<Related>>
     .await
 }
 
-pub async fn count_blocks(pool: &Pool, blocker: u64) -> sqlx::Result<i64> {
+pub async fn count_blocks(conn: &mut Conn, blocker: u64) -> sqlx::Result<i64> {
     let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM blocks WHERE blocker = $1")
         .bind(i(blocker))
-        .fetch_one(pool)
+        .fetch_one(conn)
         .await?;
     Ok(n)
 }
 
 /// True when `blocker` blocked `blocked`.
-pub async fn has_blocked(pool: &Pool, blocker: u64, blocked: u64) -> sqlx::Result<bool> {
+pub async fn has_blocked<'e>(
+    db: impl sqlx::Executor<'e, Database = sqlx::Any>,
+    blocker: u64,
+    blocked: u64,
+) -> sqlx::Result<bool> {
     let row: Option<(i64,)> =
         sqlx::query_as("SELECT 1 FROM blocks WHERE blocker = $1 AND blocked = $2")
             .bind(i(blocker))
             .bind(i(blocked))
-            .fetch_optional(pool)
+            .fetch_optional(db)
             .await?;
     Ok(row.is_some())
 }
 
-/// Adds a block and removes friendship and requests between the two, in one step. Returns whether
-/// a friendship or a request existed in either direction.
-pub async fn block(pool: &Pool, blocker: u64, blocked: u64, now: u64) -> sqlx::Result<bool> {
+/// Adds a block and removes friendship and requests between the two, in the caller's
+/// transaction. Returns whether a friendship or a request existed in either direction.
+pub async fn block(conn: &mut Conn, blocker: u64, blocked: u64, now: u64) -> sqlx::Result<bool> {
     let (low, high) = pair(blocker, blocked);
-    let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO blocks (blocker, blocked, since) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
     )
     .bind(i(blocker))
     .bind(i(blocked))
     .bind(i(now))
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
     let friends = sqlx::query("DELETE FROM friends WHERE low = $1 AND high = $2")
         .bind(low)
         .bind(high)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?
         .rows_affected();
     let requests = sqlx::query(
@@ -645,18 +672,17 @@ pub async fn block(pool: &Pool, blocker: u64, blocked: u64, now: u64) -> sqlx::R
     )
     .bind(low)
     .bind(high)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?
     .rows_affected();
-    tx.commit().await?;
     Ok(friends + requests > 0)
 }
 
-pub async fn unblock(pool: &Pool, blocker: u64, blocked: u64) -> sqlx::Result<bool> {
+pub async fn unblock(conn: &mut Conn, blocker: u64, blocked: u64) -> sqlx::Result<bool> {
     let result = sqlx::query("DELETE FROM blocks WHERE blocker = $1 AND blocked = $2")
         .bind(i(blocker))
         .bind(i(blocked))
-        .execute(pool)
+        .execute(conn)
         .await?;
     Ok(result.rows_affected() == 1)
 }

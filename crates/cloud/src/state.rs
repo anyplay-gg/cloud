@@ -51,8 +51,6 @@ pub struct Inner {
     pub web: Option<crate::web::Web>,
     /// This process in the store's `nodes` table, new at every start.
     pub node: String,
-    /// Serializes changes to friendships and blocks, which check limits before they write.
-    pub social: tokio::sync::Mutex<()>,
     pub metrics: Metrics,
     /// Set when the node is shutting down: it reports itself not ready, so that the load
     /// balancer stops sending players, before it closes their connections.
@@ -68,6 +66,17 @@ fn ms(duration: Duration) -> i64 {
 }
 
 impl Inner {
+    /// Starts a transaction that will write. SQLite must take its write lock at the start: a
+    /// transaction that reads first and writes later fails with "database is locked" when another
+    /// writer commits in between, and waiting does not help. PostgreSQL has no such trouble.
+    pub async fn begin_write(&self) -> sqlx::Result<sqlx::Transaction<'static, sqlx::Any>> {
+        if self.config.database_url.is_none() {
+            self.db.begin_with("BEGIN IMMEDIATE").await
+        } else {
+            self.db.begin().await
+        }
+    }
+
     /// Fails when the device is signed out or the account is banned. A device this node has
     /// not seen yet, because it signed in through another node, is looked up in the store.
     pub async fn check_device(
