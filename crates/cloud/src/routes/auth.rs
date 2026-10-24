@@ -1,6 +1,6 @@
 //! Signing in: e-mail code, sign-up, refresh and sign-out.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyplay_api::{
     CodeAnswer, CodeRequest, Device, EmailAnswer, EmailRequest, ErrorCode, HandleProblem, Me,
@@ -14,12 +14,13 @@ use axum::http::StatusCode;
 use crate::db::{self, AccountRow, InsertError};
 use crate::error::{AppError, Result};
 use crate::http::{ApiJson, Auth, ClientIp};
-use crate::state::{AppState, Challenge, SignupToken};
-use crate::util::{self, ct_eq, hex, normalize_email, now, random_id, random_token, sha256};
+use crate::live::{self, CodeCheck};
+use crate::state::AppState;
+use crate::util::{self, hex, normalize_email, now, now_ms, random_id, random_token, sha256};
 
 const CODE_LENGTH: u8 = 6;
 /// Challenges and sign-ups a client can make us hold at once.
-const MAX_PENDING: usize = 50_000;
+const MAX_PENDING: i64 = 50_000;
 /// Devices one account may have signed in. A new one replaces the one used least recently.
 const MAX_DEVICES: i64 = 10;
 const RESERVED: &[&str] = &[
@@ -100,19 +101,12 @@ pub async fn email(
     let challenge = random_token(16);
     let ttl = state.tuning.code_ttl;
     {
-        let mut pending = state.pending.lock().unwrap_or_else(|e| e.into_inner());
-        if pending.challenges.len() >= MAX_PENDING {
+        let mut conn = state.db.acquire().await?;
+        if live::count_pending(&mut conn).await? >= MAX_PENDING {
             return Err(AppError::rate_limited(60));
         }
-        pending.challenges.insert(
-            challenge.clone(),
-            Challenge {
-                email: email.clone(),
-                code: code.clone(),
-                tries: 0,
-                deadline: Instant::now() + ttl,
-            },
-        );
+        let expires_ms = now_ms() + ttl.as_millis() as i64;
+        live::insert_challenge(&mut conn, &challenge, &email, &code, expires_ms).await?;
     }
     // The same mail goes out whether or not the address has an account.
     let sent = tokio::time::timeout(
@@ -122,8 +116,7 @@ pub async fn email(
     .await;
     if !matches!(sent, Ok(Ok(()))) {
         tracing::error!("cannot send a sign-in code");
-        let mut pending = state.pending.lock().unwrap_or_else(|e| e.into_inner());
-        pending.challenges.remove(&challenge);
+        live::delete_challenge(&mut *state.db.acquire().await?, &challenge).await?;
         return Err(AppError::internal());
     }
     Ok(Json(EmailAnswer {
@@ -149,31 +142,31 @@ pub async fn code(
         .map_err(AppError::rate_limited)?;
     check_device(&request.device)?;
 
-    let email = {
-        let mut pending = state.pending.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(challenge) = pending.challenges.get_mut(&request.challenge) else {
+    let check = live::check_code(
+        &mut *state.db.acquire().await?,
+        &request.challenge,
+        &request.code,
+        state.tuning.code_tries,
+        now_ms(),
+    )
+    .await?;
+    let email = match check {
+        CodeCheck::Unknown => {
             return Err(AppError::new(
                 ErrorCode::CodeExpired,
                 "This code is no longer valid. Ask for a new one.",
             ));
-        };
-        if challenge.deadline <= Instant::now() {
-            pending.challenges.remove(&request.challenge);
+        }
+        CodeCheck::Expired => {
             return Err(AppError::new(
                 ErrorCode::CodeExpired,
                 "This code has expired. Ask for a new one.",
             ));
         }
-        if !ct_eq(challenge.code.as_bytes(), request.code.trim().as_bytes()) {
-            challenge.tries += 1;
-            if challenge.tries >= state.tuning.code_tries {
-                pending.challenges.remove(&request.challenge);
-            }
+        CodeCheck::Wrong => {
             return Err(AppError::new(ErrorCode::CodeWrong, "That code is wrong."));
         }
-        let email = challenge.email.clone();
-        pending.challenges.remove(&request.challenge);
-        email
+        CodeCheck::Right { email } => email,
     };
 
     check_email_ban(&state, &email).await?;
@@ -194,17 +187,12 @@ pub async fn code(
             }
             let signup = random_token(24);
             let ttl = state.tuning.signup_ttl;
-            let mut pending = state.pending.lock().unwrap_or_else(|e| e.into_inner());
-            if pending.signups.len() >= MAX_PENDING {
+            let mut conn = state.db.acquire().await?;
+            if live::count_pending(&mut conn).await? >= MAX_PENDING {
                 return Err(AppError::rate_limited(60));
             }
-            pending.signups.insert(
-                signup.clone(),
-                SignupToken {
-                    email,
-                    deadline: Instant::now() + ttl,
-                },
-            );
+            let expires_ms = now_ms() + ttl.as_millis() as i64;
+            live::insert_signup(&mut conn, &signup, &email, expires_ms).await?;
             Ok(Json(CodeAnswer::NewAccount {
                 signup,
                 expires: now() + ttl.as_secs(),
@@ -247,18 +235,14 @@ pub async fn signup(
             "You must confirm that you are old enough to agree to the terms on your own.",
         ));
     }
-    let email = {
-        let pending = state.pending.lock().unwrap_or_else(|e| e.into_inner());
-        match pending.signups.get(&request.signup) {
-            Some(s) if s.deadline > Instant::now() => s.email.clone(),
-            _ => {
-                return Err(AppError::new(
-                    ErrorCode::CodeExpired,
-                    "The sign-up has expired. Start again with a new code.",
-                ));
-            }
-        }
-    };
+    let email = live::signup_email(&mut *state.db.acquire().await?, &request.signup, now_ms())
+        .await?
+        .ok_or_else(|| {
+            AppError::new(
+                ErrorCode::CodeExpired,
+                "The sign-up has expired. Start again with a new code.",
+            )
+        })?;
     if state.config.signup == anyplay_api::Signup::Closed {
         return Err(signups_closed());
     }
@@ -299,10 +283,7 @@ pub async fn signup(
                     email: email.clone(),
                     created: created as i64,
                 };
-                {
-                    let mut pending = state.pending.lock().unwrap_or_else(|e| e.into_inner());
-                    pending.signups.remove(&request.signup);
-                }
+                live::delete_signup(&mut *state.db.acquire().await?, &request.signup).await?;
                 let signed_in = start_device(&state, &account, &request.device).await?;
                 return Ok(Json(signed_in));
             }

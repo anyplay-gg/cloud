@@ -11,6 +11,7 @@ use axum::http::StatusCode;
 use crate::db;
 use crate::error::{AppError, Result};
 use crate::http::{ApiJson, Auth};
+use crate::live;
 use crate::state::AppState;
 use crate::util::{is_endpoint, is_label, now};
 
@@ -48,10 +49,12 @@ pub async fn set_presence(
         }
         None => None,
     };
-    {
-        let mut hub = state.hub.lock().await;
-        hub.accounts.entry(auth.account).or_default().activity = activity;
-    }
+    live::set_activity(
+        &mut *state.db.acquire().await?,
+        auth.account,
+        activity.as_ref(),
+    )
+    .await?;
     state.refresh_presence([auth.account]).await;
     Ok(StatusCode::NO_CONTENT)
 }

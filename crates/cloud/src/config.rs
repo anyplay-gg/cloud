@@ -248,6 +248,8 @@ pub struct Tuning {
     pub invitation_ttl: Duration,
     pub ping_interval: Duration,
     pub sweep_interval: Duration,
+    /// How long a node may miss its heartbeat before its connections count as closed.
+    pub node_timeout: Duration,
     pub rates: Rates,
 }
 
@@ -265,6 +267,7 @@ impl Default for Tuning {
             invitation_ttl: Duration::from_secs(15 * 60),
             ping_interval: Duration::from_secs(20),
             sweep_interval: Duration::from_secs(5),
+            node_timeout: Duration::from_secs(30),
             rates: Rates::default(),
         }
     }

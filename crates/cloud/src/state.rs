@@ -1,42 +1,25 @@
-//! The shared state of a running cloud and the operations that touch memory and database together.
+//! The shared state of a running cloud and the operations that change live state and send the
+//! news about it. Live state is in the store ([`live`]); this node keeps only its own event
+//! connections ([`News`]) and caches it can fill again.
 
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use anyplay_api::{Event, close};
 use anyplay_ticket::{Signer, Verifier};
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::config::{Config, Tuning};
 use crate::error::AppError;
-use crate::hub::{Conn, Memory, Push};
 use crate::limits::RateLimiter;
+use crate::live::{self, Gone, SessionState};
 use crate::mail::Mailer;
+use crate::news::{News, Push};
 use crate::{db, util};
 
 pub type AppState = Arc<Inner>;
-
-/// A sign-in code waiting to be entered.
-pub struct Challenge {
-    pub email: String,
-    pub code: String,
-    pub tries: u8,
-    pub deadline: Instant,
-}
-
-/// Permission to create an account with a verified address.
-pub struct SignupToken {
-    pub email: String,
-    pub deadline: Instant,
-}
-
-#[derive(Default)]
-pub struct Pending {
-    pub challenges: HashMap<String, Challenge>,
-    pub signups: HashMap<String, SignupToken>,
-}
 
 /// What every request checks: which devices are signed in and which accounts are banned.
 #[derive(Default)]
@@ -55,11 +38,16 @@ pub struct Inner {
     pub verifier: Verifier,
     pub mailer: Arc<dyn Mailer>,
     pub limiter: RateLimiter,
-    pub pending: Mutex<Pending>,
     pub cache: RwLock<AuthCache>,
-    pub hub: tokio::sync::Mutex<Memory>,
+    pub news: News,
+    /// This process in the store's `nodes` table, new at every start.
+    pub node: String,
     /// Serializes changes to friendships and blocks, which check limits before they write.
     pub social: tokio::sync::Mutex<()>,
+}
+
+fn ms(duration: Duration) -> i64 {
+    duration.as_millis() as i64
 }
 
 impl Inner {
@@ -99,181 +87,194 @@ impl Inner {
         cache.devices.remove(&device);
     }
 
+    /// When the lease of an account that goes offline now runs out.
+    fn lease_end(&self) -> i64 {
+        util::now_ms() + ms(self.tuning.lease_ttl)
+    }
+
     // Event connections
 
-    /// Registers an event connection of a device, replacing an older one. The receiver yields the
-    /// `welcome` event first.
+    /// Registers an event connection of a device, replacing an older one. The receiver yields
+    /// the `welcome` event first, or a close when the cloud cannot take the connection.
     pub async fn connect(
         self: &Arc<Self>,
         account: u64,
         device: u64,
     ) -> (UnboundedReceiver<Push>, u64) {
-        let (tx, rx) = unbounded_channel();
-        let (serial, was_online) = {
-            let mut hub = self.hub.lock().await;
-            hub.next_serial += 1;
-            let serial = hub.next_serial;
-            if let Some(old) = hub.conns.remove(&device) {
-                let _ = old.tx.send(Push::Close {
-                    code: 1000,
-                    reason: "replaced by a newer connection",
-                });
-            }
-            hub.conns.insert(
-                device,
-                Conn {
-                    account,
-                    serial,
-                    tx: tx.clone(),
-                },
-            );
-            let mem = hub.accounts.entry(account).or_default();
-            mem.devices.insert(device);
-            mem.generation += 1;
-            let was_online = mem.online;
-            mem.online = true;
-            match hub.lease(account, self.tuning.lease_ttl) {
-                Some(address) => {
-                    let _ = tx.send(Push::Event(Event::Welcome {
-                        address: address.to_string(),
-                        server_time: util::now(),
-                    }));
-                }
-                None => {
-                    tracing::error!("no virtual address is free");
-                    let _ = tx.send(Push::Close {
-                        code: 1013,
-                        reason: "no virtual address is free",
-                    });
+        let serial = self.news.next_serial();
+        let first = match self.open_connection(account, device, serial).await {
+            Ok(Some(address)) => Push::Event(Event::Welcome {
+                address: address.to_string(),
+                server_time: util::now(),
+            }),
+            Ok(None) => {
+                tracing::error!("no virtual address is free");
+                Push::Close {
+                    code: 1013,
+                    reason: "no virtual address is free",
                 }
             }
-            (serial, was_online)
+            Err(error) => {
+                tracing::error!(error = %error.body.message, "cannot record an event connection");
+                Push::Close {
+                    code: 1011,
+                    reason: "the cloud cannot reach its store",
+                }
+            }
         };
-        if !was_online {
+        let welcomed = matches!(first, Push::Event(_));
+        let pushes = self.news.attach(account, device, serial, first);
+        if welcomed {
             self.refresh_presence([account]).await;
         }
-        (rx, serial)
+        (pushes, serial)
     }
 
-    /// Called when an event connection ends. The account stays online for a grace period.
-    pub async fn disconnect(self: &Arc<Self>, account: u64, device: u64, serial: u64) {
-        let generation = {
-            let mut hub = self.hub.lock().await;
-            match hub.conns.get(&device) {
-                Some(conn) if conn.serial == serial => {}
-                _ => return,
-            }
-            hub.conns.remove(&device);
-            let Some(mem) = hub.accounts.get_mut(&account) else {
-                return;
-            };
-            mem.devices.remove(&device);
-            if !mem.devices.is_empty() {
-                return;
-            }
-            mem.generation += 1;
-            mem.generation
-        };
-        self.schedule_grace(account, generation);
+    async fn open_connection(
+        &self,
+        account: u64,
+        device: u64,
+        serial: u64,
+    ) -> Result<Option<Ipv4Addr>, AppError> {
+        let now = util::now_ms();
+        let mut conn = self.db.acquire().await?;
+        live::open_connection(&mut conn, account, device, &self.node, serial, now).await?;
+        Ok(live::lease(&mut conn, account, self.lease_end(), now).await?)
     }
 
-    /// Starts the two timers after which an account without a connection goes offline and leaves
-    /// its sessions. A new connection (or a later call) changes the generation and cancels them.
-    pub fn schedule_grace(self: &Arc<Self>, account: u64, generation: u64) {
-        let weak = Arc::downgrade(self);
-        let offline = self.tuning.offline_grace;
-        let sessions = self.tuning.session_grace;
-        tokio::spawn(async move {
-            tokio::time::sleep(offline).await;
-            let Some(state) = weak.upgrade() else { return };
-            state.go_offline(account, generation).await;
-            drop(state);
-            tokio::time::sleep(sessions.saturating_sub(offline)).await;
-            let Some(state) = weak.upgrade() else { return };
-            state.leave_sessions(account, generation).await;
-        });
-    }
-
-    /// Makes sure an account that is in a session without a connection leaves it in time.
-    pub fn arm_grace(self: &Arc<Self>, hub: &mut Memory, account: u64) {
-        if hub.is_connected(account) {
+    /// Called when an event connection ends. The account stays online for a grace period; the
+    /// sweep takes it offline after that.
+    pub async fn disconnect(&self, account: u64, device: u64, serial: u64) {
+        if !self.news.detach(device, serial) {
             return;
         }
-        let mem = hub.accounts.entry(account).or_default();
-        mem.generation += 1;
-        self.schedule_grace(account, mem.generation);
-    }
-
-    async fn go_offline(self: &Arc<Self>, account: u64, generation: u64) {
-        {
-            let mut hub = self.hub.lock().await;
-            let due = hub
-                .accounts
-                .get(&account)
-                .is_some_and(|m| m.generation == generation && m.devices.is_empty() && m.online);
-            if !due {
-                return;
-            }
-            hub.offline(account, self.tuning.lease_ttl);
+        let closed = async {
+            let mut conn = self.db.acquire().await?;
+            live::close_connection(
+                &mut conn,
+                account,
+                device,
+                &self.node,
+                serial,
+                util::now_ms(),
+            )
+            .await
+        };
+        if let Err(error) = closed.await {
+            // Once this node's heartbeat stops, another sweep closes what this one could not.
+            tracing::error!(%error, "cannot forget an event connection");
         }
-        self.refresh_presence([account]).await;
-    }
-
-    async fn leave_sessions(self: &Arc<Self>, account: u64, generation: u64) {
-        let mut dirty = Vec::new();
-        {
-            let mut hub = self.hub.lock().await;
-            let due = hub
-                .accounts
-                .get(&account)
-                .is_some_and(|m| m.generation == generation && m.devices.is_empty());
-            if !due {
-                return;
-            }
-            hub.leave_everything(account, &mut dirty);
-        }
-        self.refresh_presence(dirty).await;
     }
 
     // Presence
 
-    /// Tells the online friends of each account whose presence changed since they were last told.
+    /// Tells the friends of each account whose presence changed since they were last told.
     pub async fn refresh_presence(&self, accounts: impl IntoIterator<Item = u64>) {
         let mut seen = HashSet::new();
         for account in accounts {
             if !seen.insert(account) {
                 continue;
             }
-            let mut hub = self.hub.lock().await;
-            let presence = hub.presence_of(account);
-            let previous = hub
-                .accounts
-                .get(&account)
-                .and_then(|m| m.sent.clone())
-                .unwrap_or_default();
-            if previous == presence {
-                continue;
-            }
-            if let Some(mem) = hub.accounts.get_mut(&account) {
-                mem.sent = Some(presence.clone());
-            }
-            let friends = match db::friend_ids(&self.db, account).await {
-                Ok(friends) => friends,
-                Err(error) => {
-                    tracing::error!(%error, "cannot list friends for a presence change");
-                    continue;
-                }
-            };
-            for friend in friends {
-                hub.push(
-                    friend,
-                    Event::Presence {
-                        account: anyplay_api::AccountId(account),
-                        presence: presence.clone(),
-                    },
-                );
+            if let Err(error) = self.refresh_one(account).await {
+                tracing::error!(error = %error.body.message, "cannot tell friends about a presence change");
             }
         }
+    }
+
+    async fn refresh_one(&self, account: u64) -> Result<(), AppError> {
+        let presence = {
+            let mut conn = self.db.acquire().await?;
+            let presence = live::presence_of(&mut conn, account).await?;
+            if !live::mark_sent(&mut conn, account, &presence).await? {
+                return Ok(());
+            }
+            presence
+        };
+        let event = Event::Presence {
+            account: anyplay_api::AccountId(account),
+            presence,
+        };
+        for friend in db::friend_ids(&self.db, account).await? {
+            self.news.push(friend, &event);
+        }
+        Ok(())
+    }
+
+    // Sessions and invitations
+
+    /// Sends a session as it is now to all its members.
+    pub fn announce(&self, session: &SessionState) {
+        let event = Event::Session {
+            session: session.view(),
+        };
+        for member in session.member_ids() {
+            self.news.push(member, &event);
+        }
+    }
+
+    /// Tells the recipients of invitations that ended.
+    pub fn invitations_gone(&self, gone: &[Gone]) {
+        for invitation in gone {
+            self.news.push(
+                invitation.to(),
+                &Event::InvitationGone {
+                    id: invitation.id.clone(),
+                },
+            );
+        }
+    }
+
+    /// Takes a member out of a session. A leaving leader hands over to the longest-standing
+    /// member; the last member closes the session. Returns the accounts whose presence may have
+    /// changed.
+    pub async fn remove_member(&self, id: &str, account: u64) -> Result<Vec<u64>, AppError> {
+        let mut tx = self.db.begin().await?;
+        let Some(mut session) = live::lock_session(&mut tx, id).await? else {
+            return Ok(Vec::new());
+        };
+        if !session.is_member(account) {
+            return Ok(Vec::new());
+        }
+        live::delete_member(&mut tx, id, account).await?;
+        session.members.retain(|m| m.account_id as u64 != account);
+        let gone = match session.members.first() {
+            None => {
+                let gone = live::take_of_session(&mut tx, id).await?;
+                live::delete_session(&mut tx, id).await?;
+                gone
+            }
+            Some(first) => {
+                if session.leader() == account {
+                    session.row.leader = first.account_id;
+                    live::update_session(&mut tx, &session.row).await?;
+                }
+                Vec::new()
+            }
+        };
+        tx.commit().await?;
+
+        self.news
+            .push(account, &Event::SessionGone { id: id.to_owned() });
+        self.invitations_gone(&gone);
+        let mut dirty = vec![account];
+        if !session.members.is_empty() {
+            self.announce(&session);
+            dirty.extend(session.member_ids());
+        }
+        Ok(dirty)
+    }
+
+    /// Takes an account out of every session and drops the invitations it sent or holds.
+    /// Returns the accounts whose presence may have changed.
+    pub async fn leave_everything(&self, account: u64) -> Result<Vec<u64>, AppError> {
+        let sessions = live::sessions_of(&mut *self.db.acquire().await?, account).await?;
+        let mut dirty = Vec::new();
+        for id in sessions {
+            dirty.extend(self.remove_member(&id, account).await?);
+        }
+        let gone = live::take_of_account(&mut *self.db.acquire().await?, account).await?;
+        self.invitations_gone(&gone);
+        Ok(dirty)
     }
 
     // Devices, bans, deletion
@@ -282,8 +283,7 @@ impl Inner {
     pub async fn sign_out_device(&self, device: u64) -> Result<(), AppError> {
         db::delete_device(&self.db, device).await?;
         self.uncache_device(device);
-        let hub = self.hub.lock().await;
-        hub.close_device(
+        self.news.close_device(
             device,
             Some(Event::SignedOut),
             close::SIGNED_OUT,
@@ -294,19 +294,24 @@ impl Inner {
 
     /// Applies a ban to what is running: closes connections and takes the account out of its
     /// sessions. The database row is written by the caller.
-    pub async fn apply_ban(&self, account: u64, until: Option<u64>) {
+    pub async fn apply_ban(&self, account: u64, until: Option<u64>) -> Result<(), AppError> {
         {
             let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
             cache.bans.insert(account, until);
         }
-        let mut dirty = vec![account];
-        {
-            let mut hub = self.hub.lock().await;
-            hub.close_account(account, Event::Banned { until }, close::BANNED, "banned");
-            hub.leave_everything(account, &mut dirty);
-            hub.offline(account, self.tuning.lease_ttl);
-        }
+        self.news
+            .close_account(account, &Event::Banned { until }, close::BANNED, "banned");
+        let mut dirty = self.leave_everything(account).await?;
+        live::set_offline(
+            &mut *self.db.acquire().await?,
+            account,
+            util::now_ms(),
+            self.lease_end(),
+        )
+        .await?;
+        dirty.push(account);
         self.refresh_presence(dirty).await;
+        Ok(())
     }
 
     pub fn lift_ban(&self, account: u64) {
@@ -318,6 +323,14 @@ impl Inner {
     pub async fn delete_account(&self, account: u64) -> Result<(), AppError> {
         let friends = db::friend_ids(&self.db, account).await?;
         let devices = db::devices_of(&self.db, account).await?;
+        // Sessions and invitations first, while their members can still be told.
+        let dirty = self.leave_everything(account).await?;
+        self.news.close_account(
+            account,
+            &Event::SignedOut,
+            close::SIGNED_OUT,
+            "account deleted",
+        );
         db::delete_account(&self.db, account).await?;
         {
             let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
@@ -325,56 +338,57 @@ impl Inner {
                 cache.devices.remove(&device.id());
             }
         }
-        let mut dirty = Vec::new();
-        let mut hub = self.hub.lock().await;
-        hub.close_account(
-            account,
-            Event::SignedOut,
-            close::SIGNED_OUT,
-            "account deleted",
-        );
-        hub.purge_account(account, &mut dirty);
+        let offline = Event::Presence {
+            account: anyplay_api::AccountId(account),
+            presence: anyplay_api::Presence::default(),
+        };
         for friend in friends {
-            hub.push(
-                friend,
-                Event::Presence {
-                    account: anyplay_api::AccountId(account),
-                    presence: anyplay_api::Presence::default(),
-                },
-            );
-            hub.push(friend, Event::Friends);
+            self.news.push(friend, &offline);
+            self.news.push(friend, &Event::Friends);
         }
-        drop(hub);
-        self.refresh_presence(dirty).await;
+        self.refresh_presence(dirty.into_iter().filter(|a| *a != account))
+            .await;
         Ok(())
     }
 
     /// The address leased to an account, leasing one if needed.
-    pub async fn address_of(&self, account: u64) -> Option<Ipv4Addr> {
-        self.hub.lock().await.lease(account, self.tuning.lease_ttl)
+    pub async fn address_of(&self, account: u64) -> Result<Option<Ipv4Addr>, AppError> {
+        let mut conn = self.db.acquire().await?;
+        Ok(live::lease(&mut conn, account, self.lease_end(), util::now_ms()).await?)
     }
 
-    /// Asks every event connection to close, for shutdown.
-    pub async fn close_all(&self) {
-        let hub = self.hub.lock().await;
-        for conn in hub.conns.values() {
-            let _ = conn.tx.send(Push::Close {
-                code: 1001,
-                reason: "going away",
-            });
-        }
+    /// Asks every event connection of this node to close, for shutdown.
+    pub fn close_all(&self) {
+        self.news.close_all(1001, "going away");
     }
 
-    /// Forgets what has expired. Runs on a timer.
-    pub async fn sweep(&self) {
-        let now = Instant::now();
-        {
-            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            pending.challenges.retain(|_, c| c.deadline > now);
-            pending.signups.retain(|_, s| s.deadline > now);
-        }
+    /// Shows that this node is alive and carries out what is due: the connections of dead nodes,
+    /// the grace periods, and invitations, challenges and leases that ran out. Every node runs it.
+    pub async fn sweep(&self) -> Result<(), AppError> {
         self.limiter.sweep();
-        self.hub.lock().await.sweep(now);
+        let now = util::now_ms();
+        let (offline, gone, leaving) = {
+            let mut conn = self.db.acquire().await?;
+            live::heartbeat(&mut conn, &self.node, now).await?;
+            live::sweep_dead_nodes(&mut conn, now - ms(self.tuning.node_timeout)).await?;
+            let offline = live::sweep_offline(
+                &mut conn,
+                now - ms(self.tuning.offline_grace),
+                self.lease_end(),
+            )
+            .await?;
+            let gone = live::sweep_expired(&mut conn, now).await?;
+            let leaving =
+                live::due_to_leave(&mut conn, now - ms(self.tuning.session_grace)).await?;
+            (offline, gone, leaving)
+        };
+        self.invitations_gone(&gone);
+        let mut dirty = offline;
+        for account in leaving {
+            dirty.extend(self.leave_everything(account).await?);
+        }
+        self.refresh_presence(dirty).await;
+        Ok(())
     }
 }
 
@@ -386,7 +400,9 @@ pub fn start_sweeper(state: &AppState) {
         loop {
             tokio::time::sleep(every).await;
             let Some(state) = weak.upgrade() else { return };
-            state.sweep().await;
+            if let Err(error) = state.sweep().await {
+                tracing::error!(error = %error.body.message, "the sweep failed; it runs again soon");
+            }
         }
     });
 }

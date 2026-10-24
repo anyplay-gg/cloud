@@ -16,6 +16,14 @@ pub fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// The current time in Unix milliseconds, for deadlines the store compares.
+pub fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// A random number usable as an account or device ID: 1 to 2^53 - 1.
 pub fn random_id() -> u64 {
     rand::random_range(1..=MAX_ACCOUNT_ID)
