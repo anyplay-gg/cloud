@@ -346,7 +346,7 @@ async fn a_second_connection_of_a_device_replaces_the_first() {
 }
 
 #[tokio::test]
-async fn virtual_addresses_come_from_the_range_and_stay_with_the_account() {
+async fn the_welcome_names_the_preferred_address_of_the_account_every_time() {
     let cloud = TestCloud::start().await;
     let a = cloud.sign_up("Alec").await;
     let b = cloud.sign_up("Sam").await;
@@ -359,10 +359,12 @@ async fn virtual_addresses_come_from_the_range_and_stay_with_the_account() {
     for addr in [addr_a, addr_b] {
         assert!(addr.octets()[3] != 0 && addr.octets()[3] != 255);
     }
-    // Reconnecting gives the same address back.
+    // Reconnecting, from any device, names the same address, and it is not leased: nothing in
+    // the store holds it.
     drop(ea);
     let again = cloud.events(a.token()).await;
     assert_eq!(again.address, addr_a.to_string());
+    assert_eq!(addr_a, anyplay_cloud::addresses::preferred(a.id));
 }
 
 #[tokio::test]

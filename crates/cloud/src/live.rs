@@ -1,5 +1,5 @@
 //! The live state in the store: sign-in challenges, event connections, presence, sessions,
-//! invitations and virtual address leases (`docs/adr/0005-shared-state-lives-in-the-store.md`).
+//! invitations (`docs/adr/0005-shared-state-lives-in-the-store.md`).
 //!
 //! Every node reads and writes the same rows, so any node can answer any request and a node can
 //! stop without taking state with it. A change to a session starts by touching its row
@@ -10,7 +10,6 @@
 //! once with `$1` parameters for SQLite and Postgres.
 
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
 
 use anyplay_api::{
     Account, AccountId, Activity, Invitation, Member, Presence, Session, SessionRef, Visibility,
@@ -455,13 +454,8 @@ pub async fn mark_sent(
     Ok(revision.map(|(r,)| u(r)))
 }
 
-/// Takes accounts offline whose grace period ended before `cut_ms`. Their leases start to run
-/// out. Returns them.
-pub async fn sweep_offline(
-    conn: &mut Conn,
-    cut_ms: i64,
-    lease_expires_ms: i64,
-) -> sqlx::Result<Vec<u64>> {
+/// Takes accounts offline whose grace period ended before `cut_ms`. Returns them.
+pub async fn sweep_offline(conn: &mut Conn, cut_ms: i64) -> sqlx::Result<Vec<u64>> {
     let gone: Vec<(i64,)> = sqlx::query_as(
         "UPDATE presence SET online = 0, activity = NULL \
          WHERE online = 1 AND last_seen_ms IS NOT NULL AND last_seen_ms <= $1 \
@@ -471,27 +465,19 @@ pub async fn sweep_offline(
     .bind(cut_ms)
     .fetch_all(&mut *conn)
     .await?;
-    for (account,) in &gone {
-        release_lease(conn, u(*account), lease_expires_ms).await?;
-    }
     Ok(gone.into_iter().map(|(a,)| u(a)).collect())
 }
 
 /// Takes an account offline now, as for a ban.
-pub async fn set_offline(
-    conn: &mut Conn,
-    account: u64,
-    now_ms: i64,
-    lease_expires_ms: i64,
-) -> sqlx::Result<()> {
+pub async fn set_offline(conn: &mut Conn, account: u64, now_ms: i64) -> sqlx::Result<()> {
     sqlx::query(
         "UPDATE presence SET online = 0, activity = NULL, last_seen_ms = $2 WHERE account_id = $1",
     )
     .bind(i(account))
     .bind(now_ms)
-    .execute(&mut *conn)
+    .execute(conn)
     .await?;
-    release_lease(conn, account, lease_expires_ms).await
+    Ok(())
 }
 
 /// Accounts in a session whose session grace ended before `cut_ms` without a connection.
@@ -506,117 +492,6 @@ pub async fn due_to_leave(conn: &mut Conn, cut_ms: i64) -> sqlx::Result<Vec<u64>
     .fetch_all(conn)
     .await?;
     Ok(rows.into_iter().map(|(a,)| u(a)).collect())
-}
-
-// Virtual addresses
-
-/// The size of `198.18.0.0/15`.
-pub const ADDRESS_SPACE: u32 = 1 << 17;
-const ADDRESS_BASE: u32 = u32::from_be_bytes([198, 18, 0, 0]);
-/// How far a lease looks past an account's preferred slot. Linear probing finds a free slot
-/// within a few steps until the space is nearly full.
-const MAX_PROBES: u32 = 4096;
-
-pub fn slot_address(slot: u32) -> Ipv4Addr {
-    Ipv4Addr::from(ADDRESS_BASE + slot)
-}
-
-/// Addresses ending in .0 or .255 look like network and broadcast addresses to some games.
-fn usable(slot: u32) -> bool {
-    let last = slot & 0xff;
-    last != 0 && last != 0xff
-}
-
-pub fn preferred_slot(account: u64) -> u32 {
-    let hash = sha256(&account.to_be_bytes());
-    let n = u64::from_be_bytes([
-        hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
-    ]);
-    (n % u64::from(ADDRESS_SPACE)) as u32
-}
-
-/// The account's address, leasing one when it has none, the same one each time while it is free.
-/// The lease holds for good while the account holds a connection or is in a session, and until
-/// `expires_ms` otherwise. `None` when no address is free.
-pub async fn lease(
-    conn: &mut Conn,
-    account: u64,
-    expires_ms: i64,
-    now_ms: i64,
-) -> sqlx::Result<Option<Ipv4Addr>> {
-    let held: Option<(i64,)> = sqlx::query_as(
-        "SELECT 1 WHERE EXISTS (SELECT 1 FROM connections WHERE account_id = $1) \
-         OR EXISTS (SELECT 1 FROM members WHERE account_id = $1)",
-    )
-    .bind(i(account))
-    .fetch_optional(&mut *conn)
-    .await?;
-    let expires = if held.is_some() {
-        None
-    } else {
-        Some(expires_ms)
-    };
-    let kept: Option<(i64,)> =
-        sqlx::query_as("UPDATE leases SET expires_ms = $2 WHERE account_id = $1 RETURNING slot")
-            .bind(i(account))
-            .bind(expires)
-            .fetch_optional(&mut *conn)
-            .await?;
-    if let Some((slot,)) = kept {
-        return Ok(Some(slot_address(slot as u32)));
-    }
-    let start = preferred_slot(account);
-    for step in 0..MAX_PROBES {
-        let slot = (start + step) % ADDRESS_SPACE;
-        if !usable(slot) {
-            continue;
-        }
-        // A lease that ran out is free once its account holds no connection and no session.
-        sqlx::query(
-            "DELETE FROM leases WHERE slot = $1 AND expires_ms IS NOT NULL AND expires_ms <= $2 \
-             AND NOT EXISTS (SELECT 1 FROM connections c WHERE c.account_id = leases.account_id) \
-             AND NOT EXISTS (SELECT 1 FROM members m WHERE m.account_id = leases.account_id)",
-        )
-        .bind(i64::from(slot))
-        .bind(now_ms)
-        .execute(&mut *conn)
-        .await?;
-        let taken = sqlx::query(
-            "INSERT INTO leases (slot, account_id, expires_ms) VALUES ($1, $2, $3) \
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(i64::from(slot))
-        .bind(i(account))
-        .bind(expires)
-        .execute(&mut *conn)
-        .await?
-        .rows_affected();
-        if taken == 1 {
-            return Ok(Some(slot_address(slot)));
-        }
-        // Another request may have leased this account an address meanwhile.
-        let mine: Option<(i64,)> = sqlx::query_as("SELECT slot FROM leases WHERE account_id = $1")
-            .bind(i(account))
-            .fetch_optional(&mut *conn)
-            .await?;
-        if let Some((slot,)) = mine {
-            return Ok(Some(slot_address(slot as u32)));
-        }
-    }
-    Ok(None)
-}
-
-/// Lets the lease of an account that went offline run out at `expires_ms`.
-async fn release_lease(conn: &mut Conn, account: u64, expires_ms: i64) -> sqlx::Result<()> {
-    sqlx::query(
-        "UPDATE leases SET expires_ms = $2 WHERE account_id = $1 \
-         AND NOT EXISTS (SELECT 1 FROM members m WHERE m.account_id = $1)",
-    )
-    .bind(i(account))
-    .bind(expires_ms)
-    .execute(conn)
-    .await?;
-    Ok(())
 }
 
 // Sessions
@@ -1038,7 +913,7 @@ pub async fn take_declined(conn: &mut Conn, id: &str, to: u64) -> sqlx::Result<V
 // Sweeps
 
 /// Removes what ran out: invitations (returned, so their recipients hear of it), challenges,
-/// sign-ups and leases that nobody holds.
+/// and sign-ups.
 pub async fn sweep_expired(conn: &mut Conn, now_ms: i64) -> sqlx::Result<Vec<Gone>> {
     let gone: Vec<Gone> =
         sqlx::query_as("DELETE FROM invitations WHERE deadline_ms <= $1 RETURNING id, to_id")
@@ -1059,14 +934,6 @@ pub async fn sweep_expired(conn: &mut Conn, now_ms: i64) -> sqlx::Result<Vec<Gon
         .execute(&mut *conn)
         .await?;
     }
-    sqlx::query(
-        "DELETE FROM leases WHERE expires_ms IS NOT NULL AND expires_ms <= $1 \
-         AND NOT EXISTS (SELECT 1 FROM connections c WHERE c.account_id = leases.account_id) \
-         AND NOT EXISTS (SELECT 1 FROM members m WHERE m.account_id = leases.account_id)",
-    )
-    .bind(now_ms)
-    .execute(conn)
-    .await?;
     Ok(gone)
 }
 
@@ -1095,71 +962,6 @@ mod tests {
             .unwrap();
         }
         (pool, dir)
-    }
-
-    #[tokio::test]
-    async fn addresses_come_from_the_virtual_range_and_avoid_the_ends_of_a_block() {
-        let (pool, _dir) = store(300).await;
-        let mut conn = pool.acquire().await.unwrap();
-        for account in 1..=300 {
-            let address = lease(&mut conn, account, LATER, 0).await.unwrap().unwrap();
-            assert!(anyplay_api::is_virtual(address));
-            let last = address.octets()[3];
-            assert!(last != 0 && last != 255, "{address}");
-        }
-    }
-
-    #[tokio::test]
-    async fn an_account_keeps_its_address_and_collisions_probe_on() {
-        let (pool, _dir) = store(3).await;
-        let mut conn = pool.acquire().await.unwrap();
-        let first = lease(&mut conn, 1, LATER, 0).await.unwrap();
-        assert_eq!(lease(&mut conn, 1, LATER, 0).await.unwrap(), first);
-        // Account 3 holds the slot account 2 prefers, and its lease has not run out.
-        let wanted = preferred_slot(2);
-        sqlx::query("INSERT INTO leases (slot, account_id, expires_ms) VALUES ($1, 3, $2)")
-            .bind(i64::from(wanted))
-            .bind(LATER)
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-        let moved = lease(&mut conn, 2, LATER, 0).await.unwrap().unwrap();
-        assert_ne!(moved, slot_address(wanted));
-    }
-
-    #[tokio::test]
-    async fn an_expired_lease_goes_to_the_next_account_that_wants_the_slot() {
-        let (pool, _dir) = store(3).await;
-        let mut conn = pool.acquire().await.unwrap();
-        let wanted = preferred_slot(2);
-        sqlx::query("INSERT INTO leases (slot, account_id, expires_ms) VALUES ($1, 3, 10)")
-            .bind(i64::from(wanted))
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-        let address = lease(&mut conn, 2, LATER, 20).await.unwrap();
-        assert_eq!(address, Some(slot_address(wanted)));
-    }
-
-    #[tokio::test]
-    async fn a_connected_account_keeps_its_lease_through_every_sweep() {
-        let (pool, _dir) = store(1).await;
-        db::insert_device(&pool, 9, 1, "pc", "linux", b"refresh", 1)
-            .await
-            .unwrap();
-        let mut conn = pool.acquire().await.unwrap();
-        open_connection(&mut conn, 1, 9, "node", 1, 0)
-            .await
-            .unwrap();
-        let address = lease(&mut conn, 1, 10, 0).await.unwrap();
-        sweep_expired(&mut conn, i64::MAX).await.unwrap();
-        assert_eq!(lease(&mut conn, 1, 10, 0).await.unwrap(), address);
-        assert!(
-            sweep_offline(&mut conn, i64::MAX, 10)
-                .await
-                .unwrap()
-                .is_empty()
-        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1244,13 +1046,8 @@ mod tests {
         sweep_dead_nodes(&mut conn, 2_000).await.unwrap();
         assert!(!is_connected(&mut conn, 1).await.unwrap());
         // The grace runs from the node's last heartbeat.
-        assert!(
-            sweep_offline(&mut conn, 999, LATER)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        assert_eq!(sweep_offline(&mut conn, 1_000, LATER).await.unwrap(), [1]);
+        assert!(sweep_offline(&mut conn, 999).await.unwrap().is_empty());
+        assert_eq!(sweep_offline(&mut conn, 1_000).await.unwrap(), [1]);
         assert_eq!(
             presence_of(&mut conn, 1).await.unwrap(),
             Presence::default()

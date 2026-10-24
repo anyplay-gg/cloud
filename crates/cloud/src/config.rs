@@ -494,8 +494,6 @@ pub struct Tuning {
     pub offline_grace: Duration,
     /// How long a member may stay disconnected before it leaves its sessions.
     pub session_grace: Duration,
-    /// How long an address is kept for an account that went offline.
-    pub lease_ttl: Duration,
     pub invitation_ttl: Duration,
     pub ping_interval: Duration,
     pub sweep_interval: Duration,
@@ -530,7 +528,6 @@ impl Default for Tuning {
             relay_ttl_secs: 24 * 60 * 60,
             offline_grace: Duration::from_secs(10),
             session_grace: Duration::from_secs(30),
-            lease_ttl: Duration::from_secs(10 * 60),
             invitation_ttl: Duration::from_secs(15 * 60),
             ping_interval: Duration::from_secs(20),
             sweep_interval: Duration::from_secs(5),

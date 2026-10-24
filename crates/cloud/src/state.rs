@@ -3,7 +3,6 @@
 //! connections ([`News`]) and caches it can fill again.
 
 use std::collections::{HashMap, HashSet};
-use std::net::Ipv4Addr;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -12,6 +11,7 @@ use anyplay_api::{Event, close};
 use anyplay_ticket::{Signer, Verifier};
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use crate::addresses;
 use crate::config::{Config, Tuning};
 use crate::error::AppError;
 use crate::limits::RateLimiter;
@@ -147,11 +147,6 @@ impl Inner {
         cache.devices.remove(&device);
     }
 
-    /// When the lease of an account that goes offline now runs out.
-    fn lease_end(&self) -> i64 {
-        util::now_ms() + ms(self.tuning.lease_ttl)
-    }
-
     // Event connections
 
     /// Registers an event connection of a device, replacing an older one. The receiver yields
@@ -163,17 +158,10 @@ impl Inner {
     ) -> (UnboundedReceiver<Push>, u64) {
         let serial = self.news.next_serial();
         let first = match self.open_connection(account, device, serial).await {
-            Ok(Some(address)) => Push::Event(Event::Welcome {
-                address: address.to_string(),
+            Ok(()) => Push::Event(Event::Welcome {
+                address: addresses::preferred(account).to_string(),
                 server_time: util::now(),
             }),
-            Ok(None) => {
-                tracing::error!("no virtual address is free");
-                Push::Close {
-                    code: 1013,
-                    reason: "no virtual address is free".into(),
-                }
-            }
             Err(error) => {
                 tracing::error!(error = %error.body.message, "cannot record an event connection");
                 Push::Close {
@@ -195,11 +183,18 @@ impl Inner {
         account: u64,
         device: u64,
         serial: u64,
-    ) -> Result<Option<Ipv4Addr>, AppError> {
-        let now = util::now_ms();
+    ) -> Result<(), AppError> {
         let mut conn = self.db.acquire().await?;
-        live::open_connection(&mut conn, account, device, &self.node, serial, now).await?;
-        Ok(live::lease(&mut conn, account, self.lease_end(), now).await?)
+        live::open_connection(
+            &mut conn,
+            account,
+            device,
+            &self.node,
+            serial,
+            util::now_ms(),
+        )
+        .await?;
+        Ok(())
     }
 
     /// Called when an event connection ends. The account stays online for a grace period; the
@@ -483,13 +478,7 @@ impl Inner {
             "banned",
         );
         let mut dirty = self.leave_everything(account).await?;
-        live::set_offline(
-            &mut *self.db.acquire().await?,
-            account,
-            util::now_ms(),
-            self.lease_end(),
-        )
-        .await?;
+        live::set_offline(&mut *self.db.acquire().await?, account, util::now_ms()).await?;
         dirty.push(account);
         self.refresh_presence(dirty).await;
         Ok(())
@@ -541,19 +530,13 @@ impl Inner {
         Ok(())
     }
 
-    /// The address leased to an account, leasing one if needed.
-    pub async fn address_of(&self, account: u64) -> Result<Option<Ipv4Addr>, AppError> {
-        let mut conn = self.db.acquire().await?;
-        Ok(live::lease(&mut conn, account, self.lease_end(), util::now_ms()).await?)
-    }
-
     /// Asks every event connection of this node to close, for shutdown.
     pub fn close_all(&self) {
         self.news.close_all(1001, "going away");
     }
 
     /// Shows that this node is alive and carries out what is due: the connections of dead nodes,
-    /// the grace periods, and invitations, challenges and leases that ran out. Every node runs it.
+    /// the grace periods, and invitations and challenges that ran out. Every node runs it.
     pub async fn sweep(&self) -> Result<(), AppError> {
         self.limiter.sweep();
         self.reload_bans().await?;
@@ -562,12 +545,8 @@ impl Inner {
             let mut conn = self.db.acquire().await?;
             live::heartbeat(&mut conn, &self.node, now).await?;
             live::sweep_dead_nodes(&mut conn, now - ms(self.tuning.node_timeout)).await?;
-            let offline = live::sweep_offline(
-                &mut conn,
-                now - ms(self.tuning.offline_grace),
-                self.lease_end(),
-            )
-            .await?;
+            let offline =
+                live::sweep_offline(&mut conn, now - ms(self.tuning.offline_grace)).await?;
             let gone = live::sweep_expired(&mut conn, now).await?;
             let leaving =
                 live::due_to_leave(&mut conn, now - ms(self.tuning.session_grace)).await?;
