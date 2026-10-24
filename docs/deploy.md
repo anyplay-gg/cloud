@@ -56,6 +56,4 @@ The landing page (anyplay-gg/web) can run on the cloud's host name: Caddy sends 
 2. Add `COMPOSE_FILE=compose.yaml:compose.web.yaml` to `deploy/.env`. Compose reads it there, so `update.sh` and every `docker compose` call include the website from then on.
 3. Run `update.sh` as usual. It builds the website from the checkout as it is; update that checkout with `git pull` first.
 
-4. Set `ANYPLAY_CLOUD_PORTAL_EXTERNAL=true` (with `ANYPLAY_CLOUD_PUBLIC_URL`) in the cloud's environment, so the launcher's sign-in opens the website's `/sign-in` and `/create` pages instead of the cloud's own.
-
 To take the website down again, remove the `COMPOSE_FILE` line and run `docker compose up -d --remove-orphans`.
