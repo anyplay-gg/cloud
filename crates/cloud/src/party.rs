@@ -216,7 +216,7 @@ pub async fn set_endpoint(
     voice: bool,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "UPDATE party_members SET endpoint = $3, relay = $4, voice = $5          WHERE party_id = $1 AND account_id = $2",
+        "UPDATE party_members SET endpoint = $3, relay = $4, voice = $5 WHERE party_id = $1 AND account_id = $2",
     )
     .bind(party)
     .bind(i(account))
