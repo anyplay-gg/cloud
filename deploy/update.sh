@@ -77,9 +77,14 @@ main() {
     bash -c "$hook" || die "the pre-update hook failed; nothing was changed"
   fi
 
-  # 3. Remember the running images, so a rollback does not depend on the build cache.
+  # 3. Remember the running images, so a rollback does not depend on the build cache. The compose
+  # files of the running version may not resolve with the settings of the new one (COMPOSE_FILE
+  # naming a file only the new checkout has); then there is nothing to remember and the update goes on.
   local images name id
-  images=$(docker compose config --images)
+  images=$(docker compose config --images 2>/dev/null) || {
+    log "the running version's compose files do not resolve; no images remembered for a rollback"
+    images=""
+  }
   for name in $images; do
     id=$(docker image inspect --format '{{.Id}}' "$name" 2>/dev/null || true)
     [ -n "$id" ] && docker tag "$id" "anyplay-rollback/${name}:previous"
@@ -96,6 +101,15 @@ main() {
   # 4. Build with the old version still serving. A failed build changes nothing.
   checkout "$network_dir" "$network_new"
   checkout "$cloud_dir" "$cloud_new"
+  # Caddy reads its files through single-file bind mounts, which keep pointing at the old file after
+  # a checkout; when they changed, only a new Caddy container sees them (a few seconds without TLS).
+  local caddy_changed=0
+  git -C "$cloud_dir" diff --quiet "$cloud_old" "$cloud_new" -- deploy/Caddyfile 'deploy/*.caddy' || caddy_changed=1
+  fresh_caddy() {
+    [ "$caddy_changed" = 0 ] && return 0
+    log "Caddy's files changed; starting a new Caddy"
+    docker compose up -d --no-build --no-deps --force-recreate --wait --wait-timeout "$timeout" caddy
+  }
   log "building"
   if ! docker compose build --quiet; then
     log "build failed; restoring the previous sources, the running version was not touched"
@@ -107,7 +121,7 @@ main() {
   # so one writer: it stops and starts again in a few seconds, the relay and Caddy follow.
   log "starting the new version"
   if docker compose up -d --no-build --remove-orphans --wait --wait-timeout "$timeout" \
-     && verify "$timeout"; then
+     && fresh_caddy && verify "$timeout"; then
     log "update ok: cloud ${cloud_new:0:10}, network ${network_new:0:10}"
     docker image prune -f >/dev/null 2>&1 || true
     docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
@@ -123,6 +137,7 @@ main() {
       && docker tag "anyplay-rollback/${name}:previous" "$name"
   done
   docker compose up -d --no-build --remove-orphans --wait --wait-timeout "$timeout" || true
+  fresh_caddy || true
   if verify "$timeout"; then
     log "rolled back; the previous version is serving again"
   else

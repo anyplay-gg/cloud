@@ -24,7 +24,7 @@ cloud/deploy/update.sh --dry-run                         # show what would chang
 2. Runs the pre-hook.
 3. Tags the images that run now as `anyplay-rollback/<image>:previous`, so a rollback does not need the build cache.
 4. Checks out the new commits (detached) and **builds while the old version keeps serving**. If the build fails, it puts the old commits back and stops; the running version was never touched.
-5. Runs `docker compose up -d --wait`. Compose replaces only the services whose image or settings changed.
+5. Runs `docker compose up -d --wait`. Compose replaces only the services whose image or settings changed. When the Caddyfile or a site file (`deploy/*.caddy`) changed, it also starts a new Caddy container: Caddy reads them through single-file mounts, which keep showing the old file after a checkout.
 6. Checks that `/v1/info` answers over the public address, through Caddy and TLS, and that every container is running after a few seconds.
 7. On success it prunes dangling images and build cache older than seven days. On failure it checks out the previous commits, puts the previous images back, starts them and checks again.
 
