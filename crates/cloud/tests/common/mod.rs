@@ -1,5 +1,9 @@
 //! A cloud running in this process on a random port with a temporary database and a mail sink,
 //! driven through its real HTTP API and event WebSocket.
+//!
+//! The database is a SQLite file, or, when `ANYPLAY_TEST_DATABASE_URL` names a PostgreSQL
+//! database such as `postgres://postgres:secret@127.0.0.1:5432/postgres`, a new database on that
+//! server for each cloud. CI runs every test both ways.
 #![allow(dead_code)]
 
 use std::sync::Arc;
@@ -92,6 +96,26 @@ fn read_answer(bytes: &[u8]) -> Option<Reply> {
     })
 }
 
+/// A new, empty database on the server of `ANYPLAY_TEST_DATABASE_URL`, or `None` without it.
+pub async fn postgres_database() -> Option<String> {
+    use sqlx::{Connection as _, Executor as _};
+    let server = std::env::var("ANYPLAY_TEST_DATABASE_URL")
+        .ok()
+        .filter(|url| !url.trim().is_empty())?;
+    let (base, _) = server
+        .rsplit_once('/')
+        .expect("ANYPLAY_TEST_DATABASE_URL ends in a database name");
+    let name = format!("anyplay_test_{:016x}", rand::random::<u64>());
+    let mut admin = sqlx::PgConnection::connect(&server)
+        .await
+        .expect("the test database server answers");
+    admin
+        .execute(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
+        .await
+        .unwrap();
+    Some(format!("{base}/{name}"))
+}
+
 /// Timings short enough for tests and limits high enough not to get in the way.
 pub fn fast_tuning() -> Tuning {
     Tuning {
@@ -121,6 +145,9 @@ impl TestCloud {
         let dir = tempfile::tempdir().unwrap();
         let mut cfg = Config {
             data_dir: dir.path().to_path_buf(),
+            database_url: postgres_database().await,
+            // Many test clouds share one database server.
+            database_connections: 4,
             name: "Test cloud".into(),
             relays: vec![
                 "https://relay-a.example".into(),

@@ -49,6 +49,44 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  # The same tests with the store in PostgreSQL instead of a SQLite file
+  # (docs/adr/0003-postgres-for-a-cluster.md).
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    defaults:
+      run:
+        working-directory: cloud
+    env:
+      ANYPLAY_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          path: cloud
+      - uses: actions/checkout@v7.0.1
+        with:
+          repository: anyplay-gg/network
+          path: network
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          workspaces: cloud
+      - name: Test on PostgreSQL
+        run: cargo test -p anyplay-cloud
+
   docker:
     runs-on: ubuntu-latest
     steps:
