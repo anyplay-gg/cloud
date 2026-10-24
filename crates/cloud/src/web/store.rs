@@ -78,6 +78,23 @@ pub struct SessionData {
     /// A new address waiting for its code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email_change: Option<EmailChange>,
+    /// A connection the player started and the provider has not yet answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<PendingLink>,
+}
+
+/// A connection in the making (`links`). The state is what the provider must send back; it is
+/// bound to this browser session, so an address from another browser or session finds nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingLink {
+    /// `discord` or `steam`.
+    pub provider: String,
+    pub state: String,
+    /// The PKCE verifier (Discord).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verifier: Option<String>,
+    /// When the player started it (Unix milliseconds).
+    pub started_ms: i64,
 }
 
 /// A change of the account's e-mail address that waits for the code sent to the new address.
@@ -250,6 +267,7 @@ fn merge(loaded: &SessionData, mine: &SessionData, theirs: SessionData) -> Sessi
         passkey_ms: pick!(passkey_ms),
         step_up: pick!(step_up),
         email_change: pick!(email_change),
+        link: pick!(link),
     }
 }
 

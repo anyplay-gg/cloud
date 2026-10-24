@@ -136,6 +136,7 @@ pub fn fast_tuning() -> Tuning {
             account: 1_000_000,
             report_per_account: 1_000_000,
             appeal_per_account: 1_000_000,
+            link_starts: 1_000_000,
             ..Rates::default()
         },
         ..Tuning::default()

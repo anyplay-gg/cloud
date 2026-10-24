@@ -768,7 +768,7 @@ pub fn audience_name(audience: anyplay_api::Audience) -> &'static str {
     }
 }
 
-fn audience_of(name: &str) -> anyplay_api::Audience {
+pub(crate) fn audience_of(name: &str) -> anyplay_api::Audience {
     use anyplay_api::Audience::*;
     match name {
         "everyone" => Everyone,

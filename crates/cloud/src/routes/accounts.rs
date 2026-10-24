@@ -69,6 +69,7 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
         (conversations, messages, party)
     };
     let passkeys = crate::web::store::passkeys_of(&state.db, account_id).await?;
+    let linked = crate::links::rows_of(&state.db, account_id).await?;
     let consent: (Option<i64>, Option<String>, Option<i64>) = sqlx::query_as(
         "SELECT age_confirmed_at, terms_version, terms_accepted_at FROM accounts WHERE id = $1",
     )
@@ -108,6 +109,11 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
             "title_id": t.title_id, "number": t.number, "grade": t.grade, "earned": t.earned,
         })).collect::<Vec<_>>(),
         "privacy": privacy,
+        "linked_accounts": linked.iter().map(|l| json!({
+            "provider": l.provider, "external_id": l.external_id,
+            "display_name": l.display_name, "visibility": l.audience,
+            "linked_at": l.linked_at,
+        })).collect::<Vec<_>>(),
         "passkeys": passkeys.iter().map(|k| json!({
             "name": k.name, "created": k.created, "last_used": k.last_used,
         })).collect::<Vec<_>>(),

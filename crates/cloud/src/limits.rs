@@ -44,6 +44,9 @@ pub struct Rates {
     /// Sessions the web portal starts for a client address per `auth_window`: every page load
     /// without a cookie starts one, and many players can share an address, so this is generous.
     pub portal_sessions_per_ip: u32,
+    /// Connections one account may start per `link_start_window`.
+    pub link_starts: u32,
+    pub link_start_window: Duration,
 }
 
 impl Default for Rates {
@@ -73,6 +76,8 @@ impl Default for Rates {
             portal_public: 120,
             portal_public_window: Duration::from_secs(60),
             portal_sessions_per_ip: 300,
+            link_starts: 10,
+            link_start_window: Duration::from_secs(60 * 60),
         }
     }
 }

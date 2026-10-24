@@ -18,6 +18,7 @@ use super::{ApiResult, Member, done, limit_public, owner_of};
 use crate::db;
 use crate::error::AppError;
 use crate::http::{ApiJson, Auth, ClientIp};
+use crate::links;
 use crate::routes::{friends, profiles, trophies};
 use crate::state::AppState;
 use crate::visibility::{Relation, viewing_as};
@@ -264,6 +265,8 @@ struct PublicUser {
     profile: Profile,
     /// The player's trophies by grade, when the viewer may see them.
     trophies: Option<Count>,
+    /// The connections the viewer may see; empty when there are none or none is shown to them.
+    links: Vec<links::PublicLink>,
     /// Absent for a viewer who is not signed in.
     viewer: Option<ViewerView>,
 }
@@ -286,6 +289,7 @@ pub async fn user(
     } else {
         None
     };
+    let links = links::public(&state, owner.id(), &seen).await?;
     let viewer = match viewer_id {
         None => None,
         Some(me) => {
@@ -315,6 +319,7 @@ pub async fn user(
     Ok(Json(PublicUser {
         profile,
         trophies,
+        links,
         viewer,
     })
     .into_response())

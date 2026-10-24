@@ -93,6 +93,29 @@ With `public_url` set, the cloud serves pages under `/web`: sign in (by passkey 
 - **Upgrading a cluster**: access tokens are now `v2`; nodes of the old version refuse them. Drain and replace the nodes together, or run the new version only after the old one has stopped.
 - The build links OpenSSL statically (`webauthn-rs`; the `vendored` feature). It needs Perl and a C compiler to build, which the container build has.
 
+### Connections (Discord and Steam)
+
+A player can link a Discord and a Steam account in the portal (`/account/connections`), see and unlink them, and choose who sees them on their profile. The cloud keeps the provider's ID, a display name and a picture address, never a token ([spec](https://github.com/anyplay-gg/network/blob/main/spec/portal-api.md#connections)). Both need `public_url`.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `discord_client_id` | none | The Client ID of your Discord application. With the secret it turns the Discord connection on; without them Discord is `available: false`. The ID is a number. Set it together with `discord_client_secret`. Environment variable `ANYPLAY_CLOUD_DISCORD_CLIENT_ID`. |
+| `discord_client_secret` | none | The Client Secret of that application. A secret: keep it in the environment or a secret mount, not in a file in a repository. Environment variable `ANYPLAY_CLOUD_DISCORD_CLIENT_SECRET`. |
+| `steam_api_key` | none | A Steam Web API key. Steam needs no setting to link (OpenID); with the key the connection also holds the persona name and picture, without it only the SteamID64. A secret. Environment variable `ANYPLAY_CLOUD_STEAM_API_KEY`. |
+
+To switch it on for a cloud at `https://anyplaynet.com`:
+
+1. **Discord.** Open the [Discord Developer Portal](https://discord.com/developers/applications), create an application (any name; players see it on the consent page), and open *OAuth2*. Add the redirect URL `https://anyplaynet.com/web/links/discord/callback`, exactly, with no trailing slash. Copy the *Client ID* and reset and copy the *Client Secret*. The cloud asks for the scope `identify` only; nothing else needs enabling.
+2. **Steam.** Get a Web API key at <https://steamcommunity.com/dev/apikey> with a Steam account that is not limited (it needs a purchase of at least 5 USD on Steam). The domain it asks for is `anyplaynet.com`. Linking works without the key, but then the profile shows an ID instead of a name and no picture.
+3. Put the three values into the environment of the cloud (`ANYPLAY_CLOUD_DISCORD_CLIENT_ID`, `ANYPLAY_CLOUD_DISCORD_CLIENT_SECRET`, `ANYPLAY_CLOUD_STEAM_API_KEY`) and restart it. `GET /web/api/v1/me/links` then lists Discord with `available: true`.
+4. Check it with a test account: link both, open the profile as a friend and as a stranger, unlink both.
+
+Notes:
+
+- The browser reaches the providers from the player's machine, and the cloud calls `discord.com`, `steamcommunity.com` and `api.steampowered.com` itself, so it needs outbound HTTPS to them. The portal's content security policy allows pictures from `cdn.discordapp.com` and `*.steamstatic.com`.
+- A player who changes the application's secret in the Developer Portal breaks new Discord links until the cloud has the new one; existing connections are unaffected, since nothing is refreshed.
+- A start waits 5 minutes for the provider. An account may start 10 links per hour.
+
 ### Fixed values
 
 These come from the API specification and are not settings (a party member that stays disconnected for 15 minutes leaves its party; a party has 8 members, a group conversation 32, a message 2,000 characters; an account may send 30 messages a minute and open 10 conversations an hour with people who are not its friends): a sign-in code has 6 digits, lives 10 minutes and allows 5 tries; an access token lives 15 minutes; a proof from a device key is accepted for 60 seconds and once; the one-time code that hands a browser sign-in to the app, and a link from the app to the account web, live 60 seconds and are used once; a passkey ceremony may take 5 minutes; a browser session lives 30 minutes unused and 4 hours at most, and removing a passkey, adding one, signing out everywhere or deleting the account needs a sign-in from the last 15 minutes; an account may have 10 passkeys; a relay ticket 24 hours, and an account may ask for 20 of them per hour; an invitation 15 minutes; an account stays online 10 seconds after its last event connection closes and keeps its sessions for 30 seconds; a virtual address is kept 10 minutes after an account goes offline; the cloud pings every 20 seconds. At most 10 devices stay signed in per account; a new one replaces the one used least recently.

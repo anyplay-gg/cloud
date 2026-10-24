@@ -36,11 +36,17 @@ impl Viewing {
 
     /// True when the viewer may see `part`.
     pub fn can(&self, part: Part) -> bool {
+        self.can_see(self.privacy.audience(part))
+    }
+
+    /// True when the viewer may see what the owner shows to `audience`: a connection has its
+    /// own, not one of the parts.
+    pub fn can_see(&self, audience: Audience) -> bool {
         match self.relation {
             Relation::Own => true,
             Relation::Blocked => false,
-            Relation::Friend => self.privacy.audience(part) != Audience::Nobody,
-            Relation::Stranger => self.privacy.audience(part) == Audience::Everyone,
+            Relation::Friend => audience != Audience::Nobody,
+            Relation::Stranger => audience == Audience::Everyone,
         }
     }
 }
