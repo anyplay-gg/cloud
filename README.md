@@ -13,6 +13,7 @@ The services behind the [AnyPlay network](https://github.com/anyplay-gg/network)
 | Presence | Who is online, what they play, and whether their game is open to join. | works |
 | Sessions | Create, join and leave, with capacity, a leader, opaque game properties and a version guard: only the same game version and AnyPS5 build play together. | works |
 | Invitations | Invite friends into a session; the invitation ends with the session. | works |
+| Trophies | Records of earned trophies (title, number, grade, time; no names or art), rarity once 10 players own a title, gamer cards with counts by grade. Private by default: friends see them, and each player can show them to everyone or nobody. | works |
 | Relays | Signed tickets that let one endpoint use one relay for 24 hours. Relays check them offline and never call the cloud. | works |
 | Moderation | Reports, bans per account and e-mail address, rate limits on every route, and an admin command line. | works |
 | Matchmaking, leaderboards, save backups, chat | | planned |

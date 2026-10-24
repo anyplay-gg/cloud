@@ -22,6 +22,7 @@ pub mod events;
 pub mod friends;
 pub mod misc;
 pub mod sessions;
+pub mod trophies;
 
 /// Answers while the process runs.
 pub const HEALTH: &str = "/healthz";
@@ -57,6 +58,14 @@ pub fn router(state: AppState) -> Router {
         .route(path::SESSION_MEMBER, delete(sessions::remove_member))
         .route(path::SESSION_INVITATIONS, post(sessions::invite))
         .route(path::INVITATION, delete(sessions::decline))
+        .route(path::MY_TROPHIES, put(trophies::upload))
+        .route(path::ACCOUNT_TROPHIES, get(trophies::of_account))
+        .route(path::RARITY, get(trophies::rarity))
+        .route(path::CARDS, get(trophies::cards))
+        .route(
+            path::PRIVACY,
+            get(trophies::get_privacy).put(trophies::set_privacy),
+        )
         .route(path::RELAY_TICKETS, post(misc::relay_tickets))
         .route(path::REPORTS, post(misc::report))
         .route(path::EVENTS, get(events::events));
