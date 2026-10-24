@@ -9,6 +9,7 @@
 //!
 //! * [`flow`]: the session, and signing in or up as steps of the flow of [`super::flow`].
 //! * [`account`]: the account, its passkeys, devices and sessions, step-up, export, deletion.
+//! * [`social`]: friends, the player's own profile and trophies, and public profiles.
 
 use axum::Router;
 use axum::extract::{FromRequestParts, Request};
@@ -17,7 +18,7 @@ use axum::http::request::Parts;
 use axum::http::{Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use serde_json::{Value, json};
 
 use super::store::{self, Session};
@@ -29,6 +30,7 @@ use crate::state::AppState;
 
 pub mod account;
 pub mod flow;
+pub mod social;
 
 /// The base path of every route here.
 pub const BASE: &str = "/web/api/v1";
@@ -166,7 +168,8 @@ impl Member {
     }
 }
 
-/// Every write says it carries JSON. A form on another site cannot send that content type.
+/// Every write says it carries JSON (the picture of an avatar says it is a picture). A form on
+/// another site cannot send either content type.
 async fn require_json(request: Request, next: Next) -> Response {
     if is_write(request.method()) {
         let media = request
@@ -175,7 +178,14 @@ async fn require_json(request: Request, next: Next) -> Response {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.split(';').next())
             .map(|v| v.trim().to_ascii_lowercase());
-        if media.as_deref() != Some("application/json") {
+        // Inside the nested router the path has lost its prefix.
+        let avatar = request.uri().path().ends_with("/me/avatar");
+        let ok = match media.as_deref() {
+            Some("application/json") => true,
+            Some("image/png" | "image/jpeg") => avatar,
+            _ => false,
+        };
+        if !ok {
             return ApiFail::new(
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 "unsupported_media_type",
@@ -225,6 +235,33 @@ pub fn router() -> Router<AppState> {
         .route("/step-up/email", post(account::step_up_email))
         .route("/step-up/code", post(account::step_up_code))
         .route("/step-up/passkey/finish", post(account::step_up_passkey))
+        // Friends
+        .route("/friends", get(social::friend_lists))
+        .route("/friends/requests", post(social::request_friend))
+        .route("/friends/requests/{id}", delete(social::cancel_request))
+        .route(
+            "/friends/requests/{id}/accept",
+            post(social::accept_request),
+        )
+        .route("/friends/{id}", delete(social::unfriend))
+        .route("/blocks/{id}", put(social::block).delete(social::unblock))
+        // The player's own profile and trophies
+        .route(
+            "/me/profile",
+            get(social::my_profile).patch(social::update_profile),
+        )
+        .route(
+            "/me/privacy",
+            get(social::my_privacy).put(social::set_privacy),
+        )
+        .route(
+            "/me/avatar",
+            put(social::set_avatar).delete(social::remove_avatar),
+        )
+        .route("/me/trophies", get(social::my_trophies))
+        // Other players
+        .route("/users/{name}", get(social::user))
+        .route("/users/{name}/trophies", get(social::user_trophies))
         .layer(middleware::from_fn(require_json));
     Router::new().nest(BASE, api)
 }
