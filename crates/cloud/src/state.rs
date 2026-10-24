@@ -4,8 +4,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyplay_api::{Event, close};
 use anyplay_ticket::{Signer, Verifier};
@@ -16,6 +17,7 @@ use crate::error::AppError;
 use crate::limits::RateLimiter;
 use crate::live::{self, Gone, SessionState};
 use crate::mail::Mailer;
+use crate::metrics::Metrics;
 use crate::news::{AuthNote, News, Push};
 use crate::{db, util};
 
@@ -44,6 +46,10 @@ pub struct Inner {
     pub node: String,
     /// Serializes changes to friendships and blocks, which check limits before they write.
     pub social: tokio::sync::Mutex<()>,
+    pub metrics: Metrics,
+    /// Set when the node is shutting down: it reports itself not ready, so that the load
+    /// balancer stops sending players, before it closes their connections.
+    pub draining: AtomicBool,
 }
 
 fn ms(duration: Duration) -> i64 {
@@ -464,7 +470,10 @@ pub fn start_sweeper(state: &AppState) {
         loop {
             tokio::time::sleep(every).await;
             let Some(state) = weak.upgrade() else { return };
-            if let Err(error) = state.sweep().await {
+            let started = Instant::now();
+            let result = state.sweep().await;
+            state.metrics.sweep(started.elapsed(), result.is_ok());
+            if let Err(error) = result {
                 tracing::error!(error = %error.body.message, "the sweep failed; it runs again soon");
             }
         }

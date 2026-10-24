@@ -11,6 +11,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyplay_api::Event;
@@ -158,6 +159,8 @@ struct Nats {
 pub struct News {
     local: Arc<Mutex<Local>>,
     nats: Option<Nats>,
+    sent: AtomicU64,
+    received: Arc<AtomicU64>,
 }
 
 impl News {
@@ -199,12 +202,12 @@ impl News {
         });
 
         let news = News {
-            local: Arc::default(),
             nats: Some(Nats {
                 client,
                 outbox,
                 listening: tokio::sync::Mutex::default(),
             }),
+            ..News::default()
         };
         Ok((news, received))
     }
@@ -217,7 +220,9 @@ impl News {
         let Some(nats) = &self.nats else { return };
         match serde_json::to_vec(note) {
             Ok(payload) => {
-                let _ = nats.outbox.send((subject, payload));
+                if nats.outbox.send((subject, payload)).is_ok() {
+                    self.sent.fetch_add(1, Ordering::Relaxed);
+                }
             }
             Err(error) => tracing::error!(%error, "cannot write news for other nodes"),
         }
@@ -241,8 +246,10 @@ impl News {
             }
         };
         let local = self.local.clone();
+        let received = self.received.clone();
         let task = tokio::spawn(async move {
             while let Some(message) = news.next().await {
+                received.fetch_add(1, Ordering::Relaxed);
                 match serde_json::from_slice::<Note>(&message.payload) {
                     Ok(note) => local
                         .lock()
@@ -253,6 +260,22 @@ impl News {
             }
         });
         listening.insert(account, task);
+    }
+
+    /// Event connections this node holds, and news it sent to and received from other nodes.
+    pub fn counts(&self) -> (usize, u64, u64) {
+        (
+            self.local().conns.len(),
+            self.sent.load(Ordering::Relaxed),
+            self.received.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Whether the connection to NATS stands; `None` for a single process without one.
+    pub fn nats_connected(&self) -> Option<bool> {
+        self.nats
+            .as_ref()
+            .map(|nats| nats.client.connection_state() == async_nats::connection::State::Connected)
     }
 
     /// A new serial for a connection, unique on this node. The store records it before the

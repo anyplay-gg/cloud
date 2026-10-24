@@ -148,7 +148,7 @@ pub async fn healthcheck(config: &Config, url: Option<String>) -> Result<()> {
         .get(format!(
             "{}{}",
             base.trim_end_matches('/'),
-            anyplay_api::path::INFO
+            crate::routes::HEALTH
         ))
         .timeout(std::time::Duration::from_secs(3))
         .send()

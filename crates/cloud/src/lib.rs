@@ -21,6 +21,7 @@ pub mod http;
 pub mod limits;
 pub mod live;
 pub mod mail;
+pub mod metrics;
 pub mod news;
 pub mod routes;
 pub mod state;
@@ -106,6 +107,8 @@ pub async fn open(
         news,
         node,
         social: tokio::sync::Mutex::new(()),
+        metrics: metrics::Metrics::default(),
+        draining: std::sync::atomic::AtomicBool::new(false),
     });
     // The first heartbeat, so that other nodes count this one as alive from the start.
     state
@@ -126,8 +129,10 @@ pub async fn open(
     Ok(state)
 }
 
-/// Serves the API on the listener until `shutdown` completes, then closes event connections and
-/// stops.
+/// Serves the API on the listener until `shutdown` completes. Then the node drains: it reports
+/// itself not ready at once, so a load balancer stops sending players, waits `drain_seconds`,
+/// closes its event connections with 1001 (clients come back spread over ten seconds, to
+/// other nodes) and stops.
 pub async fn serve(
     listener: TcpListener,
     state: AppState,
@@ -141,10 +146,23 @@ pub async fn serve(
     )
     .with_graceful_shutdown(async move {
         shutdown.await;
+        closing
+            .draining
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let drain = std::time::Duration::from_secs(closing.config.drain_seconds);
+        if !drain.is_zero() {
+            tracing::info!(seconds = drain.as_secs(), "draining");
+            tokio::time::sleep(drain).await;
+        }
         // Open event connections would keep a graceful shutdown waiting.
         closing.close_all();
     })
     .await
+}
+
+/// Serves `/metrics` on its own listener, which is never published.
+pub async fn serve_metrics(listener: TcpListener, state: AppState) -> std::io::Result<()> {
+    axum::serve(listener, routes::metrics_router(state)).await
 }
 
 /// Completes on Ctrl-C or, on Unix, SIGTERM.
