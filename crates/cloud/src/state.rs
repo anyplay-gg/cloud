@@ -344,8 +344,15 @@ impl Inner {
             cache.bans.insert(account, until);
         }
         self.news.tell_nodes(&AuthNote::Banned { account, until });
-        self.news
-            .close_account(account, &Event::Banned { until }, close::BANNED, "banned");
+        self.news.close_account(
+            account,
+            &Event::Banned {
+                until,
+                statement: None,
+            },
+            close::BANNED,
+            "banned",
+        );
         let mut dirty = self.leave_everything(account).await?;
         live::set_offline(
             &mut *self.db.acquire().await?,
