@@ -291,7 +291,7 @@ impl Inner {
     /// member; the last member closes the session. Returns the accounts whose presence may have
     /// changed.
     pub async fn remove_member(&self, id: &str, account: u64) -> Result<Vec<u64>, AppError> {
-        let mut tx = self.db.begin().await?;
+        let mut tx = self.begin_write().await?;
         let Some(mut session) = live::lock_session(&mut tx, id).await? else {
             return Ok(Vec::new());
         };
@@ -512,7 +512,7 @@ impl Inner {
             close::SIGNED_OUT,
             "account deleted",
         );
-        db::delete_account(&self.db, account).await?;
+        db::delete_account(&self.writer, &self.db, account).await?;
         {
             let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
             for device in &devices {

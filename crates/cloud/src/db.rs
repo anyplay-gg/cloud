@@ -28,14 +28,23 @@ type Conn = sqlx::AnyConnection;
 /// row to ones that came later. On SQLite these transactions therefore wait in a queue of this
 /// node first and reach SQLite one after another, in the order they asked. PostgreSQL needs
 /// neither.
+///
+/// Every write transaction of the cloud starts here. A single statement outside a transaction
+/// does not wait in the queue: SQLite retries it while a transaction holds the write lock. A
+/// transaction must not wait for a second store connection or a second transaction while it holds
+/// its place, or the node's writers stop.
 pub struct Writer {
     queue: Option<std::sync::Arc<tokio::sync::Mutex<()>>>,
 }
 
 /// A transaction from [`Writer::begin`]. On SQLite it keeps its place in the queue until it ends.
+///
+/// One that ends without [`WriteTx::commit`] (an early return, an error, a client that went away)
+/// rolls back before its place goes to the next writer: sqlx would roll back only once the
+/// connection is back in the pool, and until then SQLite's write lock is still held.
 pub struct WriteTx {
-    tx: sqlx::Transaction<'static, sqlx::Any>,
-    _turn: Option<tokio::sync::OwnedMutexGuard<()>>,
+    tx: Option<sqlx::Transaction<'static, sqlx::Any>>,
+    turn: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
 
 impl Writer {
@@ -50,34 +59,55 @@ impl Writer {
             Some(queue) => {
                 let turn = queue.clone().lock_owned().await;
                 Ok(WriteTx {
-                    tx: pool.begin_with("BEGIN IMMEDIATE").await?,
-                    _turn: Some(turn),
+                    tx: Some(pool.begin_with("BEGIN IMMEDIATE").await?),
+                    turn: Some(turn),
                 })
             }
             None => Ok(WriteTx {
-                tx: pool.begin().await?,
-                _turn: None,
+                tx: Some(pool.begin().await?),
+                turn: None,
             }),
         }
     }
 }
 
 impl WriteTx {
-    pub async fn commit(self) -> sqlx::Result<()> {
-        self.tx.commit().await
+    pub async fn commit(mut self) -> sqlx::Result<()> {
+        let tx = self.tx.take().expect("a transaction until it ends");
+        tx.commit().await
+    }
+}
+
+impl Drop for WriteTx {
+    fn drop(&mut self) {
+        let Some(tx) = self.tx.take() else {
+            return;
+        };
+        let turn = self.turn.take();
+        if turn.is_none() {
+            // Nothing waits behind it; sqlx rolls back on the connection's return to the pool.
+            return;
+        }
+        tokio::spawn(async move {
+            if let Err(error) = tx.rollback().await {
+                // The connection is closed then, which ends the transaction as well.
+                tracing::warn!(%error, "cannot roll back a write transaction");
+            }
+            drop(turn);
+        });
     }
 }
 
 impl std::ops::Deref for WriteTx {
     type Target = Conn;
     fn deref(&self) -> &Conn {
-        &self.tx
+        self.tx.as_deref().expect("a transaction until it ends")
     }
 }
 
 impl std::ops::DerefMut for WriteTx {
     fn deref_mut(&mut self) -> &mut Conn {
-        &mut self.tx
+        self.tx.as_deref_mut().expect("a transaction until it ends")
     }
 }
 
@@ -322,8 +352,8 @@ pub async fn insert_account(
 
 /// Deletes an account and everything that hangs on it. Bans, the actions against the account
 /// and reports about it stay until their retention ends; reports it filed lose their link to it.
-pub async fn delete_account(pool: &Pool, id: u64) -> sqlx::Result<()> {
-    let mut tx = pool.begin().await?;
+pub async fn delete_account(writer: &Writer, pool: &Pool, id: u64) -> sqlx::Result<()> {
+    let mut tx = writer.begin(pool).await?;
     crate::moderation::store::forget_reporter(&mut tx, id).await?;
     // Foreign keys cascade to devices, friends, requests and blocks.
     sqlx::query("DELETE FROM accounts WHERE id = $1")
@@ -504,13 +534,14 @@ const USED_REFRESH_KEEP: u64 = 30 * 24 * 60 * 60;
 /// Replaces the refresh hash if it is still `old`, and remembers `old`. False when another
 /// request got there first.
 pub async fn rotate_refresh(
+    writer: &Writer,
     pool: &Pool,
     device: u64,
     old: &[u8],
     new: &[u8],
     now: u64,
 ) -> sqlx::Result<bool> {
-    let mut tx = pool.begin().await?;
+    let mut tx = writer.begin(pool).await?;
     let result = sqlx::query(
         "UPDATE devices SET refresh_hash = $1, last_used = $2 WHERE id = $3 AND refresh_hash = $4",
     )
@@ -915,12 +946,13 @@ pub(crate) fn audience_of(name: &str) -> anyplay_api::Audience {
 /// Records the trophies in one step. A trophy recorded already keeps its first time and grade.
 /// Returns how many records are new.
 pub async fn add_trophies(
+    writer: &Writer,
     pool: &Pool,
     account: u64,
     title_id: &str,
     trophies: &[anyplay_api::Trophy],
 ) -> sqlx::Result<u64> {
-    let mut tx = pool.begin().await?;
+    let mut tx = writer.begin(pool).await?;
     let mut added = 0;
     for trophy in trophies {
         added += sqlx::query(
@@ -1250,6 +1282,70 @@ mod tests {
             task.await.unwrap();
         }
         assert_eq!(*order.lock().unwrap(), (0..WRITERS).collect::<Vec<_>>());
+    }
+
+    /// A writer that ends without committing (an early return) gives its place to the next only
+    /// once SQLite rolled it back. Here SQLite does not retry at all, so the next writer's
+    /// `BEGIN IMMEDIATE` fails if it meets the write lock still held.
+    #[tokio::test]
+    async fn a_writer_that_returns_early_has_rolled_back_when_the_next_begins() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("cloud.db");
+        open(Location::File(&file), 1).await.unwrap().close().await;
+        let pool = AnyPoolOptions::new()
+            .max_connections(4)
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    conn.execute("PRAGMA busy_timeout = 0").await?;
+                    Ok(())
+                })
+            })
+            .connect(&sqlite_url(&file))
+            .await
+            .unwrap();
+        let writer = Writer::new(true);
+        for round in 0..20 {
+            let mut early = writer.begin(&pool).await.unwrap();
+            sqlx::query("UPDATE accounts SET created = created WHERE id = 0")
+                .execute(&mut *early)
+                .await
+                .unwrap();
+            drop(early);
+            let next = writer.begin(&pool).await;
+            assert!(next.is_ok(), "round {round}: {:?}", next.err());
+            next.unwrap().commit().await.unwrap();
+        }
+    }
+
+    /// A writer that stops waiting for its turn (its client went away) leaves the queue, and the
+    /// writers behind it still get theirs.
+    #[tokio::test]
+    async fn a_writer_that_stops_waiting_leaves_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = open(Location::File(&dir.path().join("cloud.db")), 4)
+            .await
+            .unwrap();
+        let writer = std::sync::Arc::new(Writer::new(true));
+        let first = writer.begin(&pool).await.unwrap();
+        let gone = {
+            let (writer, pool) = (writer.clone(), pool.clone());
+            tokio::spawn(async move { writer.begin(&pool).await.map(|_| ()) })
+        };
+        let next = {
+            let (writer, pool) = (writer.clone(), pool.clone());
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                let tx = writer.begin(&pool).await.unwrap();
+                tx.commit().await.unwrap();
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        gone.abort();
+        first.commit().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), next)
+            .await
+            .expect("the writer behind one that left gets its turn")
+            .unwrap();
     }
 
     #[test]

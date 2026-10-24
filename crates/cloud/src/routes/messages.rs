@@ -157,7 +157,7 @@ async fn open_direct(state: &AppState, me: u64, other: u64) -> Result<String> {
         created: created as i64,
         updated_ms: now_ms(),
     };
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     // The insert is the first write: when the pair has a conversation already, it does nothing.
     if chat::insert_conversation(&mut tx, &row).await? {
         chat::add_member(&mut tx, &row.id, me, ACCEPTED, 0, created).await?;
@@ -206,7 +206,7 @@ async fn open_group(
         created: created as i64,
         updated_ms: now_ms(),
     };
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     chat::insert_conversation(&mut tx, &row).await?;
     if chat::count_groups(&mut tx, me).await? >= MAX_GROUPS {
         return Err(AppError::limit("You are in the most groups allowed."));
@@ -249,7 +249,7 @@ pub async fn add_members(
     if request.accounts.len() >= usize::from(MAX_GROUP_MEMBERS) {
         return Err(AppError::bad_request("Add at most 31 accounts at once."));
     }
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     let conversation = chat::lock_conversation(&mut tx, &id)
         .await?
         .ok_or_else(AppError::not_found)?;
@@ -338,7 +338,7 @@ pub async fn send(
     let handle = handle_of(&state, auth.account).await?;
     let created_ms = now_ms();
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     // The row first: writers on every node take turns here, and the number below is theirs alone.
     let conversation = chat::lock_conversation(&mut tx, &id)
         .await?
@@ -496,7 +496,7 @@ pub async fn accept(
     auth: Auth,
     Path(id): Path<String>,
 ) -> Result<Json<Conversation>> {
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     chat::lock_conversation(&mut tx, &id)
         .await?
         .ok_or_else(AppError::not_found)?;
@@ -525,7 +525,7 @@ pub async fn leave(
     auth: Auth,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    let mut tx = state.db.begin().await?;
+    let mut tx = state.begin_write().await?;
     let conversation = chat::lock_conversation(&mut tx, &id)
         .await?
         .ok_or_else(AppError::not_found)?;

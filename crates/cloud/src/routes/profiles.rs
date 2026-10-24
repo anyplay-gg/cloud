@@ -94,6 +94,7 @@ pub async fn update(
         })?;
     }
     store::set_profile(
+        &state.writer,
         &state.db,
         auth.account,
         about,
@@ -234,7 +235,8 @@ pub async fn upload_playtime(
             store::MAX_PLAYTIME_ROWS
         )));
     }
-    let changed = store::add_playtime(&state.db, auth.account, &upload.entries).await?;
+    let changed =
+        store::add_playtime(&state.writer, &state.db, auth.account, &upload.entries).await?;
     Ok(Json(PlaytimeAdded {
         changed: u32::try_from(changed).unwrap_or(u32::MAX),
     }))

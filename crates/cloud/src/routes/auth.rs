@@ -493,6 +493,7 @@ pub async fn refresh(
     check_refresh_proof(&state, &device, &headers, &request).await?;
     let refresh = random_token(32);
     let rotated = db::rotate_refresh(
+        &state.writer,
         &state.db,
         device.id(),
         &old,

@@ -524,7 +524,7 @@ async fn a_ban_stays_when_the_account_is_gone() {
         .await
         .is_error("banned", 403);
     // If the account row disappears anyway, the hash of the address still keeps the person out.
-    anyplay_cloud::db::delete_account(&cloud.state.db, b.id)
+    anyplay_cloud::db::delete_account(&cloud.state.writer, &cloud.state.db, b.id)
         .await
         .unwrap();
     let (challenge, code) = cloud.ask_for_code(&b.email).await;

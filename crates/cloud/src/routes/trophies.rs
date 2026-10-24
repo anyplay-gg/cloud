@@ -56,7 +56,14 @@ pub async fn upload(
             ));
         }
     }
-    let added = db::add_trophies(&state.db, auth.account, title, &upload.trophies).await?;
+    let added = db::add_trophies(
+        &state.writer,
+        &state.db,
+        auth.account,
+        title,
+        &upload.trophies,
+    )
+    .await?;
     Ok(Json(TrophiesAdded {
         added: u32::try_from(added).unwrap_or(u32::MAX),
     }))
