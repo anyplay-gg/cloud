@@ -143,8 +143,7 @@ jobs:
         # Only its public half is printed.
         run: |
           mkdir keys
-          chmod 777 keys
-          docker run --rm --user 10001:10001 -v "$PWD/keys:/data" anyplay-cloud:ci keygen
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/keys:/data" anyplay-cloud:ci keygen
           kubectl create secret generic anyplay-cloud-signing -n anyplay \
             --from-file=signing.key=keys/signing.key
           kubectl create secret generic anyplay-cloud -n anyplay \

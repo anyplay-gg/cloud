@@ -111,7 +111,7 @@ All nodes sign tokens with one Ed25519 key, and every relay checks tickets with 
 
 ```sh
 mkdir keys && chmod 700 keys
-docker run --rm --user 10001:10001 -v "$PWD/keys:/data" registry.example.com/anyplay/cloud:0.1.0 keygen
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/keys:/data" registry.example.com/anyplay/cloud:0.1.0 keygen
 #   Created /data/signing.key.
 #   Relays need this public key ...
 #   <the public key: give it to the relays>
