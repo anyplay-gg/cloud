@@ -21,6 +21,8 @@ use crate::metrics::Metrics;
 use crate::news::{AuthNote, News, Push};
 use crate::{db, util};
 
+pub use crate::db::WriteTx;
+
 pub type AppState = Arc<Inner>;
 
 /// How often a node deletes moderation data past its retention.
@@ -59,6 +61,8 @@ pub struct Inner {
     pub ban_key: crate::moderation::banhash::BanKey,
     /// When this node last ran the retention sweep of moderation data, in Unix seconds.
     pub retention_at: std::sync::atomic::AtomicU64,
+    /// Starts the transactions of [`Inner::begin_write`].
+    pub writer: db::Writer,
 }
 
 fn ms(duration: Duration) -> i64 {
@@ -66,15 +70,9 @@ fn ms(duration: Duration) -> i64 {
 }
 
 impl Inner {
-    /// Starts a transaction that will write. SQLite must take its write lock at the start: a
-    /// transaction that reads first and writes later fails with "database is locked" when another
-    /// writer commits in between, and waiting does not help. PostgreSQL has no such trouble.
-    pub async fn begin_write(&self) -> sqlx::Result<sqlx::Transaction<'static, sqlx::Any>> {
-        if self.config.database_url.is_none() {
-            self.db.begin_with("BEGIN IMMEDIATE").await
-        } else {
-            self.db.begin().await
-        }
+    /// Starts a transaction that will write; see [`db::Writer`].
+    pub async fn begin_write(&self) -> sqlx::Result<WriteTx> {
+        self.writer.begin(&self.db).await
     }
 
     /// Fails when the device is signed out or the account is banned. A device this node has

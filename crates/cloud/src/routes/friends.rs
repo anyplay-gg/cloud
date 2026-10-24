@@ -11,13 +11,13 @@ use anyplay_api::{
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use sqlx::{Any, Transaction};
+use sqlx::AnyConnection;
 
 use crate::db::{self, Related};
 use crate::error::{AppError, Result};
 use crate::http::{ApiJson, Auth, parse_id};
 use crate::live;
-use crate::state::AppState;
+use crate::state::{AppState, WriteTx};
 use crate::util::now;
 
 const MAX_FRIENDS: i64 = 500;
@@ -43,7 +43,7 @@ fn notify(state: &AppState, accounts: &[u64]) {
 /// either of them waits for it. On PostgreSQL it locks their rows, in the order of their IDs so
 /// that two changes never wait for each other; SQLite has one writer, which the transaction
 /// already is.
-async fn hold(state: &AppState, a: u64, b: u64) -> Result<Transaction<'static, Any>> {
+async fn hold(state: &AppState, a: u64, b: u64) -> Result<WriteTx> {
     let mut tx = state.begin_write().await?;
     if state.config.database_url.is_some() {
         db::lock_accounts(&mut tx, a, b).await?;
@@ -150,7 +150,7 @@ pub async fn request(
     Ok(requested)
 }
 
-async fn check_friend_limits(tx: &mut Transaction<'static, Any>, a: u64, b: u64) -> Result<()> {
+async fn check_friend_limits(tx: &mut AnyConnection, a: u64, b: u64) -> Result<()> {
     for account in [a, b] {
         if db::count_friends(tx, account).await? >= MAX_FRIENDS {
             return Err(AppError::limit("The most friends allowed is reached."));

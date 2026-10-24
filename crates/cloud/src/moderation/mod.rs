@@ -1027,6 +1027,6 @@ fn report_view(row: &ReportRow) -> ReportView {
 }
 
 /// Starts a transaction that will write; see [`crate::state::Inner::begin_write`].
-async fn begin(state: &crate::state::Inner) -> sqlx::Result<sqlx::Transaction<'static, sqlx::Any>> {
+async fn begin(state: &crate::state::Inner) -> sqlx::Result<crate::state::WriteTx> {
     state.begin_write().await
 }

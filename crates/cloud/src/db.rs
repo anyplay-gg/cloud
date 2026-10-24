@@ -19,6 +19,68 @@ pub mod profiles;
 pub type Pool = sqlx::AnyPool;
 type Conn = sqlx::AnyConnection;
 
+/// Starts transactions that will write.
+///
+/// SQLite must take its write lock at the start: a transaction that reads first and writes later
+/// fails with "database is locked" when another writer commits in between, and waiting does not
+/// help. SQLite also lets only one writer in at a time and makes the others retry after a sleep
+/// that grows the longer they have waited, so under load a transaction can lose many retries in a
+/// row to ones that came later. On SQLite these transactions therefore wait in a queue of this
+/// node first and reach SQLite one after another, in the order they asked. PostgreSQL needs
+/// neither.
+pub struct Writer {
+    queue: Option<std::sync::Arc<tokio::sync::Mutex<()>>>,
+}
+
+/// A transaction from [`Writer::begin`]. On SQLite it keeps its place in the queue until it ends.
+pub struct WriteTx {
+    tx: sqlx::Transaction<'static, sqlx::Any>,
+    _turn: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Writer {
+    pub fn new(sqlite: bool) -> Self {
+        Self {
+            queue: sqlite.then(Default::default),
+        }
+    }
+
+    pub async fn begin(&self, pool: &Pool) -> sqlx::Result<WriteTx> {
+        match &self.queue {
+            Some(queue) => {
+                let turn = queue.clone().lock_owned().await;
+                Ok(WriteTx {
+                    tx: pool.begin_with("BEGIN IMMEDIATE").await?,
+                    _turn: Some(turn),
+                })
+            }
+            None => Ok(WriteTx {
+                tx: pool.begin().await?,
+                _turn: None,
+            }),
+        }
+    }
+}
+
+impl WriteTx {
+    pub async fn commit(self) -> sqlx::Result<()> {
+        self.tx.commit().await
+    }
+}
+
+impl std::ops::Deref for WriteTx {
+    type Target = Conn;
+    fn deref(&self) -> &Conn {
+        &self.tx
+    }
+}
+
+impl std::ops::DerefMut for WriteTx {
+    fn deref_mut(&mut self) -> &mut Conn {
+        &mut self.tx
+    }
+}
+
 /// Where the store keeps its data.
 #[derive(Clone, Copy, Debug)]
 pub enum Location<'a> {
@@ -1140,6 +1202,46 @@ mod tests {
         let pool = open(Location::File(&file), 2).await.unwrap();
         let account = account(&pool, 7).await.unwrap().unwrap();
         assert_eq!(account.handle, "Alec");
+    }
+
+    /// Writers that wait for SQLite's write lock get it in the order they asked for it. Each
+    /// writer asks only once the one before it is waiting, so the order is known; SQLite's own
+    /// retries, which sleep longer the longer a writer has waited, let later ones in first.
+    #[tokio::test]
+    async fn writers_on_sqlite_get_their_turn_in_the_order_they_asked() {
+        const WRITERS: usize = 12;
+        let dir = tempfile::tempdir().unwrap();
+        let pool = open(
+            Location::File(&dir.path().join("cloud.db")),
+            WRITERS as u32 + 1,
+        )
+        .await
+        .unwrap();
+        let writer = std::sync::Arc::new(Writer::new(true));
+        let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let first = writer.begin(&pool).await.unwrap();
+        let mut waiting = Vec::new();
+        for n in 0..WRITERS {
+            let (writer, pool, order) = (writer.clone(), pool.clone(), order.clone());
+            waiting.push(tokio::spawn(async move {
+                let mut tx = writer.begin(&pool).await.unwrap();
+                order.lock().unwrap().push(n);
+                sqlx::query("UPDATE accounts SET created = created WHERE id = 0")
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            }));
+            // Long enough for this writer to be waiting before the next one asks.
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        }
+        // Held long enough that SQLite's retries have grown far apart.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        first.commit().await.unwrap();
+        for task in waiting {
+            task.await.unwrap();
+        }
+        assert_eq!(*order.lock().unwrap(), (0..WRITERS).collect::<Vec<_>>());
     }
 
     #[test]

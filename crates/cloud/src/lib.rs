@@ -135,6 +135,7 @@ pub async fn open(
     }
 
     let web = web::Web::new(&config).context("public_url")?;
+    let writer = db::Writer::new(config.database_url.is_none());
     let state = Arc::new(Inner {
         verifier: signer.verifier(),
         signer,
@@ -151,6 +152,7 @@ pub async fn open(
         draining: std::sync::atomic::AtomicBool::new(false),
         ban_key,
         retention_at: std::sync::atomic::AtomicU64::new(0),
+        writer,
     });
     // The first heartbeat, so that other nodes count this one as alive from the start.
     state
