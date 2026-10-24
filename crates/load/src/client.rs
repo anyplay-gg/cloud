@@ -390,6 +390,15 @@ fn on_text(ctx: &Ctx, text: &str) {
         Ok(Event::SessionGone { .. }) => rec.event("session_gone"),
         Ok(Event::SignedOut) => rec.event("signed_out"),
         Ok(Event::Banned { .. }) => rec.event("banned"),
+        Ok(Event::Party { .. }) => rec.event("party"),
+        Ok(Event::PartyGone { .. }) => rec.event("party_gone"),
+        Ok(Event::PartyInvitation { .. }) => rec.event("party_invitation"),
+        Ok(Event::PartyInvitationGone { .. }) => rec.event("party_invitation_gone"),
+        Ok(Event::Message { .. }) => rec.event("message"),
+        Ok(Event::MessageRequest { .. }) => rec.event("message_request"),
+        Ok(Event::Read { .. }) => rec.event("read"),
+        Ok(Event::Conversation { .. }) => rec.event("conversation"),
+        Ok(Event::ConversationGone { .. }) => rec.event("conversation_gone"),
         Ok(Event::Unknown) | Err(_) => rec.event("unknown"),
     }
 }
