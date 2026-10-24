@@ -22,6 +22,12 @@ services:
       start_period: 20s
       retries: 3
 
+  # The website serves /sign-in, /create and /account, so the cloud sends the launcher's sign-in
+  # there (portal_external) instead of to its own older pages.
+  cloud:
+    environment:
+      ANYPLAY_CLOUD_PORTAL_EXTERNAL: "true"
+
   caddy:
     depends_on:
       - web

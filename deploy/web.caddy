@@ -1,7 +1,8 @@
-# The website (anyplay-gg/web) on the cloud's host name: the landing page at the root, the sign-in
-# and sign-up pages and the files they load. Every other path, the APIs and the older pages under
-# /web included, stays with the cloud.
-@website path / /sign-in /create /_next/* /icon.svg /favicon.ico
+# The website (anyplay-gg/web) on the cloud's host name: the landing page at the root, the sign-in,
+# sign-up and account pages and the files they load. Every other path, the APIs and the older pages
+# under /web included, stays with the cloud; the older account page sends people to the new one.
+@website path / /sign-in /create /account /account/* /_next/* /icon.svg /favicon.ico
 handle @website {
 	reverse_proxy web:3000
 }
+redir /web/account /account 302
