@@ -69,6 +69,30 @@ jobs:
           RELAY_DOMAIN: relay.example.com
           ACME_EMAIL: operator@example.com
         run: docker compose -f cloud/deploy/compose.yaml config --quiet
+      # The images start and answer: the cloud on its health check and /v1/info, then the relay
+      # with the key the cloud wrote, in plain HTTP (development mode), on its health route.
+      - name: Start the images
+        run: |
+          docker volume create smoke-data
+          docker run -d --name smoke-cloud -p 8080:8080 -v smoke-data:/data anyplay-cloud
+          for _ in $(seq 1 30); do
+            [ "$(docker inspect -f "{{.State.Health.Status}}" smoke-cloud)" = healthy ] && break
+            sleep 2
+          done
+          docker inspect -f "{{.State.Health.Status}}" smoke-cloud | grep -qx healthy
+          curl -fsS http://127.0.0.1:8080/v1/info
+          echo
+          docker run -d --name smoke-relay -p 3340:3340 -v smoke-data:/cloud:ro             -e ANYPLAY_RELAY_CLOUD_PUBLIC_KEY_FILE=/cloud/signing.pub             -e ANYPLAY_RELAY_TLS=none -e ANYPLAY_RELAY_HTTP_BIND=0.0.0.0:3340 anyplay-relay
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:3340/healthz && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3340/healthz
+      - name: Logs of the images
+        if: always()
+        run: |
+          docker logs smoke-cloud || true
+          docker logs smoke-relay || true
 
   # Links, title IDs in code, licences and advisories: the rules every AnyPlay repository shares.
   rules:
