@@ -26,7 +26,8 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 enum Verdict {
     Open(Auth),
     Refuse {
-        event: Option<Event>,
+        /// Boxed: an event is far larger than the rest of the verdict.
+        event: Option<Box<Event>>,
         code: u16,
         reason: &'static str,
     },
@@ -54,14 +55,14 @@ pub async fn events(
                 Verdict::Open(auth)
             }
             Err(error) if error.body.error == anyplay_api::ErrorCode::Banned => Verdict::Refuse {
-                event: Some(Event::Banned {
+                event: Some(Box::new(Event::Banned {
                     until: error.body.until,
-                }),
+                })),
                 code: close::BANNED,
                 reason: "banned",
             },
             Err(_) => Verdict::Refuse {
-                event: Some(Event::SignedOut),
+                event: Some(Box::new(Event::SignedOut)),
                 code: close::SIGNED_OUT,
                 reason: "signed out",
             },
@@ -76,7 +77,7 @@ pub async fn events(
                     event,
                     code,
                     reason,
-                } => refuse(socket, event, code, reason).await,
+                } => refuse(socket, event.map(|e| *e), code, reason).await,
             }
         }))
 }

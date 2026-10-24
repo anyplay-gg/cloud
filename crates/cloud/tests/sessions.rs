@@ -763,3 +763,29 @@ async fn friends_see_a_joinable_session_in_presence() {
     assert_eq!(presence.activity.unwrap().session, None);
     let _ = Visibility::Invite;
 }
+
+#[tokio::test]
+async fn every_change_to_a_session_raises_its_revision() {
+    let cloud = TestCloud::start().await;
+    let (a, b) = cloud.friends("Alec", "Sam").await;
+    let created = create(&cloud, &a, 1, 4, "friends").await;
+    assert_eq!(created.revision, 0);
+    let joined = join(&cloud, &b, &created.id, 2).await;
+    assert!(joined.revision > created.revision);
+    let changed: Session = cloud
+        .patch(
+            &format!("/v1/sessions/{}", created.id),
+            a.token(),
+            json!({"properties": "AQID"}),
+        )
+        .await
+        .ok(200)
+        .json();
+    assert!(changed.revision > joined.revision);
+    let read: Session = cloud
+        .get(&format!("/v1/sessions/{}", created.id), a.token())
+        .await
+        .ok(200)
+        .json();
+    assert_eq!(read.revision, changed.revision, "reading changes nothing");
+}
