@@ -18,6 +18,10 @@ pub struct Rates {
     pub account: u32,
     pub account_window: Duration,
     pub admin_per_ip: u32,
+    /// Relay tickets one account may ask for per `relay_ticket_window`. The limit hangs on the
+    /// account because an endpoint ID costs nothing to make.
+    pub relay_tickets_per_account: u32,
+    pub relay_ticket_window: Duration,
 }
 
 impl Default for Rates {
@@ -32,6 +36,8 @@ impl Default for Rates {
             account: 120,
             account_window: Duration::from_secs(60),
             admin_per_ip: 60,
+            relay_tickets_per_account: 20,
+            relay_ticket_window: Duration::from_secs(60 * 60),
         }
     }
 }
@@ -51,7 +57,11 @@ pub struct RateLimiter {
 impl RateLimiter {
     /// Counts one event. Over the limit it answers with the seconds to wait.
     pub fn hit(&self, key: &str, limit: u32, window: Duration) -> Result<(), u64> {
-        let now = Instant::now();
+        self.hit_at(key, limit, window, Instant::now())
+    }
+
+    /// Like [`RateLimiter::hit`], at a moment of the caller's choosing. A seam for tests.
+    pub fn hit_at(&self, key: &str, limit: u32, window: Duration, now: Instant) -> Result<(), u64> {
         let mut windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
         let entry = windows.entry(key.to_owned()).or_insert(Window {
             started: now,
@@ -100,6 +110,22 @@ mod tests {
         let wait = limiter.hit("a", 3, window).unwrap_err();
         assert!((1..=60).contains(&wait));
         assert!(limiter.hit("b", 3, window).is_ok(), "keys are separate");
+    }
+
+    #[test]
+    fn the_count_starts_over_when_the_window_ends_by_the_given_clock() {
+        let limiter = RateLimiter::default();
+        let window = Duration::from_secs(3600);
+        let start = Instant::now();
+        for _ in 0..20 {
+            assert!(limiter.hit_at("a", 20, window, start).is_ok());
+        }
+        let wait = limiter.hit_at("a", 20, window, start).unwrap_err();
+        assert_eq!(wait, 3600);
+        let almost = start + Duration::from_secs(3599);
+        assert_eq!(limiter.hit_at("a", 20, window, almost), Err(1));
+        let later = start + window;
+        assert!(limiter.hit_at("a", 20, window, later).is_ok());
     }
 
     #[test]

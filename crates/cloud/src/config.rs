@@ -58,6 +58,10 @@ pub struct Config {
     /// `text` or `json`.
     pub log_format: LogFormat,
     pub data_dir: PathBuf,
+    /// A file that holds the signing key. The cloud only reads it: it never creates it and never
+    /// writes `signing.pub` next to it, so it can be a read-only secret mount. Without it the key
+    /// lives in `data_dir`.
+    pub signing_key_file: Option<PathBuf>,
     /// A `postgres://` URL. Without it the store is a SQLite file in `data_dir`.
     pub database_url: Option<String>,
     /// The most connections the store keeps open.
@@ -89,6 +93,7 @@ impl Default for Config {
             drain_seconds: 5,
             log_format: LogFormat::Text,
             data_dir: PathBuf::from("data"),
+            signing_key_file: None,
             database_url: None,
             database_connections: 16,
             nats_url: None,
@@ -158,6 +163,9 @@ impl Config {
         if let Some(v) = get("DATA_DIR") {
             self.data_dir = v.into();
         }
+        if let Some(v) = get("SIGNING_KEY_FILE") {
+            self.signing_key_file = Some(v.into());
+        }
         if let Some(v) = get("DATABASE_URL") {
             self.database_url = Some(v);
         }
@@ -223,6 +231,11 @@ impl Config {
             bail!(
                 "database_url must be a postgres:// URL; without it the store is a file in data_dir"
             );
+        }
+        if let Some(file) = &self.signing_key_file
+            && (file.file_name().is_none() || file.is_dir())
+        {
+            bail!("signing_key_file must name a file, not a folder");
         }
         if self.database_connections == 0 {
             bail!("database_connections must be at least 1");
@@ -407,6 +420,24 @@ mod tests {
         };
         assert!(cluster.validate().is_ok());
         assert!(Config::default().validate().is_ok());
+    }
+
+    #[test]
+    fn the_signing_key_file_comes_from_the_environment_and_must_be_a_file() {
+        let mut config = Config::default();
+        assert_eq!(config.signing_key_file, None);
+        config
+            .apply_env(|n| (n == "SIGNING_KEY_FILE").then(|| "/keys/signing.key".into()))
+            .unwrap();
+        assert_eq!(config.signing_key_file, Some("/keys/signing.key".into()));
+        assert!(config.validate().is_ok());
+        let folder = Config {
+            signing_key_file: Some(std::env::temp_dir()),
+            ..Config::default()
+        };
+        assert!(folder.validate().is_err());
+        let file: Config = toml::from_str(r#"signing_key_file = "/keys/signing.key""#).unwrap();
+        assert_eq!(file.signing_key_file, Some("/keys/signing.key".into()));
     }
 
     #[test]

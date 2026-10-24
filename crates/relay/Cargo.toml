@@ -12,16 +12,17 @@ publish.workspace = true
 anyhow.workspace = true
 anyplay-ticket.workspace = true
 clap.workspace = true
+iroh-base = "1.4.1"
 iroh-relay = { version = "1.4.1", features = ["server"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-iroh-base = "1.4.1"
+http = "1"
 iroh-dns = "1.4.1"
 rcgen = "0.14"
 tempfile.workspace = true

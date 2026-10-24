@@ -158,3 +158,75 @@ async fn a_missing_certificate_is_an_error_after_the_wait() {
         .unwrap_err();
     assert!(error.to_string().contains("did not appear"), "{error}");
 }
+
+/// The caps over a real connection: a second connection of an account is turned away at its
+/// limit, and a place comes free when the first one ends. The metrics show what happened.
+#[tokio::test]
+async fn an_account_at_its_limit_is_turned_away_until_a_connection_ends() {
+    use std::time::Duration;
+
+    use anyplay_relay::config::{Config, TlsMode};
+    use anyplay_relay::metrics;
+
+    async fn open(
+        url: &RelayUrl,
+        signer: &Signer,
+        account: u64,
+    ) -> Result<iroh_relay::client::Client, ConnectError> {
+        let key = SecretKey::generate();
+        let ticket = signer.issue(&Claims::relay(account, hex(&key), now() + 3600));
+        let tls = CaTlsConfig::default()
+            .client_config(default_provider())
+            .unwrap();
+        ClientBuilder::new(url.clone(), key, DnsResolver::new())
+            .tls_client_config(tls)
+            .auth_token(&ticket)
+            .connect()
+            .await
+    }
+
+    let signer = Signer::generate();
+    let config = Config {
+        tls: TlsMode::None,
+        http_bind: (Ipv4Addr::LOCALHOST, 0).into(),
+        max_connections_per_account: 1,
+        ..Config::default()
+    };
+    let access = config.access(signer.verifier());
+    let server = Server::spawn(config.server_config_with(access.clone()).await.unwrap())
+        .await
+        .unwrap();
+    let url: RelayUrl = format!("http://{}", server.http_addr().unwrap())
+        .parse()
+        .unwrap();
+    let sources = metrics::Sources {
+        admission: access.admission().clone(),
+        stats: access.stats().clone(),
+        iroh: server.metrics().server.clone(),
+    };
+
+    let first = open(&url, &signer, 5).await.expect("the first is admitted");
+    let second = open(&url, &signer, 5).await;
+    assert!(denied(second.map(|_| ())), "the second is turned away");
+    open(&url, &signer, 6)
+        .await
+        .expect("another account is not affected");
+
+    let text = metrics::render(&sources);
+    assert!(text.contains("anyplay_relay_refusals_total{reason=\"account_limit\"} 1"));
+    assert!(text.contains("anyplay_relay_ticket_checks_total{result=\"ok\"} 3"));
+
+    drop(first);
+    let mut admitted = false;
+    for _ in 0..50 {
+        if open(&url, &signer, 5).await.is_ok() {
+            admitted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        admitted,
+        "the place came free when the first connection ended"
+    );
+}

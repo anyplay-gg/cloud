@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "anyplay-cloud.fullname" . }}
+  labels:
+    {{- include "anyplay-cloud.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "anyplay-cloud.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+---
+# Metrics have a Service of their own, inside the cluster only, so that the API Service and the
+# Ingress never carry /metrics.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "anyplay-cloud.fullname" . }}-metrics
+  labels:
+    {{- include "anyplay-cloud.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "anyplay-cloud.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.ports.metrics }}
+      targetPort: metrics
+      protocol: TCP

@@ -1,5 +1,5 @@
-//! The store: accounts, devices, friends, blocks, reports and bans, in a SQLite file for one
-//! process or in PostgreSQL for a cluster (`docs/adr/0003-postgres-for-a-cluster.md`).
+//! The store: accounts, devices, friends, blocks, reports, bans and trophies, in a SQLite file for
+//! one process or in PostgreSQL for a cluster (`docs/adr/0003-postgres-for-a-cluster.md`).
 //!
 //! Every query is written once and runs through sqlx's `Any` driver. Parameters are `$1`, `$2`,
 //! which both databases bind by number, and the SQL keeps to what both understand. Only the
@@ -717,6 +717,182 @@ pub async fn bans_by_email(pool: &Pool, email_hash: &[u8]) -> sqlx::Result<Vec<B
         .bind(email_hash)
         .fetch_all(pool)
         .await
+}
+
+// Trophies and privacy
+
+/// A trophy record of one account.
+#[derive(Clone, Debug, FromRow)]
+pub struct TrophyRow {
+    pub title_id: String,
+    pub number: i64,
+    pub grade: String,
+    pub earned: i64,
+}
+
+impl TrophyRow {
+    /// The record as the API shows it; `None` for a grade this cloud does not know.
+    pub fn trophy(&self) -> Option<anyplay_api::Trophy> {
+        Some(anyplay_api::Trophy {
+            number: u16::try_from(self.number).ok()?,
+            grade: grade_of(&self.grade)?,
+            earned: u(self.earned),
+        })
+    }
+}
+
+pub fn grade_name(grade: anyplay_api::Grade) -> &'static str {
+    use anyplay_api::Grade::*;
+    match grade {
+        Bronze => "bronze",
+        Silver => "silver",
+        Gold => "gold",
+        Platinum => "platinum",
+    }
+}
+
+fn grade_of(name: &str) -> Option<anyplay_api::Grade> {
+    use anyplay_api::Grade::*;
+    Some(match name {
+        "bronze" => Bronze,
+        "silver" => Silver,
+        "gold" => Gold,
+        "platinum" => Platinum,
+        _ => return None,
+    })
+}
+
+pub fn audience_name(audience: anyplay_api::Audience) -> &'static str {
+    use anyplay_api::Audience::*;
+    match audience {
+        Friends => "friends",
+        Everyone => "everyone",
+        Nobody => "nobody",
+    }
+}
+
+fn audience_of(name: &str) -> anyplay_api::Audience {
+    use anyplay_api::Audience::*;
+    match name {
+        "everyone" => Everyone,
+        "nobody" => Nobody,
+        _ => Friends,
+    }
+}
+
+/// Records the trophies in one step. A trophy recorded already keeps its first time and grade.
+/// Returns how many records are new.
+pub async fn add_trophies(
+    pool: &Pool,
+    account: u64,
+    title_id: &str,
+    trophies: &[anyplay_api::Trophy],
+) -> sqlx::Result<u64> {
+    let mut tx = pool.begin().await?;
+    let mut added = 0;
+    for trophy in trophies {
+        added += sqlx::query(
+            "INSERT INTO trophies (account_id, title_id, number, grade, earned) \
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+        )
+        .bind(i(account))
+        .bind(title_id)
+        .bind(i64::from(trophy.number))
+        .bind(grade_name(trophy.grade))
+        .bind(i(trophy.earned))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    }
+    tx.commit().await?;
+    Ok(added)
+}
+
+/// All records of an account, by title and number.
+pub async fn trophies_of(pool: &Pool, account: u64) -> sqlx::Result<Vec<TrophyRow>> {
+    sqlx::query_as(
+        "SELECT title_id, number, grade, earned FROM trophies WHERE account_id = $1 \
+         ORDER BY title_id, number",
+    )
+    .bind(i(account))
+    .fetch_all(pool)
+    .await
+}
+
+/// The number of an account's records per grade.
+pub async fn trophy_counts(pool: &Pool, account: u64) -> sqlx::Result<anyplay_api::Count> {
+    let rows: Vec<(String, i64)> =
+        sqlx::query_as("SELECT grade, COUNT(*) FROM trophies WHERE account_id = $1 GROUP BY grade")
+            .bind(i(account))
+            .fetch_all(pool)
+            .await?;
+    let mut count = anyplay_api::Count::default();
+    for (grade, n) in rows {
+        let n = u32::try_from(n).unwrap_or(u32::MAX);
+        match grade_of(&grade) {
+            Some(anyplay_api::Grade::Bronze) => count.bronze = n,
+            Some(anyplay_api::Grade::Silver) => count.silver = n,
+            Some(anyplay_api::Grade::Gold) => count.gold = n,
+            Some(anyplay_api::Grade::Platinum) => count.platinum = n,
+            None => {}
+        }
+    }
+    Ok(count)
+}
+
+/// How many accounts have a record for the title.
+pub async fn title_players(pool: &Pool, title_id: &str) -> sqlx::Result<i64> {
+    let (n,): (i64,) =
+        sqlx::query_as("SELECT COUNT(DISTINCT account_id) FROM trophies WHERE title_id = $1")
+            .bind(title_id)
+            .fetch_one(pool)
+            .await?;
+    Ok(n)
+}
+
+/// How many accounts earned each trophy of the title, by number.
+pub async fn title_rarity(pool: &Pool, title_id: &str) -> sqlx::Result<Vec<(i64, i64)>> {
+    sqlx::query_as(
+        "SELECT number, COUNT(*) FROM trophies WHERE title_id = $1 GROUP BY number ORDER BY number",
+    )
+    .bind(title_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Who sees the account's trophies; the default without a setting.
+pub async fn privacy_of(pool: &Pool, account: u64) -> sqlx::Result<anyplay_api::Privacy> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT trophies FROM privacy WHERE account_id = $1")
+            .bind(i(account))
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map_or_else(anyplay_api::Privacy::default, |(name,)| {
+        anyplay_api::Privacy {
+            trophies: audience_of(&name),
+        }
+    }))
+}
+
+pub async fn set_privacy(
+    pool: &Pool,
+    account: u64,
+    privacy: anyplay_api::Privacy,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO privacy (account_id, trophies) VALUES ($1, $2) \
+         ON CONFLICT (account_id) DO UPDATE SET trophies = $2",
+    )
+    .bind(i(account))
+    .bind(audience_name(privacy.trophies))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// True when either account blocked the other.
+pub async fn blocked_either(pool: &Pool, a: u64, b: u64) -> sqlx::Result<bool> {
+    blocked_between_any(pool, a, &[b]).await
 }
 
 #[cfg(test)]

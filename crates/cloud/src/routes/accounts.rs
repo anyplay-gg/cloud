@@ -44,6 +44,8 @@ pub async fn export(State(state): State<AppState>, auth: Auth) -> Result<Json<Va
     let blocked = db::blocked_by(&state.db, auth.account).await?;
     let reports = db::reports_by(&state.db, auth.account).await?;
     let ban = db::ban_of(&state.db, auth.account).await?;
+    let trophies = db::trophies_of(&state.db, auth.account).await?;
+    let privacy = db::privacy_of(&state.db, auth.account).await?;
     let sessions = {
         let mut conn = state.db.acquire().await?;
         let mut views = Vec::new();
@@ -71,6 +73,10 @@ pub async fn export(State(state): State<AppState>, auth: Auth) -> Result<Json<Va
         })).collect::<Vec<_>>(),
         "ban": ban.map(|b| json!({"until": b.until(), "reason": b.reason, "created": b.created})),
         "sessions": sessions,
+        "trophies": trophies.iter().map(|t| json!({
+            "title_id": t.title_id, "number": t.number, "grade": t.grade, "earned": t.earned,
+        })).collect::<Vec<_>>(),
+        "privacy": privacy,
     })))
 }
 

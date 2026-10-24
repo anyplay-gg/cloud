@@ -88,9 +88,11 @@ The first cluster runs in one region in the EU. When players in other regions ne
 Game traffic goes directly between players where the network allows it and through a relay otherwise ([network ADR 0002](https://github.com/anyplay-gg/network/blob/main/docs/adr/0002-tunnels-on-iroh.md)). A relay admits only an endpoint that holds a ticket the cloud signed for it ([network ADR 0007](https://github.com/anyplay-gg/network/blob/main/docs/adr/0007-relays-check-signed-tickets.md)), and it cannot read the traffic it carries.
 
 - Relays cost bandwidth, not CPU. They run on servers with cheap traffic, at least two per region, outside the cluster.
-- Rate limits per connection are on, and quotas follow the account behind the ticket, not the endpoint ID, which anyone can make new.
+- What a relay enforces, all on by default and set in [the relay's settings](configuration.md#the-relay): each client may send 1 MiB per second (a burst of 2 MiB); an account may hold 16 connections at once; a relay carries 10,000 clients; and a ticket that is valid for more than 25 hours is refused, because the cloud issues 24. The account comes from the signed ticket, so the quotas follow the person and not the endpoint ID, which anyone can make new. A ticket is checked once, when the client connects: revoking an account works through the short ticket life and the cloud no longer issuing new tickets, and a relay can be made to forget a client by restarting it.
+- The cloud limits how often an account may ask for tickets: 20 per hour. A refusal is the `rate_limited` error with `Retry-After`. Like the other limits of the cloud, the count is kept in memory per node.
+- Refusals are counted, never logged per packet or per connection. The relay's metrics port serves clients, bytes in and out, ticket checks by result and refusals by reason, with no account or endpoint IDs in any label.
 - A player who hides their IP address goes through relays with every peer. The cloud never publishes a player's direct addresses.
-- The share of tunnels that go direct is measured from the first day; it decides how many relays a region needs.
+- The share of tunnels that go direct decides how many relays a region needs. A relay cannot see it: it sees clients and bytes, not which tunnels avoided it. The net service knows the path of each tunnel and writes a line when it changes (`anyplay::path` on standard error, with running totals). Reading that line for real players needs a report to the cloud that the specification does not have yet; until then the relay's bytes in and out are the cost measure.
 
 ## Security
 
@@ -115,7 +117,7 @@ Game traffic goes directly between players where the network allows it and throu
 | 2 | News over NATS; the cluster test | done |
 | 3 | Revisions on sessions and presence; clients spread their reconnects | done |
 | 4 | Operations: health, readiness, metrics, drain, JSON logs | done |
-| 5 | Kubernetes: a Helm chart, tried on a kind cluster in CI | next |
+| 5 | Kubernetes: a Helm chart, tried on a kind cluster in CI ([guide](kubernetes.md)) | done |
 | 6 | Load harness and published numbers | |
 | 7 | Regions and cells | |
 
