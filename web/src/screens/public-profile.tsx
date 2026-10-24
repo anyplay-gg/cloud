@@ -310,7 +310,7 @@ function FriendAction({ user }: { user: PublicUser }) {
 	}
 	if (viewer.requested === "incoming") {
 		return (
-			<Link to="/account/friends" className={buttonClass({ variant: "primary" })}>
+			<Link to="/friends" className={buttonClass({ variant: "primary" })}>
 				{m.public_answer_request()}
 			</Link>
 		);

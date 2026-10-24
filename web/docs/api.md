@@ -1,57 +1,35 @@
-# What the portal expects from the cloud
+# The portal's API
 
-The client talks JSON to `/web/api/v1` on its own origin, with the session cookie (`credentials: same-origin`) and `X-CSRF-Token` on every write. This file is the contract the client was written against. The web API PR (`network/spec/web-api`) is the authority; where it differs, change `src/api/http-adapter.ts` and this file, and nothing else. Today the cloud serves HTML under `/web/*`; none of these JSON routes exist yet.
+The contract is the network's [`spec/portal-api.md`](https://github.com/anyplay-gg/network/blob/main/spec/portal-api.md) (anyplay-gg/network#23), implemented by the cloud in `crates/cloud/src/web/api` (cloud#29 for sign-in, account and serving, cloud#30 for friends, profile, trophies and public profiles). This file only says where the client lives and what it does on top.
 
-Keys are `snake_case` on the wire and `camelCase` in the app (`src/api/case.ts`). Times are ISO 8601 UTC.
+## Where it lives
 
-## Errors
+- `src/api/portal-api.ts` is the interface the screens use. `src/api/http-adapter.ts` implements it against `/web/api/v1` (same origin, `credentials: "same-origin"`); `src/api/mock/` implements it in memory for `pnpm dev` and the screenshots.
+- Keys are `snake_case` on the wire and `camelCase` in the app (`src/api/case.ts`). Times are Unix seconds; ids are integers.
 
-Non-2xx answers carry `{ "error": { "code": string, "message": string, "fields"?: {name: message}, "methods"?: ["passkey","email_code"], "retry_after"?: seconds } }`.
+## What the client does for the API's rules
 
-| Status | Client treats it as |
+| Rule in the spec | In the client |
 |---|---|
-| network failure | `network` |
-| 401 | `unauthorized` (the session ended; the guards send the person to sign in) |
-| 403 with `code: "step_up_required"` and `methods` | `step_up_required`: the step-up dialog, then the same write again |
-| 403 | `forbidden` |
-| 404 / 409 | `not_found` / `conflict` |
-| 400 / 422 with `fields` | `invalid`: each field message is shown under its input |
-| 429 with `retry_after` | `rate_limited` |
-| 5xx | `server` |
+| Every write is JSON, even with no body | Sends `Content-Type: application/json` and `{}` on every write. The avatar is the exception: it sends the picture with its own `image/png` or `image/jpeg`. |
+| `X-CSRF-Token` from `GET /session`, new with every new session | Kept in the adapter; asked for on the first write; replaced by the `csrf` of every sign-in step; dropped on sign-out. |
+| `error` is a code, `field` names an input | `ApiError.code` is the cloud's code; `fields[field]` carries its message to the input. `Retry-After` becomes `retryAfter`. An HTML body (the origin guard's refusal) is read as `unknown`/status only. |
+| `403 step_up_required` | `useStepUp().run(write)` opens the confirm dialog, then runs the write again. The methods offered are the account's: a passkey if it has one, the e-mail code always. The dialog uses `POST /step-up/email` + `/step-up/code`, or `POST /passkey/sign-in/start` + `/step-up/passkey/finish`. |
+| Every sign-in step answers with the session view; `flow.step` says what is next | `AuthScreen` shows `flow.step` and keeps no flow state of its own. `done` goes to the account, `banned` shows the ban statement and appeal in place, `handoff` shows "You can return to AnyPlay" and calls `location.assign(flow.redirect)`. |
+| A part a viewer may not see is `null` | Public profiles render only what is there and say that friends may see more. |
 
-## Routes
+## What the API does not have, and what the portal does about it
 
-| Method and path | Body / answer |
-|---|---|
-| `GET /session` | `{ signed_in, csrf, terms: {url, version}, account: Me or null }`. Never fails for a signed-out visitor. |
-| `POST /auth/email` | `{ email, intent: "sign_in" or "create" }` answers `{ email_hint, resend_after }`. Same answer whether the address is known. |
-| `POST /auth/code`, `/auth/code/resend` | `{ code }` answers `{ next: "code" or "details" or "terms" or "done" }`; resend answers like `/auth/email` |
-| `POST /auth/details`, `/auth/terms` | `{ handle, display_name }`, `{ accept: true }`; both answer `{ next }` |
-| `POST /auth/passkey/options`, `/auth/passkey/verify` | `{ options, id }` (WebAuthn request options as JSON), then `{ id, credential }`; answers `{ next }` |
-| `POST /auth/sign-out` | 204 |
-| `PUT /account/profile` | `{ display_name, about, accent, theme }` answers `Me` |
-| `GET /account/activity` | `[ { id, kind, at, detail } ]` |
-| `GET /account/passkeys` | `[ { id, name, created_at, last_used_at, synced } ]` |
-| `POST /account/passkeys/options`, `POST /account/passkeys` | `{ options, id }`, then `{ id, name, credential }` answers the passkey. Needs a recent sign-in. |
-| `DELETE /account/passkeys/{id}` | Needs a recent sign-in. |
-| `GET /account/sessions`, `DELETE /account/sessions/{id}`, `POST /account/sessions/sign-out-everywhere` | Devices and browsers; the last needs a recent sign-in. |
-| `GET /account/step-up` | `{ methods }` |
-| `POST /account/step-up/passkey/options`, `/passkey/verify` | as for sign-in |
-| `POST /account/step-up/email`, `/email/verify` | `{ code }`; the first answers like `/auth/email` |
-| `GET` / `PUT /account/privacy` | `{ fields: {about, friends, trophies, activity: "everyone" or "friends" or "me"}, friend_requests: "everyone" or "friends_of_friends" or "nobody" }` |
-| `GET /account/export` | The JSON file as an attachment. Needs a recent sign-in. |
-| `POST /account/delete`, `POST /account/delete/cancel` | `{ handle }` starts the 30-day grace period and answers `Me` with `deletion: {requested_at, scheduled_for}`. Needs a recent sign-in. |
-| `GET /friends` | `{ friends, incoming, outgoing }` |
-| `POST /friends/requests` | `{ handle }` |
-| `POST /friends/requests/{id}/accept`, `/decline`; `DELETE /friends/requests/{id}`; `DELETE /friends/{id}` | |
-| `GET /trophies` | `{ days: [{date, count}], titles: [{title_id, name, earned, total, percent, last_earned_at}], earned, total, percent }`. Counts only: never a trophy name, text or art. |
-| `GET /profiles/{handle}` | `PublicProfile`, already filtered for the viewer: fields the viewer may not see are `null` and listed in `hidden` with the audience that could. 404 for an unknown handle. |
+- **No display name, accent or banner theme.** A player is `@handle`. The avatar colour and the banner gradient are derived from the handle (`src/lib/identity.ts`), so a player looks the same everywhere without storing anything. The accent in the Appearance menu is a setting of this browser.
+- **No trophy totals or names.** The portal shows counts per grade and per title id, and the share of titles, never a percentage and never a trophy or game name.
+- **No activity log, no per-day trophy data.** The overview lists the launchers and browsers used most recently instead; the heat map was left out.
+- **Browsers have no name.** A browser session is "This browser" or "Another browser", with the day it signed in.
 
-`Me`, `PublicProfile` and the rest are typed in `src/api/types.ts`.
+## Routes the cloud serves the shell for
 
-## Assumptions to confirm
+`/`, `/sign-in`, `/create`, `/account` and below, `/friends` and below, `/trophies` and below, `/u/{name}`. The portal's routes are exactly these (`src/routes`): the ban statement and the launcher hand-off live inside `/sign-in`, not on routes of their own, so a reload never lands on a path the cloud does not know.
 
-- Handles follow the cloud's current rule: 3 to 16 letters, digits, hyphens and underscores, starting with a letter.
-- Deletion copy ("your profile disappears", "sign in within 30 days to cancel") describes the grace period the brief asked for; confirm it matches what the cloud does.
-- The launcher hand-off ends on `/return` after the cloud has signed the browser in; the app does not call the launcher.
-- Title names come from the launcher (text only), and `days` is one count of trophies per day.
+## Still open
+
+- Title names: the cloud has title ids only, so games show as ids (`GAME01234`) until the launcher can supply names.
+- E-mail notices for security changes are not sent (the spec lists it as open); the portal does not promise them.

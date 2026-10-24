@@ -42,7 +42,6 @@ Each of these is a pattern that a public MIT library shows in its docs and demos
 | Rolling counter (`src/ui/rolling-number.tsx`) | Bencho | MIT | same | Digit strips moved with `transform`; the plain number is the accessible name |
 | Profile hover card (`src/components/person-card.tsx`) | Bencho, built on Base UI's preview card | MIT | same | Shows only what the list already has |
 | Avatar group (`AvatarGroup` in `src/ui/avatar.tsx`) | Bencho | MIT | same | One `role="img"` with one description |
-| Activity heat map (`src/components/heatmap.tsx`) | Bencho and Markdown Graphs, https://mdx-graphs.kshv.me | Bencho MIT; Markdown Graphs licence **could not be verified** | Bencho `91d66c9…` | Written from the pattern alone, nothing copied from Markdown Graphs; counts days only |
 
 ## Licence notices kept
 
@@ -64,5 +63,5 @@ If a file is ever copied from one of these repositories instead of written again
 ## Pieces dropped
 
 - **Cult UI "Halo" as a component**: kept as a focus ring only. Its glow alone does not meet 3:1 on every surface, so the solid outline stays under it.
-- **Markdown Graphs code**: not used, licence not verifiable. The heat map is original.
+- **Markdown Graphs and the heat map**: licence not verifiable, so nothing was taken from it; and the portal API has no per-day trophy data, so the heat map was left out altogether.
 - **Sonner**: see above.

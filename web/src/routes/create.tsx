@@ -11,7 +11,6 @@ export const Route = createFileRoute("/create")({
 			queryFn: () => context.api.session(),
 			staleTime: 60_000,
 		});
-		if (s.signedIn && s.flow.step === "banned") throw redirect({ to: "/banned" });
 		if (s.signedIn && s.flow.step === "done") throw redirect({ to: search.next ?? "/account" });
 	},
 	component: Create,

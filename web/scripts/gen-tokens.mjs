@@ -662,10 +662,13 @@ function buildDoc() {
 const css = buildCss();
 const doc = buildDoc();
 
+// A checkout on Windows may turn line ends into CRLF; the generator writes LF.
+const normalise = (text) => text.replace(/\r\n/g, "\n");
+
 if (process.argv.includes("--check")) {
 	const read = (p) => {
 		try {
-			return readFileSync(p, "utf8");
+			return normalise(readFileSync(p, "utf8"));
 		} catch {
 			return "";
 		}

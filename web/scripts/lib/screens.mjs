@@ -13,7 +13,7 @@ export const SCREENS = [
 			await p.getByRole("button", { name: "Send code" }).click();
 			await p.getByRole("heading", { name: "Check your e-mail" }).waitFor();
 			await p.keyboard.type("000000");
-			await p.getByText(/wrong or has expired/).waitFor();
+			await p.getByText(/That code is wrong/).waitFor();
 		},
 	},
 	{ id: "create", path: "/create?mock=signedout", ready: "Create your account" },
@@ -34,34 +34,33 @@ export const SCREENS = [
 			await p.getByText("That handle is taken. Try another.").waitFor();
 		},
 	},
-	{ id: "return", path: "/return", ready: "You can return to AnyPlay" },
 	{ id: "handoff", path: "/sign-in?mock=handoff", ready: "is waiting for you to sign in" },
-	{ id: "banned", path: "/banned?mock=banned", ready: "This account is banned" },
+	{ id: "banned", path: "/sign-in?mock=banned", ready: "This account is banned" },
 	{ id: "overview", path: "/account", ready: "Signed in" },
 	{ id: "overview-empty", path: "/account?mock=empty", ready: "Signed in" },
 	{ id: "profile", path: "/account/profile", ready: "Preview" },
 	{ id: "profile-empty", path: "/account/profile?mock=empty", ready: "Preview" },
-	{ id: "friends", path: "/account/friends", ready: "Add a friend" },
+	{ id: "friends", path: "/friends", ready: "Add a friend" },
 	{
 		id: "friends-requests",
-		path: "/account/friends",
+		path: "/friends",
 		ready: "Add a friend",
 		act: async (p) => {
 			await p.getByRole("tab", { name: /Requests/ }).click();
 			await p.getByText("Waiting for your answer").waitFor();
 		},
 	},
-	{ id: "friends-empty", path: "/account/friends?mock=empty", ready: "No friends yet" },
-	{ id: "trophies", path: "/account/trophies", ready: "By game" },
-	{ id: "trophies-empty", path: "/account/trophies?mock=empty", ready: "No trophies yet" },
+	{ id: "friends-empty", path: "/friends?mock=empty", ready: "No friends yet" },
+	{ id: "trophies", path: "/trophies", ready: "By game" },
+	{ id: "trophies-empty", path: "/trophies?mock=empty", ready: "No trophies yet" },
 	{
 		id: "trophies-error",
-		path: "/account/trophies?mock=error",
+		path: "/trophies?mock=error",
 		ready: "Couldn't load your trophies",
 	},
 	{
 		id: "trophies-loading",
-		path: "/account/trophies?mock=slow",
+		path: "/trophies?mock=slow",
 		ready: "Your progress in each game",
 		settle: 400,
 	},
@@ -77,7 +76,7 @@ export const SCREENS = [
 			await p.getByRole("dialog", { name: "Confirm it's you" }).waitFor();
 		},
 	},
-	{ id: "privacy", path: "/account/privacy", ready: "Friend requests" },
+	{ id: "privacy", path: "/account/privacy", ready: "Favourite games" },
 	{ id: "data", path: "/account/data", ready: "Delete your account" },
 	{
 		id: "data-delete",

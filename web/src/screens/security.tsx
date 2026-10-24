@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { Globe, KeyRound, Mail, Monitor, Pencil, Plus } from "lucide-react";
 import { useState } from "react";
 import { useApi } from "@/api/context";
@@ -626,6 +627,7 @@ function EverywhereDialog({
 	onClose: () => void;
 	count: number;
 }) {
+	const navigate = useNavigate();
 	const qc = useQueryClient();
 	const out = useAction((_: undefined, api) => api.security.signOutEverywhere(), {
 		success: m.toast_signed_out_everywhere(),
@@ -633,7 +635,7 @@ function EverywhereDialog({
 			onClose();
 			// this browser is signed out too: drop what it knew and let the guards send it to sign in
 			qc.clear();
-			window.location.assign("/sign-in");
+			void navigate({ to: "/sign-in", search: {} });
 		},
 	});
 	return (

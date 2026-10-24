@@ -172,7 +172,7 @@ function StatStrip() {
 		<section aria-label={m.overview_stats_label()}>
 			<ul className="grid grid-cols-2 gap-px overflow-hidden rounded-xl bg-line shadow-card lg:grid-cols-4">
 				<Stat
-					to="/account/trophies"
+					to="/trophies"
 					label={m.nav_trophies()}
 					loading={trophies.isPending}
 					error={trophies.isError}
@@ -185,7 +185,7 @@ function StatStrip() {
 					}
 				/>
 				<Stat
-					to="/account/friends"
+					to="/friends"
 					label={m.nav_friends()}
 					loading={friends.isPending}
 					error={friends.isError}
@@ -252,7 +252,7 @@ function Stat({
 	rolling,
 	extra,
 }: {
-	to: "/account/trophies" | "/account/friends" | "/account/security";
+	to: "/trophies" | "/friends" | "/account/security";
 	label: string;
 	value?: number;
 	note?: string;

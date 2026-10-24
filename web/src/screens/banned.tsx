@@ -5,7 +5,6 @@ import { useApi } from "@/api/context";
 import { describeError, isApiError } from "@/api/errors";
 import { qk, useBan } from "@/api/queries";
 import type { Appeal, BanStatement } from "@/api/types";
-import { AuthLayout } from "@/components/auth-layout";
 import { QueryView } from "@/components/query-state";
 import { m } from "@/i18n";
 import { formatDate } from "@/lib/format";
@@ -18,7 +17,7 @@ import { Textarea } from "@/ui/input";
 const MAX = 1000;
 
 /** The statement of a ban and, while it is open, a way to appeal it. */
-export function Banned() {
+export function BannedPanel() {
 	usePageTitle(m.banned_title());
 	const ban = useBan();
 	const api = useApi();
@@ -30,30 +29,28 @@ export function Banned() {
 		void navigate({ to: "/sign-in", search: {} });
 	};
 	return (
-		<AuthLayout>
-			<div className="flex flex-col gap-6">
-				<div>
-					<h1 className="text-heading font-semibold">{m.banned_title()}</h1>
-					<p className="mt-2 text-body text-fg-muted">{m.banned_lead()}</p>
-				</div>
-				<QueryView
-					query={ban}
-					loadingLabel={m.banned_loading()}
-					loading={
-						<div className="space-y-3">
-							<Skeleton className="h-4 w-1/2" />
-							<Skeleton className="h-16 w-full" />
-						</div>
-					}
-					errorTitle={m.banned_error()}
-				>
-					{(s) => <Statement statement={s} />}
-				</QueryView>
-				<Button variant="secondary" onClick={out} className="self-start">
-					{m.sign_out()}
-				</Button>
+		<div className="flex flex-col gap-6">
+			<div>
+				<h1 className="text-heading font-semibold">{m.banned_title()}</h1>
+				<p className="mt-2 text-body text-fg-muted">{m.banned_lead()}</p>
 			</div>
-		</AuthLayout>
+			<QueryView
+				query={ban}
+				loadingLabel={m.banned_loading()}
+				loading={
+					<div className="space-y-3">
+						<Skeleton className="h-4 w-1/2" />
+						<Skeleton className="h-16 w-full" />
+					</div>
+				}
+				errorTitle={m.banned_error()}
+			>
+				{(s) => <Statement statement={s} />}
+			</QueryView>
+			<Button variant="secondary" onClick={out} className="self-start">
+				{m.sign_out()}
+			</Button>
+		</div>
 	);
 }
 

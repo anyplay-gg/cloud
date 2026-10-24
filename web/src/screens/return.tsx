@@ -1,7 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { Check } from "lucide-react";
 import * as motion from "motion/react-m";
-import { AuthLayout } from "@/components/auth-layout";
 import { m } from "@/i18n";
 import { usePageTitle } from "@/lib/use-page-title";
 import { buttonClass } from "@/ui/button";
@@ -29,14 +28,5 @@ export function ReturnPanel({ handle }: { handle?: string }) {
 				{m.return_account()}
 			</Link>
 		</div>
-	);
-}
-
-/** `/return`: the page the launcher's own callback can send the browser to when it is done. */
-export function ReturnScreen() {
-	return (
-		<AuthLayout>
-			<ReturnPanel />
-		</AuthLayout>
 	);
 }

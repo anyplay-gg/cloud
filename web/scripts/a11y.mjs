@@ -38,10 +38,10 @@ for (const screen of SCREENS) {
 					}),
 				);
 				checked++;
-					for (const p of problems) {
-						bad++;
-						console.log(`${label}: ${p}`);
-					}
+				for (const p of problems) {
+					bad++;
+					console.log(`${label}: ${p}`);
+				}
 				for (const v of results.violations) {
 					bad++;
 					console.log(`${label}: ${v.id} (${v.impact}) ${v.help}`);

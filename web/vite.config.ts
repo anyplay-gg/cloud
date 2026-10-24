@@ -41,6 +41,7 @@ export default defineConfig(({ command, mode }) => ({
 		port: 5173,
 		proxy: {
 			"/web/api": { target: cloud, changeOrigin: false },
+			"/v1/avatars": { target: cloud, changeOrigin: false },
 		},
 	},
 	test: {

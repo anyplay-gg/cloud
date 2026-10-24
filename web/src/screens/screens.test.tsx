@@ -110,7 +110,7 @@ describe("routing", () => {
 		const user = userEvent.setup();
 		const { router } = await renderRoute("/account", { scenario: "banned" });
 		await heading("This account is banned");
-		expect(router.state.location.pathname).toBe("/banned");
+		expect(router.state.location.pathname).toBe("/sign-in");
 		await user.type(
 			await screen.findByLabelText(/Why should this be reversed/),
 			"It was a misunderstanding.",
@@ -162,12 +162,12 @@ describe("security: the step-up path", () => {
 
 describe("states", () => {
 	it("shows an empty state, not a blank, for a player with no friends", async () => {
-		await renderRoute("/account/friends", { scenario: "empty" });
+		await renderRoute("/friends", { scenario: "empty" });
 		expect(await screen.findByText("No friends yet")).toBeInTheDocument();
 	});
 
 	it("shows what failed and a retry when a list cannot load", async () => {
-		await renderRoute("/account/trophies", { scenario: "error" });
+		await renderRoute("/trophies", { scenario: "error" });
 		expect(await screen.findByText("Couldn't load your trophies")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
 	});
@@ -186,7 +186,7 @@ describe("states", () => {
 describe("friends", () => {
 	it("explains an unknown handle under the field", async () => {
 		const user = userEvent.setup();
-		await renderRoute("/account/friends");
+		await renderRoute("/friends");
 		await user.type(await screen.findByLabelText("Handle"), "ghost");
 		await user.click(screen.getByRole("button", { name: "Send request" }));
 		expect(

@@ -10,33 +10,25 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as AccountRouteImport } from './routes/account'
-import { Route as BannedRouteImport } from './routes/banned'
+import { Route as AppRouteImport } from './routes/_app'
 import { Route as CreateRouteImport } from './routes/create'
-import { Route as ReturnRouteImport } from './routes/return'
 import { Route as SignInRouteImport } from './routes/sign-in'
-import { Route as AccountIndexRouteImport } from './routes/account.index'
-import { Route as AccountDataRouteImport } from './routes/account.data'
-import { Route as AccountFriendsRouteImport } from './routes/account.friends'
-import { Route as AccountPrivacyRouteImport } from './routes/account.privacy'
-import { Route as AccountProfileRouteImport } from './routes/account.profile'
-import { Route as AccountSecurityRouteImport } from './routes/account.security'
-import { Route as AccountTrophiesRouteImport } from './routes/account.trophies'
+import { Route as AppFriendsRouteImport } from './routes/_app.friends'
+import { Route as AppTrophiesRouteImport } from './routes/_app.trophies'
 import { Route as UNameRouteImport } from './routes/u.$name'
+import { Route as AppAccountIndexRouteImport } from './routes/_app.account.index'
+import { Route as AppAccountDataRouteImport } from './routes/_app.account.data'
+import { Route as AppAccountPrivacyRouteImport } from './routes/_app.account.privacy'
+import { Route as AppAccountProfileRouteImport } from './routes/_app.account.profile'
+import { Route as AppAccountSecurityRouteImport } from './routes/_app.account.security'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AccountRoute = AccountRouteImport.update({
-  id: '/account',
-  path: '/account',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const BannedRoute = BannedRouteImport.update({
-  id: '/banned',
-  path: '/banned',
+const AppRoute = AppRouteImport.update({
+  id: '/_app',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CreateRoute = CreateRouteImport.update({
@@ -44,161 +36,140 @@ const CreateRoute = CreateRouteImport.update({
   path: '/create',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ReturnRoute = ReturnRouteImport.update({
-  id: '/return',
-  path: '/return',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const SignInRoute = SignInRouteImport.update({
   id: '/sign-in',
   path: '/sign-in',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AccountIndexRoute = AccountIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => AccountRoute,
-} as any)
-const AccountDataRoute = AccountDataRouteImport.update({
-  id: '/data',
-  path: '/data',
-  getParentRoute: () => AccountRoute,
-} as any)
-const AccountFriendsRoute = AccountFriendsRouteImport.update({
+const AppFriendsRoute = AppFriendsRouteImport.update({
   id: '/friends',
   path: '/friends',
-  getParentRoute: () => AccountRoute,
+  getParentRoute: () => AppRoute,
 } as any)
-const AccountPrivacyRoute = AccountPrivacyRouteImport.update({
-  id: '/privacy',
-  path: '/privacy',
-  getParentRoute: () => AccountRoute,
-} as any)
-const AccountProfileRoute = AccountProfileRouteImport.update({
-  id: '/profile',
-  path: '/profile',
-  getParentRoute: () => AccountRoute,
-} as any)
-const AccountSecurityRoute = AccountSecurityRouteImport.update({
-  id: '/security',
-  path: '/security',
-  getParentRoute: () => AccountRoute,
-} as any)
-const AccountTrophiesRoute = AccountTrophiesRouteImport.update({
+const AppTrophiesRoute = AppTrophiesRouteImport.update({
   id: '/trophies',
   path: '/trophies',
-  getParentRoute: () => AccountRoute,
+  getParentRoute: () => AppRoute,
 } as any)
 const UNameRoute = UNameRouteImport.update({
   id: '/u/$name',
   path: '/u/$name',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppAccountIndexRoute = AppAccountIndexRouteImport.update({
+  id: '/account/',
+  path: '/account/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAccountDataRoute = AppAccountDataRouteImport.update({
+  id: '/account/data',
+  path: '/account/data',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAccountPrivacyRoute = AppAccountPrivacyRouteImport.update({
+  id: '/account/privacy',
+  path: '/account/privacy',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAccountProfileRoute = AppAccountProfileRouteImport.update({
+  id: '/account/profile',
+  path: '/account/profile',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAccountSecurityRoute = AppAccountSecurityRouteImport.update({
+  id: '/account/security',
+  path: '/account/security',
+  getParentRoute: () => AppRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/account': typeof AccountRouteWithChildren
-  '/banned': typeof BannedRoute
   '/create': typeof CreateRoute
-  '/return': typeof ReturnRoute
   '/sign-in': typeof SignInRoute
-  '/account/data': typeof AccountDataRoute
-  '/account/friends': typeof AccountFriendsRoute
-  '/account/privacy': typeof AccountPrivacyRoute
-  '/account/profile': typeof AccountProfileRoute
-  '/account/security': typeof AccountSecurityRoute
-  '/account/trophies': typeof AccountTrophiesRoute
+  '/friends': typeof AppFriendsRoute
+  '/trophies': typeof AppTrophiesRoute
   '/u/$name': typeof UNameRoute
-  '/account/': typeof AccountIndexRoute
+  '/account/data': typeof AppAccountDataRoute
+  '/account/privacy': typeof AppAccountPrivacyRoute
+  '/account/profile': typeof AppAccountProfileRoute
+  '/account/security': typeof AppAccountSecurityRoute
+  '/account/': typeof AppAccountIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/banned': typeof BannedRoute
   '/create': typeof CreateRoute
-  '/return': typeof ReturnRoute
   '/sign-in': typeof SignInRoute
-  '/account/data': typeof AccountDataRoute
-  '/account/friends': typeof AccountFriendsRoute
-  '/account/privacy': typeof AccountPrivacyRoute
-  '/account/profile': typeof AccountProfileRoute
-  '/account/security': typeof AccountSecurityRoute
-  '/account/trophies': typeof AccountTrophiesRoute
+  '/friends': typeof AppFriendsRoute
+  '/trophies': typeof AppTrophiesRoute
   '/u/$name': typeof UNameRoute
-  '/account': typeof AccountIndexRoute
+  '/account/data': typeof AppAccountDataRoute
+  '/account/privacy': typeof AppAccountPrivacyRoute
+  '/account/profile': typeof AppAccountProfileRoute
+  '/account/security': typeof AppAccountSecurityRoute
+  '/account': typeof AppAccountIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/account': typeof AccountRouteWithChildren
-  '/banned': typeof BannedRoute
+  '/_app': typeof AppRouteWithChildren
   '/create': typeof CreateRoute
-  '/return': typeof ReturnRoute
   '/sign-in': typeof SignInRoute
-  '/account/data': typeof AccountDataRoute
-  '/account/friends': typeof AccountFriendsRoute
-  '/account/privacy': typeof AccountPrivacyRoute
-  '/account/profile': typeof AccountProfileRoute
-  '/account/security': typeof AccountSecurityRoute
-  '/account/trophies': typeof AccountTrophiesRoute
+  '/_app/friends': typeof AppFriendsRoute
+  '/_app/trophies': typeof AppTrophiesRoute
   '/u/$name': typeof UNameRoute
-  '/account/': typeof AccountIndexRoute
+  '/_app/account/data': typeof AppAccountDataRoute
+  '/_app/account/privacy': typeof AppAccountPrivacyRoute
+  '/_app/account/profile': typeof AppAccountProfileRoute
+  '/_app/account/security': typeof AppAccountSecurityRoute
+  '/_app/account/': typeof AppAccountIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/account'
-    | '/banned'
     | '/create'
-    | '/return'
     | '/sign-in'
+    | '/friends'
+    | '/trophies'
+    | '/u/$name'
     | '/account/data'
-    | '/account/friends'
     | '/account/privacy'
     | '/account/profile'
     | '/account/security'
-    | '/account/trophies'
-    | '/u/$name'
     | '/account/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/banned'
     | '/create'
-    | '/return'
     | '/sign-in'
+    | '/friends'
+    | '/trophies'
+    | '/u/$name'
     | '/account/data'
-    | '/account/friends'
     | '/account/privacy'
     | '/account/profile'
     | '/account/security'
-    | '/account/trophies'
-    | '/u/$name'
     | '/account'
   id:
     | '__root__'
     | '/'
-    | '/account'
-    | '/banned'
+    | '/_app'
     | '/create'
-    | '/return'
     | '/sign-in'
-    | '/account/data'
-    | '/account/friends'
-    | '/account/privacy'
-    | '/account/profile'
-    | '/account/security'
-    | '/account/trophies'
+    | '/_app/friends'
+    | '/_app/trophies'
     | '/u/$name'
-    | '/account/'
+    | '/_app/account/data'
+    | '/_app/account/privacy'
+    | '/_app/account/profile'
+    | '/_app/account/security'
+    | '/_app/account/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  AccountRoute: typeof AccountRouteWithChildren
-  BannedRoute: typeof BannedRoute
+  AppRoute: typeof AppRouteWithChildren
   CreateRoute: typeof CreateRoute
-  ReturnRoute: typeof ReturnRoute
   SignInRoute: typeof SignInRoute
   UNameRoute: typeof UNameRoute
 }
@@ -212,18 +183,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/account': {
-      id: '/account'
-      path: '/account'
-      fullPath: '/account'
-      preLoaderRoute: typeof AccountRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/banned': {
-      id: '/banned'
-      path: '/banned'
-      fullPath: '/banned'
-      preLoaderRoute: typeof BannedRouteImport
+    '/_app': {
+      id: '/_app'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AppRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/create': {
@@ -233,13 +197,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CreateRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/return': {
-      id: '/return'
-      path: '/return'
-      fullPath: '/return'
-      preLoaderRoute: typeof ReturnRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/sign-in': {
       id: '/sign-in'
       path: '/sign-in'
@@ -247,54 +204,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SignInRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/account/': {
-      id: '/account/'
-      path: '/'
-      fullPath: '/account/'
-      preLoaderRoute: typeof AccountIndexRouteImport
-      parentRoute: typeof AccountRoute
-    }
-    '/account/data': {
-      id: '/account/data'
-      path: '/data'
-      fullPath: '/account/data'
-      preLoaderRoute: typeof AccountDataRouteImport
-      parentRoute: typeof AccountRoute
-    }
-    '/account/friends': {
-      id: '/account/friends'
+    '/_app/friends': {
+      id: '/_app/friends'
       path: '/friends'
-      fullPath: '/account/friends'
-      preLoaderRoute: typeof AccountFriendsRouteImport
-      parentRoute: typeof AccountRoute
+      fullPath: '/friends'
+      preLoaderRoute: typeof AppFriendsRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/account/privacy': {
-      id: '/account/privacy'
-      path: '/privacy'
-      fullPath: '/account/privacy'
-      preLoaderRoute: typeof AccountPrivacyRouteImport
-      parentRoute: typeof AccountRoute
-    }
-    '/account/profile': {
-      id: '/account/profile'
-      path: '/profile'
-      fullPath: '/account/profile'
-      preLoaderRoute: typeof AccountProfileRouteImport
-      parentRoute: typeof AccountRoute
-    }
-    '/account/security': {
-      id: '/account/security'
-      path: '/security'
-      fullPath: '/account/security'
-      preLoaderRoute: typeof AccountSecurityRouteImport
-      parentRoute: typeof AccountRoute
-    }
-    '/account/trophies': {
-      id: '/account/trophies'
+    '/_app/trophies': {
+      id: '/_app/trophies'
       path: '/trophies'
-      fullPath: '/account/trophies'
-      preLoaderRoute: typeof AccountTrophiesRouteImport
-      parentRoute: typeof AccountRoute
+      fullPath: '/trophies'
+      preLoaderRoute: typeof AppTrophiesRouteImport
+      parentRoute: typeof AppRoute
     }
     '/u/$name': {
       id: '/u/$name'
@@ -303,38 +225,70 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof UNameRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_app/account/': {
+      id: '/_app/account/'
+      path: '/account'
+      fullPath: '/account/'
+      preLoaderRoute: typeof AppAccountIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/account/data': {
+      id: '/_app/account/data'
+      path: '/account/data'
+      fullPath: '/account/data'
+      preLoaderRoute: typeof AppAccountDataRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/account/privacy': {
+      id: '/_app/account/privacy'
+      path: '/account/privacy'
+      fullPath: '/account/privacy'
+      preLoaderRoute: typeof AppAccountPrivacyRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/account/profile': {
+      id: '/_app/account/profile'
+      path: '/account/profile'
+      fullPath: '/account/profile'
+      preLoaderRoute: typeof AppAccountProfileRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/account/security': {
+      id: '/_app/account/security'
+      path: '/account/security'
+      fullPath: '/account/security'
+      preLoaderRoute: typeof AppAccountSecurityRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
-interface AccountRouteChildren {
-  AccountDataRoute: typeof AccountDataRoute
-  AccountFriendsRoute: typeof AccountFriendsRoute
-  AccountPrivacyRoute: typeof AccountPrivacyRoute
-  AccountProfileRoute: typeof AccountProfileRoute
-  AccountSecurityRoute: typeof AccountSecurityRoute
-  AccountTrophiesRoute: typeof AccountTrophiesRoute
-  AccountIndexRoute: typeof AccountIndexRoute
+interface AppRouteChildren {
+  AppFriendsRoute: typeof AppFriendsRoute
+  AppTrophiesRoute: typeof AppTrophiesRoute
+  AppAccountDataRoute: typeof AppAccountDataRoute
+  AppAccountPrivacyRoute: typeof AppAccountPrivacyRoute
+  AppAccountProfileRoute: typeof AppAccountProfileRoute
+  AppAccountSecurityRoute: typeof AppAccountSecurityRoute
+  AppAccountIndexRoute: typeof AppAccountIndexRoute
 }
 
-const AccountRouteChildren: AccountRouteChildren = {
-  AccountDataRoute: AccountDataRoute,
-  AccountFriendsRoute: AccountFriendsRoute,
-  AccountPrivacyRoute: AccountPrivacyRoute,
-  AccountProfileRoute: AccountProfileRoute,
-  AccountSecurityRoute: AccountSecurityRoute,
-  AccountTrophiesRoute: AccountTrophiesRoute,
-  AccountIndexRoute: AccountIndexRoute,
+const AppRouteChildren: AppRouteChildren = {
+  AppFriendsRoute: AppFriendsRoute,
+  AppTrophiesRoute: AppTrophiesRoute,
+  AppAccountDataRoute: AppAccountDataRoute,
+  AppAccountPrivacyRoute: AppAccountPrivacyRoute,
+  AppAccountProfileRoute: AppAccountProfileRoute,
+  AppAccountSecurityRoute: AppAccountSecurityRoute,
+  AppAccountIndexRoute: AppAccountIndexRoute,
 }
 
-const AccountRouteWithChildren =
-  AccountRoute._addFileChildren(AccountRouteChildren)
+const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  AccountRoute: AccountRouteWithChildren,
-  BannedRoute: BannedRoute,
+  AppRoute: AppRouteWithChildren,
   CreateRoute: CreateRoute,
-  ReturnRoute: ReturnRoute,
   SignInRoute: SignInRoute,
   UNameRoute: UNameRoute,
 }

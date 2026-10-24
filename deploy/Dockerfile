@@ -20,6 +20,17 @@ COPY cloud ./cloud
 WORKDIR /src/cloud
 RUN cargo build --release --locked -p anyplay-cloud -p anyplay-relay
 
+# node:24-bookworm-slim
+FROM node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS web
+# pnpm at the version `packageManager` in web/package.json pins; the lockfile is frozen below, and
+# web/pnpm-workspace.yaml keeps the seven-day release age and the other supply-chain settings.
+RUN npm install --global pnpm@12.14.0
+WORKDIR /src/web
+COPY cloud/web/package.json cloud/web/pnpm-lock.yaml cloud/web/pnpm-workspace.yaml cloud/web/.npmrc ./
+RUN pnpm install --frozen-lockfile
+COPY cloud/web ./
+RUN pnpm build
+
 # debian:bookworm-slim
 FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS runtime
 RUN apt-get update \
@@ -32,6 +43,9 @@ USER anyplay:anyplay
 
 FROM runtime AS cloud
 COPY --from=build /src/cloud/target/release/anyplay-cloud /usr/local/bin/anyplay-cloud
+# The built portal (web/). The cloud serves it when ANYPLAY_CLOUD_PORTAL_DIR points here and
+# ANYPLAY_CLOUD_PUBLIC_URL is set (compose.yaml does both); without them it serves no portal.
+COPY --from=web /src/web/dist /usr/share/anyplay/portal
 ENV ANYPLAY_CLOUD_DATA_DIR=/data \
     ANYPLAY_CLOUD_LISTEN=0.0.0.0:8080
 VOLUME /data

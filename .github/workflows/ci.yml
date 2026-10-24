@@ -167,7 +167,9 @@ jobs:
       - name: Start the images
         run: |
           docker volume create smoke-data
-          docker run -d --name smoke-cloud -p 8080:8080 -v smoke-data:/data anyplay-cloud
+          docker run -d --name smoke-cloud -p 8080:8080 -v smoke-data:/data \
+            -e ANYPLAY_CLOUD_PUBLIC_URL=http://127.0.0.1:8080 \
+            -e ANYPLAY_CLOUD_PORTAL_DIR=/usr/share/anyplay/portal anyplay-cloud
           for _ in $(seq 1 30); do
             [ "$(docker inspect -f "{{.State.Health.Status}}" smoke-cloud)" = healthy ] && break
             sleep 2
@@ -175,6 +177,11 @@ jobs:
           docker inspect -f "{{.State.Health.Status}}" smoke-cloud | grep -qx healthy
           curl -fsS http://127.0.0.1:8080/v1/info
           echo
+          # the portal: the landing at /, the app shell under it, the API beside it
+          curl -fsS http://127.0.0.1:8080/ | grep -q '<div id="root">'
+          curl -fsS http://127.0.0.1:8080/ | grep -q '/assets/'
+          curl -fsS http://127.0.0.1:8080/sign-in | grep -q '<div id="root">'
+          curl -fsS http://127.0.0.1:8080/web/api/v1/session | grep -q '"flow"'
           docker run -d --name smoke-relay -p 3340:3340 -v smoke-data:/cloud:ro             -e ANYPLAY_RELAY_CLOUD_PUBLIC_KEY_FILE=/cloud/signing.pub             -e ANYPLAY_RELAY_TLS=none -e ANYPLAY_RELAY_HTTP_BIND=0.0.0.0:3340 anyplay-relay
           for _ in $(seq 1 30); do
             curl -fsS http://127.0.0.1:3340/healthz && break

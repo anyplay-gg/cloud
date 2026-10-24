@@ -44,8 +44,8 @@ interface NavEntry {
 	to:
 		| "/account"
 		| "/account/profile"
-		| "/account/friends"
-		| "/account/trophies"
+		| "/friends"
+		| "/trophies"
 		| "/account/security"
 		| "/account/privacy"
 		| "/account/data";
@@ -57,8 +57,8 @@ interface NavEntry {
 const primary: NavEntry[] = [
 	{ to: "/account", label: () => m.nav_overview(), icon: LayoutGrid, exact: true },
 	{ to: "/account/profile", label: () => m.nav_profile(), icon: UserRound },
-	{ to: "/account/friends", label: () => m.nav_friends(), icon: Users },
-	{ to: "/account/trophies", label: () => m.nav_trophies(), icon: Trophy },
+	{ to: "/friends", label: () => m.nav_friends(), icon: Users },
+	{ to: "/trophies", label: () => m.nav_trophies(), icon: Trophy },
 ];
 const account: NavEntry[] = [
 	{ to: "/account/security", label: () => m.nav_security(), icon: ShieldCheck },
@@ -114,7 +114,7 @@ function NavLists({ onNavigate }: { onNavigate?: () => void }) {
 					key={e.to}
 					entry={e}
 					onNavigate={onNavigate}
-					badge={e.to === "/account/friends" ? requests : undefined}
+					badge={e.to === "/friends" ? requests : undefined}
 				/>
 			))}
 			<p className="px-2.5 pb-1 pt-5 text-caption font-medium text-fg-muted">

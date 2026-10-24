@@ -19,6 +19,7 @@ import { Field } from "@/ui/field";
 import { Input } from "@/ui/input";
 import { OtpInput } from "@/ui/otp-input";
 import { Checkbox } from "@/ui/toggle";
+import { BannedPanel } from "./banned";
 import { ReturnPanel } from "./return";
 
 type Step = "email" | "code" | "details" | "terms";
@@ -70,7 +71,6 @@ export function AuthScreen({ mode, next }: AuthScreenProps) {
 	const redirect = view?.flow.redirect;
 	useEffect(() => {
 		if (step === "done") void navigate({ to: next ?? "/account" });
-		else if (step === "banned") void navigate({ to: "/banned" });
 		else if (step === "handoff" && redirect) {
 			const id = window.setTimeout(() => window.location.assign(redirect), 900);
 			return () => window.clearTimeout(id);
@@ -114,6 +114,14 @@ export function AuthScreen({ mode, next }: AuthScreenProps) {
 			setPasskeyBusy(false);
 		}
 	};
+
+	if (step === "banned") {
+		return (
+			<AuthLayout>
+				<BannedPanel />
+			</AuthLayout>
+		);
+	}
 
 	if (step === "handoff") {
 		return (
