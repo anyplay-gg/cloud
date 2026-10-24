@@ -31,6 +31,8 @@ Without a file, the defaults apply. The cloud runs that way for development: sig
 | `signup` | `open` | `closed` stops new accounts. Existing accounts can still sign in. |
 | `privacy_url`, `terms_url` | none | Links the launcher shows before sign-up. |
 | `trust_proxy` | `false` | Take a client's address for rate limits from the first hop of `X-Forwarded-For`. Turn it on only behind a proxy that sets the header; otherwise anyone can pick their own address. |
+| `message_retention_days` | `30` | How many days the cloud keeps messages. The sweeps delete older ones, on every node. At least 1. |
+| `stranger_min_age_hours` | `24` | How old an account must be before it may start a conversation with someone who is not its friend. `0` lets new accounts write at once. |
 | `admin_token` | none | A secret of at least 16 characters. It switches on the `/admin/v1/...` routes and the `admin` commands. Without it the routes do not exist. |
 
 The `admin` and `healthcheck` commands read the same settings to find the cloud (`listen`) and the token, so run them with the same environment.
@@ -51,7 +53,7 @@ A ban signs the account's event connections out at once, takes it out of its ses
 
 ### Fixed values
 
-These come from the API specification and are not settings: a sign-in code has 6 digits, lives 10 minutes and allows 5 tries; an access token lives 15 minutes; a relay ticket 24 hours, and an account may ask for 20 of them per hour; an invitation 15 minutes; an account stays online 10 seconds after its last event connection closes and keeps its sessions for 30 seconds; a virtual address is kept 10 minutes after an account goes offline; the cloud pings every 20 seconds. At most 10 devices stay signed in per account; a new one replaces the one used least recently.
+These come from the API specification and are not settings (a party member that stays disconnected for 15 minutes leaves its party; a party has 8 members, a group conversation 32, a message 2,000 characters; an account may send 30 messages a minute and open 10 conversations an hour with people who are not its friends): a sign-in code has 6 digits, lives 10 minutes and allows 5 tries; an access token lives 15 minutes; a relay ticket 24 hours, and an account may ask for 20 of them per hour; an invitation 15 minutes; an account stays online 10 seconds after its last event connection closes and keeps its sessions for 30 seconds; a virtual address is kept 10 minutes after an account goes offline; the cloud pings every 20 seconds. At most 10 devices stay signed in per account; a new one replaces the one used least recently.
 
 ## The relay
 

@@ -15,6 +15,7 @@ use anyplay_ticket::Signer;
 use tokio::net::TcpListener;
 
 pub mod avatar;
+pub mod chat;
 pub mod cli;
 pub mod config;
 pub mod db;
@@ -24,7 +25,9 @@ pub mod live;
 pub mod mail;
 pub mod metrics;
 pub mod news;
+pub mod party;
 pub mod routes;
+pub mod social;
 pub mod state;
 pub mod util;
 pub mod visibility;

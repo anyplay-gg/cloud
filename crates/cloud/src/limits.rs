@@ -25,6 +25,13 @@ pub struct Rates {
     /// Avatar uploads per account in `avatar_window`.
     pub avatar_uploads: u32,
     pub avatar_window: Duration,
+    /// Messages one account may send per `messages_window`.
+    pub messages: u32,
+    pub messages_window: Duration,
+    /// Conversations one account may start with people who are not friends per
+    /// `strangers_window`.
+    pub strangers: u32,
+    pub strangers_window: Duration,
 }
 
 impl Default for Rates {
@@ -43,6 +50,10 @@ impl Default for Rates {
             relay_ticket_window: Duration::from_secs(60 * 60),
             avatar_uploads: 5,
             avatar_window: Duration::from_secs(60 * 60),
+            messages: 30,
+            messages_window: Duration::from_secs(60),
+            strangers: 10,
+            strangers_window: Duration::from_secs(60 * 60),
         }
     }
 }

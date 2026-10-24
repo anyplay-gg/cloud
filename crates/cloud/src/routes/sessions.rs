@@ -409,26 +409,53 @@ pub async fn invite(
     if session.visibility() == Visibility::Closed {
         return Err(AppError::forbidden("This session is closed."));
     }
+    let (sent, new) = open_invitations(
+        &state,
+        &mut tx,
+        &session,
+        (auth.account, &handle),
+        request.to,
+        |to| friends.contains(&to),
+    )
+    .await?;
+    tx.commit().await?;
+    push_invitations(&state, new);
+    Ok(Json(Invited { sent }))
+}
+
+/// Opens invitations to a session for the accounts in `to` that `eligible` accepts and that
+/// are no members, inside the transaction that locked the session. Returns the accounts that
+/// hold an invitation now and the new ones, which [`push_invitations`] announces after the
+/// commit. A party's leader moving the party into a session uses this too.
+pub(crate) async fn open_invitations(
+    state: &AppState,
+    tx: &mut live::Conn,
+    session: &SessionState,
+    from: (u64, &str),
+    to: Vec<anyplay_api::AccountId>,
+    eligible: impl Fn(u64) -> bool,
+) -> Result<(Vec<anyplay_api::AccountId>, Vec<InvitationRow>)> {
     let ttl = state.tuning.invitation_ttl;
+    let id = &session.row.id;
     let mut sent = Vec::new();
     let mut new = Vec::new();
-    for to in request.to {
+    for to in to {
         let to_id = to.0;
-        if sent.contains(&to) || !friends.contains(&to_id) || session.is_member(to_id) {
+        if sent.contains(&to) || !eligible(to_id) || session.is_member(to_id) {
             continue;
         }
-        if live::is_invited(&mut tx, to_id, &id, None).await? {
+        if live::is_invited(tx, to_id, id, None).await? {
             sent.push(to);
             continue;
         }
-        let (open_for_session, held) = live::count_invitations(&mut tx, &id, to_id).await?;
+        let (open_for_session, held) = live::count_invitations(tx, id, to_id).await?;
         if open_for_session >= MAX_INVITATIONS_PER_SESSION || held >= MAX_INVITATIONS_PER_ACCOUNT {
             continue;
         }
         let invitation = InvitationRow {
             id: random_uuid(),
-            from_id: auth.account as i64,
-            from_handle: handle.clone(),
+            from_id: from.0 as i64,
+            from_handle: from.1.to_owned(),
             to_id: to_id as i64,
             session_id: id.clone(),
             title_id: session.row.title_id.clone(),
@@ -436,12 +463,15 @@ pub async fn invite(
             version: session.row.version.clone(),
             expires: (util::now() + ttl.as_secs()) as i64,
         };
-        live::insert_invitation(&mut tx, &invitation, now_ms() + ttl.as_millis() as i64).await?;
+        live::insert_invitation(tx, &invitation, now_ms() + ttl.as_millis() as i64).await?;
         new.push(invitation);
         sent.push(to);
     }
-    tx.commit().await?;
+    Ok((sent, new))
+}
 
+/// Tells the recipients of new invitations.
+pub(crate) fn push_invitations(state: &AppState, new: Vec<InvitationRow>) {
     for invitation in new {
         state.news.push(
             invitation.to(),
@@ -450,7 +480,6 @@ pub async fn invite(
             },
         );
     }
-    Ok(Json(Invited { sent }))
 }
 
 pub async fn decline(

@@ -20,8 +20,10 @@ pub mod admin;
 pub mod auth;
 pub mod events;
 pub mod friends;
+pub mod messages;
 pub mod misc;
 pub mod profiles;
+pub mod parties;
 pub mod sessions;
 pub mod trophies;
 
@@ -77,7 +79,37 @@ pub fn router(state: AppState) -> Router {
         .route(path::MY_PLAYTIME, put(profiles::upload_playtime))
         .route(path::RELAY_TICKETS, post(misc::relay_tickets))
         .route(path::REPORTS, post(misc::report))
-        .route(path::EVENTS, get(events::events));
+        .route(path::EVENTS, get(events::events))
+        .route(
+            path::PARTY,
+            get(parties::get)
+                .post(parties::create)
+                .patch(parties::update),
+        )
+        .route(path::PARTY_LEAVE, post(parties::leave))
+        .route(path::PARTY_SESSION, post(parties::move_to_session))
+        .route(path::PARTY_MEMBER, delete(parties::kick))
+        .route(
+            path::PARTY_INVITATIONS,
+            get(parties::invitations).post(parties::invite),
+        )
+        .route(path::PARTY_INVITATION, delete(parties::decline))
+        .route(path::PARTY_INVITATION_ACCEPT, post(parties::accept))
+        .route(
+            path::CONVERSATIONS,
+            get(messages::list).post(messages::create),
+        )
+        .route(
+            path::CONVERSATION,
+            get(messages::get).delete(messages::leave),
+        )
+        .route(path::CONVERSATION_ACCEPT, post(messages::accept))
+        .route(path::CONVERSATION_MEMBERS, post(messages::add_members))
+        .route(
+            path::CONVERSATION_MESSAGES,
+            get(messages::messages).post(messages::send),
+        )
+        .route(path::CONVERSATION_READ, put(messages::mark_read));
     if state.config.admin_token.is_some() {
         router = router
             .route(admin::BANS, post(admin::ban))
