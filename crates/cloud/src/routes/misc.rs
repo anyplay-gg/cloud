@@ -19,6 +19,8 @@ pub async fn info(State(state): State<AppState>) -> Json<Info> {
         signup: state.config.signup,
         privacy: state.config.privacy_url.clone(),
         terms: state.config.terms_url.clone(),
+        // The account web comes with the browser sign-in (cloud #25).
+        web: None,
     })
 }
 
