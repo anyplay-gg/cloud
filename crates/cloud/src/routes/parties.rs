@@ -5,8 +5,8 @@
 use std::collections::HashSet;
 
 use anyplay_api::{
-    AccountId, ErrorCode, Event, Invite, Invited, MoveParty, Party, PartyInvitations, UpdateParty,
-    Visibility,
+    AccountId, ErrorCode, Event, Invite, Invited, MoveParty, Party, PartyEndpoint,
+    PartyInvitations, UpdateParty, Visibility,
 };
 use axum::Json;
 use axum::extract::{Path, State};
@@ -19,7 +19,7 @@ use crate::live;
 use crate::party::{self, InvitationRow, MemberRow, PartyRow, PartyState};
 use crate::routes::sessions;
 use crate::state::AppState;
-use crate::util::{now, now_ms, random_uuid};
+use crate::util::{is_endpoint, is_http_url, now, now_ms, random_uuid};
 
 /// Accounts one invite request may name.
 const MAX_INVITE_BATCH: usize = 16;
@@ -48,11 +48,7 @@ async fn make_party(state: &AppState, account: u64, handle: String) -> Result<Pa
         created,
         revision: 0,
     };
-    let member = MemberRow {
-        account_id: account as i64,
-        handle,
-        joined: created,
-    };
+    let member = MemberRow::new(account, handle, created);
     let conversation = ConversationRow {
         id: random_uuid(),
         kind: chat::kind_text(anyplay_api::ConversationKind::Party).to_owned(),
@@ -246,11 +242,7 @@ pub async fn accept(
     if party::blocked_with_member(&mut tx, &party.row.id, auth.account).await? {
         return Err(AppError::forbidden("You cannot join this party."));
     }
-    let member = MemberRow {
-        account_id: auth.account as i64,
-        handle,
-        joined: now() as i64,
-    };
+    let member = MemberRow::new(auth.account, handle, now() as i64);
     if !party::add_member(&mut tx, &party.row.id, &member).await? {
         return Err(AppError::limit(
             "You are in a party already. Leave it first.",
@@ -351,6 +343,78 @@ pub async fn update(
         party::set_leader(&mut tx, &id, leader.0).await?;
     }
     tx.commit().await?;
+    state.announce_party(&party);
+    Ok(Json(party.view()))
+}
+
+/// A member's net service says where it can be reached for voice. The revision rises and the
+/// members hear of it only when something changed: the change is rolled back otherwise, which
+/// takes the revision the lock gave it back too. Other nodes get the event as for any party
+/// change: `announce_party` pushes it to every member, and the news layer carries it over NATS.
+pub async fn set_endpoint(
+    State(state): State<AppState>,
+    auth: Auth,
+    ApiJson(request): ApiJson<PartyEndpoint>,
+) -> Result<Json<Party>> {
+    if !is_endpoint(&request.endpoint) {
+        return Err(AppError::bad_request(
+            "The endpoint is 64 lowercase hex digits.",
+        ));
+    }
+    if let Some(relay) = &request.relay
+        && !(is_http_url(relay) && relay.starts_with("https://"))
+    {
+        return Err(AppError::bad_request(
+            "The relay is an https URL of at most 255 characters.",
+        ));
+    }
+    let id = party::party_id_of(&mut *state.db.acquire().await?, auth.account)
+        .await?
+        .ok_or_else(AppError::not_found)?;
+    let mut tx = state.db.begin().await?;
+    let mut party = party::lock_party(&mut tx, &id)
+        .await?
+        .ok_or_else(AppError::not_found)?;
+    let Some(me) = party.member(auth.account) else {
+        return Err(AppError::not_found());
+    };
+    if party
+        .members
+        .iter()
+        .any(|m| m.account_id as u64 != auth.account && m.endpoint == request.endpoint)
+    {
+        return Err(AppError::limit(
+            "Another member of the party has this endpoint.",
+        ));
+    }
+    if me.endpoint == request.endpoint
+        && me.relay == request.relay
+        && (me.voice != 0) == request.voice
+    {
+        // Nothing changed: dropping the transaction takes the revision back too.
+        drop(tx);
+        party.row.revision -= 1;
+        return Ok(Json(party.view()));
+    }
+    party::set_endpoint(
+        &mut tx,
+        &id,
+        auth.account,
+        &request.endpoint,
+        request.relay.as_deref(),
+        request.voice,
+    )
+    .await?;
+    tx.commit().await?;
+    if let Some(m) = party
+        .members
+        .iter_mut()
+        .find(|m| m.account_id as u64 == auth.account)
+    {
+        m.endpoint = request.endpoint;
+        m.relay = request.relay;
+        m.voice = i64::from(request.voice);
+    }
     state.announce_party(&party);
     Ok(Json(party.view()))
 }
