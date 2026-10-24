@@ -387,7 +387,7 @@ pub async fn passkey_finish(
     limit_ip_api(&state, "passkey", ip, state.tuning.rates.code_per_ip)?;
     let account = passkeys::verify_assertion(&state, &body).await?;
     let mut visit = continue_visit(visitor);
-    let landing = steps::finish_login(&state, &mut visit, &account).await?;
+    let landing = steps::finish_login(&state, &mut visit, &account, steps::Proof::Passkey).await?;
     answer(&state, visit, landing).await
 }
 

@@ -21,7 +21,7 @@ use crate::error::AppError;
 use crate::http::{ApiJson, ClientIp, parse_id};
 use crate::routes::auth::{self, me_of};
 use crate::state::AppState;
-use crate::util::{is_label, now, now_ms};
+use crate::util::{is_label, mask_email, now, now_ms};
 use crate::web::passkeys::{self, FinishSignIn};
 use crate::web::store::{self, EmailChange, MAX_PASSKEYS, PasskeyRow};
 use crate::web::{limit_ip_api, without_cookie};
@@ -274,7 +274,7 @@ pub async fn email_start(
     mut member: Member,
     ApiJson(body): ApiJson<EmailBody>,
 ) -> ApiResult {
-    member.require_fresh(&state)?;
+    member.require_strong(&state).await?;
     let cannot = || AppError::bad_request("That address cannot be used for this account.");
     let wanted = crate::util::normalize_email(&body.email)
         .ok_or_else(|| AppError::bad_request("That is not an e-mail address."))?;
@@ -303,7 +303,7 @@ pub async fn email_confirm(
     mut member: Member,
     ApiJson(body): ApiJson<CodeBody>,
 ) -> ApiResult {
-    member.require_fresh(&state)?;
+    member.require_strong(&state).await?;
     let Some(change) = member.session.data.email_change.clone() else {
         return Err(AppError::bad_request("Ask for a code for the new address first.").into());
     };
@@ -325,25 +325,28 @@ pub async fn email_confirm(
         return Err(AppError::bad_request("That code is for another address.").into());
     }
     auth::check_email_ban(&state, &email).await?;
-    if !db::set_email(&state.db, member.id(), &email).await? {
-        return Err(AppError::bad_request("That address cannot be used for this account.").into());
+    let cannot = || AppError::bad_request("That address cannot be used for this account.");
+    if db::account_by_email(&state.db, &email).await?.is_some() {
+        return Err(cannot().into());
     }
-    // The old address hears of it, and nothing else that was signed in stays signed in: a thief
-    // who changed the address does not keep the devices and browsers of the owner's session.
-    let (subject, body) = crate::mail::email_changed_message(&state.config.name, &email);
-    let sent = tokio::time::timeout(
-        std::time::Duration::from_secs(20),
-        state
-            .mailer
-            .send_notice(&member.account.email, &subject, &body),
-    )
-    .await;
-    if !matches!(sent, Ok(Ok(()))) {
-        tracing::error!("cannot send the notice of a new e-mail address");
-    }
+    // Everything else that was signed in is signed out first. If that fails, the address does
+    // not change: a thief who changed it must not keep the devices and browsers of the owner.
     state
         .sign_out_all_but(member.id(), Some(&member.session.id_hash))
         .await?;
+    if !db::set_email(&state.db, member.id(), &email).await? {
+        return Err(cannot().into());
+    }
+    // The old address hears of it. It does not open the account any more, so the notice names
+    // the new one only in part and says whom to ask.
+    let (subject, text) = crate::mail::email_changed_message(
+        &state.config.name,
+        &mask_email(&email),
+        &crate::mail::contact_line(&state.config),
+    );
+    state
+        .send_notice(&member.account.email, &subject, &text)
+        .await;
     Ok(Json(json!({"email": email})).into_response())
 }
 
@@ -391,16 +394,6 @@ pub async fn deletion_cancel(State(state): State<AppState>, member: Member) -> A
 
 // Step-up
 
-fn hint(email: &str) -> String {
-    match email.split_once('@') {
-        Some((name, domain)) => {
-            let first: String = name.chars().take(1).collect();
-            format!("{first}***@{domain}")
-        }
-        None => "***".to_owned(),
-    }
-}
-
 /// `POST /step-up/email`: sends a code to the account's own address.
 pub async fn step_up_email(
     State(state): State<AppState>,
@@ -412,12 +405,18 @@ pub async fn step_up_email(
         auth::start_email_challenge(&state, ip, &member.account.email.clone()).await?;
     member.session.data.step_up = Some(challenge);
     store::save_data(&state.db, &member.session).await?;
-    Ok(Json(json!({"step": "code", "email_hint": hint(&member.account.email)})).into_response())
+    Ok(
+        Json(json!({"step": "code", "email_hint": mask_email(&member.account.email)}))
+            .into_response(),
+    )
 }
 
-/// Marks the session as fresh now.
-async fn verified(state: &AppState, mut member: Member) -> ApiResult {
+/// Marks the session as fresh now, and as made fresh by a passkey when `by_passkey`.
+async fn verified(state: &AppState, mut member: Member, by_passkey: bool) -> ApiResult {
     member.session.data.verified_ms = Some(now_ms());
+    if by_passkey {
+        member.session.data.passkey_ms = member.session.data.verified_ms;
+    }
     member.session.data.step_up = None;
     store::save_data(&state.db, &member.session).await?;
     let until = member.session.fresh_until(state.tuning.fresh_for).map(secs);
@@ -436,7 +435,7 @@ pub async fn step_up_code(
     };
     limit_ip_api(&state, "code", ip, state.tuning.rates.code_per_ip)?;
     match auth::check_challenge(&state, &challenge, body.code.trim()).await {
-        Ok(email) if email == member.account.email => verified(&state, member).await,
+        Ok(email) if email == member.account.email => verified(&state, member, false).await,
         Ok(_) => Err(AppError::bad_request("That code is for another address.").into()),
         Err(error) => {
             if error.body.error == anyplay_api::ErrorCode::CodeExpired {
@@ -461,5 +460,5 @@ pub async fn step_up_passkey(
     if owner.id() != member.id() {
         return Err(AppError::unauthorized("That passkey belongs to another account.").into());
     }
-    verified(&state, member).await
+    verified(&state, member, true).await
 }

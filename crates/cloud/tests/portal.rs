@@ -1037,7 +1037,14 @@ async fn an_e_mail_change_needs_a_fresh_session_and_a_code_from_the_new_address(
     // The old address is told, in plain words; the new one is named.
     let (subject, text) = cloud.mail.last_notice(&alec.email).expect("a notice");
     assert!(subject.contains("changed") && !subject.contains("new@example.com"));
-    assert!(text.contains("new@example.com") && text.contains("If it was not you"));
+    // The new address is masked, and the advice is to ask the operator, not to sign in with
+    // an address that no longer opens the account.
+    assert!(text.contains("n***@example.com") && !text.contains("new@example.com"));
+    assert!(
+        text.contains("If it was not you")
+            && text.contains("contact the operator of Test cloud (http://localhost:")
+    );
+    assert!(!text.contains("sign in"));
     assert!(cloud.mail.last_notice("new@example.com").is_none());
     // Whatever else was signed in is not any more: the other browser and the device. The browser
     // that confirmed stays.
@@ -1755,4 +1762,140 @@ async fn a_read_of_the_session_does_not_undo_what_another_request_wrote() {
         stored.data.email_change.map(|c| c.email).as_deref(),
         Some("new@example.com")
     );
+}
+
+#[tokio::test]
+async fn a_scheduled_deletion_is_mailed_whichever_way_it_was_asked_for() {
+    let cloud = TestCloud::start().await;
+    let alec = cloud.sign_up("Alec").await;
+    let bob = cloud.sign_up("Bob").await;
+    let a = Portal::signed_in(&cloud, &alec).await;
+    assert_eq!(cloud.mail.notice_count(&alec.email), 0);
+
+    // The portal.
+    a.post("/account/deletion", json!({"handle": "Alec"}))
+        .await
+        .ok(200);
+    let at = anyplay_cloud::db::deletion_of(&cloud.state.db, alec.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let (subject, text) = cloud.mail.last_notice(&alec.email).expect("a notice");
+    assert!(subject.contains("scheduled for deletion"));
+    assert!(text.contains(&anyplay_cloud::web::pages::date(at)));
+    assert!(text.contains("cancel the deletion"));
+    assert!(text.contains("contact the operator of Test cloud (http://localhost:"));
+    // Asking again does not mail again.
+    a.post("/account/deletion", json!({"handle": "Alec"}))
+        .await
+        .ok(200);
+    assert_eq!(cloud.mail.notice_count(&alec.email), 1);
+
+    // The API of the launcher.
+    cloud.delete("/v1/me", bob.token()).await.ok(200);
+    assert_eq!(cloud.mail.notice_count(&bob.email), 1);
+    // Nobody else was mailed.
+    assert_eq!(cloud.mail.notice_count(&alec.email), 1);
+}
+
+#[tokio::test]
+async fn an_account_with_a_passkey_changes_its_address_only_after_a_passkey() {
+    let cloud = TestCloud::start().await;
+    let alec = cloud.sign_up("Alec").await;
+    let plain = cloud.sign_up("Plain").await;
+    let portal = Portal::signed_in(&cloud, &alec).await;
+    let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
+    let (_, raw_id, user_handle) = add_passkey(&cloud, &portal, &mut authenticator, "Key").await;
+
+    // Fresh from a code is not enough: the change is about the address a code goes to.
+    let refused = portal
+        .post("/account/email", json!({"email": "new@example.com"}))
+        .await
+        .error(403, "step_up_required");
+    assert_eq!(refused["methods"], json!(["passkey"]));
+    portal.age(&cloud).await;
+    portal.post("/step-up/email", json!({})).await.ok(200);
+    let code = cloud.mail.last_code(&alec.email).unwrap();
+    portal
+        .post("/step-up/code", json!({"code": code}))
+        .await
+        .ok(200);
+    let still = portal
+        .post("/account/email", json!({"email": "new@example.com"}))
+        .await
+        .error(403, "step_up_required");
+    assert_eq!(still["methods"], json!(["passkey"]));
+    // Other sensitive actions take the code, and say both ways.
+    portal.age(&cloud).await;
+    let other = portal
+        .post("/account/sign-out-everywhere", json!({}))
+        .await
+        .error(403, "step_up_required");
+    assert_eq!(other["methods"], json!(["passkey", "email_code"]));
+
+    // A passkey does.
+    let started = portal
+        .post("/passkey/sign-in/start", json!({}))
+        .await
+        .ok(200);
+    let answer = discoverable_answer(
+        &cloud,
+        &mut authenticator,
+        started["options"].clone(),
+        &raw_id,
+        &user_handle,
+    );
+    portal
+        .post(
+            "/step-up/passkey/finish",
+            json!({"id": started["id"], "credential": answer}),
+        )
+        .await
+        .ok(200);
+    portal
+        .post("/account/email", json!({"email": "new@example.com"}))
+        .await
+        .ok(200);
+    let code = cloud.mail.last_code("new@example.com").unwrap();
+    // The confirmation asks for it too; the passkey is still fresh.
+    portal
+        .post("/account/email/confirm", json!({"code": code}))
+        .await
+        .ok(200);
+
+    // An account without a passkey needs no passkey: the code is all it has.
+    let p = Portal::signed_in(&cloud, &plain).await;
+    p.age(&cloud).await;
+    p.post("/step-up/email", json!({})).await.ok(200);
+    let code = cloud.mail.last_code(&plain.email).unwrap();
+    p.post("/step-up/code", json!({"code": code})).await.ok(200);
+    p.post("/account/email", json!({"email": "other@example.com"}))
+        .await
+        .ok(200);
+
+    // A sign-in with the passkey counts as one.
+    let again = Portal::new(&cloud);
+    again.session().await;
+    let started = again
+        .post("/passkey/sign-in/start", json!({}))
+        .await
+        .ok(200);
+    let answer = discoverable_answer(
+        &cloud,
+        &mut authenticator,
+        started["options"].clone(),
+        &raw_id,
+        &user_handle,
+    );
+    again
+        .post(
+            "/passkey/sign-in/finish",
+            json!({"id": started["id"], "credential": answer}),
+        )
+        .await
+        .ok(200);
+    again
+        .post("/account/email", json!({"email": "third@example.com"}))
+        .await
+        .ok(200);
 }

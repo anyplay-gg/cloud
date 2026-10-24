@@ -19,6 +19,7 @@ use super::{
 use crate::db::{self, AccountRow};
 use crate::error::AppError;
 use crate::state::AppState;
+use crate::util::now;
 
 /// The session of a signed-in player and their account.
 pub async fn signed_in(
@@ -61,7 +62,9 @@ pub async fn page(State(state): State<AppState>, headers: HeaderMap) -> WebResul
     let (mut session, account) = signed_in(&state, &headers).await?;
     let passkeys = store::passkeys_of(&state.db, account.id()).await?;
     let devices = db::devices_of(&state.db, account.id()).await?;
+    let deletion = db::deletion_of(&state.db, account.id()).await?;
     let account_view = AccountView {
+        deletion,
         handle: account.handle.clone(),
         email: account.email.clone(),
         created: account.created as u64,
@@ -228,16 +231,34 @@ pub async fn delete(
     }
     // The account is deleted when the grace period ends. Until then this browser stays signed
     // in; every device and every other browser is signed out.
-    state
+    let at = state
         .schedule_deletion(account.id(), Some(&session.id_hash))
         .await?;
-    let days = state.tuning.deletion_grace.as_secs() / 86_400;
     let page = WebError::page(
         StatusCode::OK,
         "Account deletion scheduled",
         &format!(
-            "Your account and its data will be deleted from this cloud in {days} days. Every              device and every other browser is signed out. To keep the account, sign in on the              AnyPlay portal and cancel the deletion before then."
+            "Your account and its data will be deleted from this cloud on {} (UTC). Every device \
+             and every other browser is signed out. Until then you can keep the account: cancel \
+             the deletion on your account page.",
+            pages::date(at)
         ),
-    );
+    )
+    .with_action("/web/account", "Your account");
     Ok(page.into_response())
+}
+
+/// Cancels a scheduled deletion, until its time has come.
+pub async fn cancel_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    WebForm(form): WebForm<CsrfForm>,
+) -> WebResult {
+    let (session, account) = posted(&state, &headers, &form.csrf, false).await?;
+    if !db::cancel_deletion(&state.db, account.id(), now()).await?
+        && db::deletion_of(&state.db, account.id()).await?.is_some()
+    {
+        return Err(AppError::forbidden("The grace period has ended.").into());
+    }
+    done(&state, session, "The deletion was cancelled.").await
 }

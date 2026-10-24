@@ -37,8 +37,13 @@ pub enum Login {
     },
     /// The address is verified and has no account yet; the player chooses a handle.
     NewAccount { signup: String, email: String },
-    /// The player is known and has to accept the terms before going on.
-    Terms { account: u64 },
+    /// The player is known and has to accept the terms before going on. `passkey` says they
+    /// proved who they are with a passkey.
+    Terms {
+        account: u64,
+        #[serde(default)]
+        passkey: bool,
+    },
 }
 
 /// The state of a session that is not an account's: what the player is in the middle of.
@@ -63,6 +68,10 @@ pub struct SessionData {
     /// milliseconds). A session counts as fresh after that as well as after its sign-in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verified_ms: Option<i64>,
+    /// When a passkey last proved who the player is: at sign-in, or in a step-up (Unix
+    /// milliseconds). Changing the e-mail address of an account with a passkey needs it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passkey_ms: Option<i64>,
     /// The challenge of a code sent to the account's own address, to prove the player is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_up: Option<String>,
@@ -114,6 +123,15 @@ impl Session {
     pub fn fresh(&self, fresh_for: Duration) -> bool {
         self.fresh_until(fresh_for)
             .is_some_and(|until| until > now_ms())
+    }
+
+    /// True when a passkey proved who the player is during the last `fresh_for`.
+    pub fn passkey_fresh(&self, fresh_for: Duration) -> bool {
+        self.account.is_some()
+            && self
+                .data
+                .passkey_ms
+                .is_some_and(|at| at + fresh_for.as_millis() as i64 > now_ms())
     }
 
     /// When the session stops being fresh, in Unix milliseconds. `None` without an account.
@@ -229,6 +247,7 @@ fn merge(loaded: &SessionData, mine: &SessionData, theirs: SessionData) -> Sessi
         banned: pick!(banned),
         handoff: pick!(handoff),
         verified_ms: pick!(verified_ms),
+        passkey_ms: pick!(passkey_ms),
         step_up: pick!(step_up),
         email_change: pick!(email_change),
     }

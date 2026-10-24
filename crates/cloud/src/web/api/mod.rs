@@ -54,13 +54,16 @@ impl ApiFail {
         }
     }
 
-    /// The action needs a recent proof of who the player is: see `POST /step-up/*`.
-    pub fn step_up() -> Self {
-        Self::new(
+    /// The action needs a recent proof of who the player is: see `POST /step-up/*`. `methods`
+    /// names the ways that count.
+    pub fn step_up(methods: &[&str]) -> Self {
+        let mut fail = Self::new(
             StatusCode::FORBIDDEN,
             "step_up_required",
             "Confirm that it is you to do this.",
-        )
+        );
+        fail.body["methods"] = json!(methods);
+        fail
     }
 }
 
@@ -163,8 +166,20 @@ impl Member {
         if self.session.fresh(state.tuning.fresh_for) {
             Ok(())
         } else {
-            Err(ApiFail::step_up())
+            Err(ApiFail::step_up(&["passkey", "email_code"]))
         }
+    }
+
+    /// For the actions that would move the account to another address: a session that is
+    /// fresh, and when the account has a passkey, one that a passkey made fresh, since a code
+    /// sent to an address is what the change is about.
+    pub async fn require_strong(&self, state: &AppState) -> ApiResult<()> {
+        self.require_fresh(state)?;
+        let has_passkey = !store::passkeys_of(&state.db, self.id()).await?.is_empty();
+        if has_passkey && !self.session.passkey_fresh(state.tuning.fresh_for) {
+            return Err(ApiFail::step_up(&["passkey"]));
+        }
+        Ok(())
     }
 }
 

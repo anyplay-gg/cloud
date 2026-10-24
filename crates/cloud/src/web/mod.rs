@@ -120,6 +120,7 @@ pub fn router(state: AppState) -> Router<AppState> {
             "/web/account/delete",
             get(account::delete_page).post(account::delete),
         )
+        .route("/web/account/delete/cancel", post(account::cancel_delete))
         .route(
             "/web/account/passkeys/start",
             post(passkeys::register_start),

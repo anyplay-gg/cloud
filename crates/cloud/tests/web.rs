@@ -859,7 +859,75 @@ async fn the_data_export_and_the_deletion_of_the_account() {
         .await;
     assert_eq!(scheduled.status, 200);
     assert!(scheduled.text().contains("Account deletion scheduled"));
-    assert!(scheduled.text().contains("30 days"));
+    let at = anyplay_cloud::db::deletion_of(&cloud.state.db, alec.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        scheduled
+            .text()
+            .contains(&anyplay_cloud::web::pages::date(at)),
+        "the page says the day, not a number of days"
+    );
+    // The pages that need no portal: the account page shows it and can cancel it.
+    let account = browser.get("/web/account").await;
+    assert!(account.text().contains("Deletion scheduled"));
+    assert!(account.text().contains("/web/account/delete/cancel"));
+    // A request that comes again does not promise the full grace: it names the first day.
+    sqlx::query("UPDATE accounts SET deletion_at = deletion_at - 86400 * 20 WHERE id = $1")
+        .bind(alec.id as i64)
+        .execute(&cloud.state.db)
+        .await
+        .unwrap();
+    let earlier = anyplay_cloud::db::deletion_of(&cloud.state.db, alec.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let again = browser
+        .post_form(
+            "/web/account/delete",
+            &[("csrf", &csrf), ("handle", "alec")],
+        )
+        .await;
+    assert!(
+        again
+            .text()
+            .contains(&anyplay_cloud::web::pages::date(earlier))
+    );
+    assert_eq!(
+        cloud.mail.notice_count(&alec.email),
+        1,
+        "one notice for one scheduling"
+    );
+    // Cancelling is a form with the token; a wrong token is refused.
+    let page = browser.get("/web/account").await;
+    let refused = browser
+        .post_form("/web/account/delete/cancel", &[("csrf", "wrong")])
+        .await;
+    assert_eq!(refused.status, 403);
+    let cancelled = browser
+        .post_form(
+            "/web/account/delete/cancel",
+            &[("csrf", &page.csrf_of_form())],
+        )
+        .await;
+    assert_eq!(cancelled.status, 303, "{}", cancelled.text());
+    assert_eq!(
+        anyplay_cloud::db::deletion_of(&cloud.state.db, alec.id)
+            .await
+            .unwrap(),
+        None
+    );
+    // And again, for the sweep below.
+    let page = browser.get("/web/account").await;
+    assert!(!page.text().contains("Deletion scheduled"));
+    browser
+        .post_form(
+            "/web/account/delete",
+            &[("csrf", &csrf), ("handle", "alec")],
+        )
+        .await;
+    assert_eq!(cloud.mail.notice_count(&alec.email), 2);
     assert_eq!(cloud.get("/v1/me", alec.token()).await.status, 401);
     assert_eq!(browser.get("/web/account").await.status, 200);
     assert!(
