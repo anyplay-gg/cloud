@@ -11,12 +11,20 @@ x-build: &build
   context: ../..
   dockerfile: cloud/deploy/Dockerfile
 
+# Docker keeps every container log forever by default; this caps each at 3 x 10 MB.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   cloud:
     build:
       <<: *build
       target: cloud
     restart: unless-stopped
+    logging: *logging
     environment:
       ANYPLAY_CLOUD_NAME: ${CLOUD_NAME:-AnyPlay cloud}
       # The relay listens for HTTPS on 8443 because Caddy holds port 443; see docs/configuration.md.
@@ -44,6 +52,14 @@ services:
       <<: *build
       target: relay
     restart: unless-stopped
+    logging: *logging
+    # The relay answers on its plain HTTP port when it is up (the image has bash, no curl).
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/3340"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
     depends_on:
       cloud:
         condition: service_healthy
@@ -76,6 +92,14 @@ services:
       <<: *build
       target: caddy
     restart: unless-stopped
+    logging: *logging
+    # Caddy's admin endpoint listens on localhost inside the container.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2019/config/"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
     depends_on:
       - cloud
     environment:
