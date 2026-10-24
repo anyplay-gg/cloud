@@ -325,6 +325,7 @@ impl TestCloud {
         Device {
             name: name.into(),
             platform: Platform::Linux,
+            key: None,
         }
     }
 

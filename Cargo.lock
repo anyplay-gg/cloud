@@ -241,6 +241,7 @@ dependencies = [
  "anyplay-api",
  "anyplay-bridge-protocol",
  "anyplay-control",
+ "anyplay-proof",
  "bytes",
  "data-encoding",
  "futures-util",
@@ -256,6 +257,17 @@ dependencies = [
  "tokio-websockets 0.13.3",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "anyplay-proof"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "rand 0.10.3",
+ "sha2 0.10.9",
+ "subtle",
 ]
 
 [[package]]

@@ -247,6 +247,7 @@ fn device() -> Device {
     Device {
         name: "load".into(),
         platform: Platform::Linux,
+        key: None,
     }
 }
 
