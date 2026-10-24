@@ -13,7 +13,7 @@ Last changed: `[DATE]`. Version: `[VERSION]`.
 ## In short
 
 - You need to be at least `[16]` years old.
-- Play only games you own. Do not use cheating tools. Do not build or use anything that pretends to be a game publisher's server.
+- Play only games you own. Do not use cheating tools. Do not build or use anything that pretends to be the server of a publisher whose service still runs.
 - Be decent to other players. We remove people who are not.
 - If we limit your account, we tell you why, and you can appeal.
 - You can delete your account at any time.
@@ -40,18 +40,20 @@ The service lets you sign in, add friends, see who is online and what they play,
 - One person, one account. Handles cannot copy a staff or platform name; the cloud blocks some names (for example `admin`, `moderator`, `playstation...`).
 - You can delete the account at any time in the launcher. We delete your data as the [privacy notice](privacy-notice.md) says.
 
-## 5. Rules for your use (the clean line)
+## 5. Rules for your use (the line)
 
-These rules follow the network's published rules ([network ADR 0003](https://github.com/anyplay-gg/network/blob/main/docs/adr/0003-the-clean-line.md)). You promise to follow them.
+These rules follow the network's published rules ([network ADR 0021](https://github.com/anyplay-gg/network/blob/main/docs/adr/0021-the-line-is-drawn-at-the-law.md)). You promise to follow them.
 
 1. **Only games you own.** Use the network only with games you legally own. Do not share, sell or use dumps, keys or accounts that are not yours.
-2. **No cheating tools.** Do not use tools that change a game to give you an unfair advantage or that bypass a game's anti-cheat or account checks. Do not use the network to harm another player's game.
-3. **No stand-in for a publisher's servers.** Do not use the service, or write software that uses its interfaces, to pretend to be a game publisher's or a platform owner's servers, or to hand out tokens or logins for someone else's client.
-4. **No Sony servers, code or leaked documents.** Do not send us material taken from a platform owner's servers, firmware or leaked documents. Do not post it to other players.
+2. **No cheating tools.** Do not use tools that change a game to give you an unfair advantage or that bypass a game's anti-cheat or copy protection. Do not use the network to harm another player's game.
+3. **No stand-in for a running service.** Do not use the service, or write software that uses its interfaces, to pretend to be the servers of a game publisher or platform owner whose service still runs, to present yourself to such a service as a real console, or to issue, forge or forward tokens or logins for someone else's platform or publisher service.
+4. **No Sony servers, code, firmware or leaked documents.** Do not send us material taken from a platform owner's servers, firmware or leaked documents. Do not post it to other players.
 5. **Be decent.** No harassment, hate, threats, sexual content involving minors, spam or impersonation. No illegal content, as defined by the law of the EU or of a Member State.
 6. **Keep the service working.** No attacks, no scraping, no automated sign-up, no attempt to get around limits or bans (including a new account after a ban).
 7. **Names.** Your handle must not be offensive or pretend to be someone else.
 8. **Game data.** Do not put personal data of other people into the game data fields that sessions carry.
+
+`[For the lawyer: network ADR 0021 also lets the network bring back online play for games whose publisher has shut the service down, and answer the online-permission check by its own rule (signed in, not banned) for the AnyPlay network only, never as a platform subscription. Both need your review before the public launch, and these rules may need to say more about them.]`
 
 Software made for the network (the launcher and the net service) is open source. Its licence governs how you may use and change the code. These terms govern your use of this cloud.
 

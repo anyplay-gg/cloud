@@ -5,8 +5,13 @@
 }
 
 # The cloud. Caddy sets X-Forwarded-For, which the cloud trusts (trust_proxy).
+# Optional sites on the same host name (the website, compose.web.yaml) drop a file into site.d that
+# claims its paths; everything else goes to the cloud. Without such a file the glob matches nothing.
 {$CLOUD_DOMAIN} {
-	reverse_proxy cloud:8080
+	import /etc/caddy/site.d/*.caddy
+	handle {
+		reverse_proxy cloud:8080
+	}
 }
 
 # Caddy only fetches and renews the certificate of the relay's host name; the relay reads the

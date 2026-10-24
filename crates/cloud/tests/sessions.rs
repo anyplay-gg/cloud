@@ -831,3 +831,154 @@ async fn joins_at_once_never_wait_on_each_other_for_a_connection() {
     let last = joined.iter().max_by_key(|s| s.members.len()).unwrap();
     assert_eq!(last.members.len(), 9);
 }
+
+// Virtual addresses belong to the members of a session (network ADR 0020).
+
+async fn befriend(cloud: &TestCloud, a: &User, b: &User) {
+    cloud
+        .post(
+            "/v1/friends/requests",
+            a.token(),
+            json!({"handle": b.handle}),
+        )
+        .await
+        .ok(200);
+    cloud
+        .post_empty(&format!("/v1/friends/requests/{}/accept", a.id), b.token())
+        .await
+        .ok(204);
+}
+
+fn address_of(session: &Session, account: u64) -> std::net::Ipv4Addr {
+    session
+        .members
+        .iter()
+        .find(|m| m.account.id.0 == account)
+        .expect("a member")
+        .address
+        .parse()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn members_get_their_preferred_address_and_no_two_share_one() {
+    let cloud = TestCloud::start().await;
+    let owner = cloud.sign_up("Alec").await;
+    let mut session = create(&cloud, &owner, 1, 16, "friends").await;
+    let mut friends = Vec::new();
+    for n in 0..8u8 {
+        let user = cloud.sign_up(&format!("Friend{n}")).await;
+        friends.push(user);
+    }
+    for user in &friends {
+        befriend(&cloud, &owner, user).await;
+        session = join(&cloud, user, &session.id, 2).await;
+    }
+    assert_eq!(session.members.len(), 9);
+    let mut seen = std::collections::HashSet::new();
+    for member in &session.members {
+        let address: std::net::Ipv4Addr = member.address.parse().unwrap();
+        assert!(anyplay_api::is_assignable(address), "{address}");
+        assert!(seen.insert(address), "{address} twice");
+        // No one here collides with another's preferred address, so each gets its own.
+        assert_eq!(
+            address,
+            anyplay_cloud::addresses::preferred(member.account.id.0)
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_address_held_by_a_member_moves_a_newcomer_to_the_next_one() {
+    let cloud = TestCloud::start().await;
+    let (a, b) = cloud.friends("Alec", "Sam").await;
+    let session = create(&cloud, &a, 1, 4, "friends").await;
+    // Another node, from before session addresses, gave Alec the address Sam would get.
+    let wanted = anyplay_cloud::addresses::preferred(b.id);
+    sqlx::query("UPDATE members SET address = $1 WHERE session_id = $2")
+        .bind(wanted.to_string())
+        .bind(&session.id)
+        .execute(&cloud.state.db)
+        .await
+        .unwrap();
+    let joined = join(&cloud, &b, &session.id, 2).await;
+    assert_eq!(address_of(&joined, a.id), wanted);
+    let moved = address_of(&joined, b.id);
+    assert_ne!(moved, wanted);
+    assert!(anyplay_api::is_assignable(moved));
+    // The address stays when Sam joins again, and with it when Sam only moves his endpoint.
+    let again = join(&cloud, &b, &session.id, 3).await;
+    assert_eq!(address_of(&again, b.id), moved);
+}
+
+#[tokio::test]
+async fn one_player_has_the_same_address_in_two_sessions_and_a_session_never_needs_a_lease() {
+    let cloud = TestCloud::start().await;
+    let (a, b) = cloud.friends("Alec", "Sam").await;
+    let first = create(&cloud, &a, 1, 4, "friends").await;
+    let second = create(&cloud, &b, 2, 4, "friends").await;
+    let first = join(&cloud, &b, &first.id, 3).await;
+    let second = join(&cloud, &a, &second.id, 4).await;
+    assert_eq!(address_of(&first, a.id), address_of(&second, a.id));
+    assert_eq!(address_of(&first, b.id), address_of(&second, b.id));
+    // Nothing is leased any more: being online or in a session writes no address row.
+    let _events = cloud.events(a.token()).await;
+    let (leases,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM leases")
+        .fetch_one(&cloud.state.db)
+        .await
+        .unwrap();
+    assert_eq!(leases, 0);
+}
+
+#[tokio::test]
+async fn a_member_who_leaves_and_joins_again_gets_its_address_back_while_nobody_took_it() {
+    let cloud = TestCloud::start().await;
+    let (a, b) = cloud.friends("Alec", "Sam").await;
+    let session = create(&cloud, &a, 1, 4, "friends").await;
+    let with_sam = join(&cloud, &b, &session.id, 2).await;
+    let sam = address_of(&with_sam, b.id);
+    cloud
+        .post_empty(&format!("/v1/sessions/{}/leave", session.id), b.token())
+        .await
+        .ok(204);
+    let back = join(&cloud, &b, &session.id, 2).await;
+    assert_eq!(address_of(&back, b.id), sam);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn members_joining_at_the_same_moment_all_get_different_addresses() {
+    let cloud = TestCloud::start().await;
+    let owner = cloud.sign_up("Alec").await;
+    let session = create(&cloud, &owner, 1, 16, "friends").await;
+    let mut users = Vec::new();
+    for n in 0..10u8 {
+        let user = cloud.sign_up(&format!("Joiner{n}")).await;
+        befriend(&cloud, &owner, &user).await;
+        users.push(user);
+    }
+    let joins = users.iter().enumerate().map(|(n, user)| {
+        let cloud = &cloud;
+        let id = session.id.clone();
+        async move {
+            cloud
+                .post(
+                    &format!("/v1/sessions/{id}/join"),
+                    user.token(),
+                    join_body(10 + n as u8),
+                )
+                .await
+        }
+    });
+    for reply in futures_util::future::join_all(joins).await {
+        reply.ok(200);
+    }
+    let session: Session = cloud
+        .get(&format!("/v1/sessions/{}", session.id), owner.token())
+        .await
+        .ok(200)
+        .json();
+    assert_eq!(session.members.len(), 11);
+    let distinct: std::collections::HashSet<_> =
+        session.members.iter().map(|m| m.address.clone()).collect();
+    assert_eq!(distinct.len(), 11);
+}

@@ -13,12 +13,12 @@ use axum::http::StatusCode;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
-use crate::db;
 use crate::error::{AppError, Result};
 use crate::http::{ApiJson, Auth, parse_id};
 use crate::live::{self, InvitationRow, MemberRow, SessionRow, SessionState};
 use crate::state::AppState;
 use crate::util::{self, is_endpoint, is_http_url, is_label, now, now_ms, random_uuid};
+use crate::{addresses, db};
 
 const MAX_SESSIONS_PER_ACCOUNT: i64 = 4;
 /// Invitations one session may have open, and one account may hold.
@@ -72,14 +72,6 @@ async fn handle_of(state: &AppState, account: u64) -> Result<String> {
         .handle)
 }
 
-async fn address_of(state: &AppState, account: u64) -> Result<String> {
-    Ok(state
-        .address_of(account)
-        .await?
-        .ok_or_else(AppError::internal)?
-        .to_string())
-}
-
 /// Starts the grace periods of a member without an event connection, so it leaves in time.
 async fn arm_grace(state: &AppState, account: u64) -> Result<()> {
     Ok(live::arm_grace(&mut *state.db.acquire().await?, account, now_ms()).await?)
@@ -110,7 +102,8 @@ pub async fn create(
     check_endpoint(&request.endpoint, &request.relay)?;
     check_properties(&request.properties)?;
     let handle = handle_of(&state, auth.account).await?;
-    let address = address_of(&state, auth.account).await?;
+    // The only member, so the first address it can have.
+    let address = addresses::for_new_member(auth.account, []).to_string();
 
     let created = now() as i64;
     let row = SessionRow {
@@ -203,7 +196,6 @@ pub async fn join(
     check_endpoint(&request.endpoint, &request.relay)?;
     let handle = handle_of(&state, auth.account).await?;
     let friends = friends_of(&state, auth.account).await?;
-    let address = address_of(&state, auth.account).await?;
 
     let mut tx = state.db.begin().await?;
     let mut session = live::lock_session(&mut tx, &id)
@@ -270,12 +262,20 @@ pub async fn join(
         return Err(AppError::limit("You are in the most sessions allowed."));
     }
 
+    // Chosen under the session's lock, among the addresses of the members it has now.
+    let address = addresses::for_new_member(
+        auth.account,
+        session
+            .members
+            .iter()
+            .filter_map(|m| m.address.parse().ok()),
+    );
     let member = MemberRow {
         account_id: auth.account as i64,
         handle,
         endpoint: request.endpoint,
         relay: request.relay,
-        address,
+        address: address.to_string(),
         joined: now() as i64,
     };
     live::add_member(&mut tx, &id, &member).await?;

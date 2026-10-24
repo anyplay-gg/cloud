@@ -126,7 +126,6 @@ pub fn fast_tuning() -> Tuning {
         // Long, so that a test whose players hold no event connection keeps its sessions however
         // slowly it runs; the tests of the grace itself shorten it.
         session_grace: Duration::from_secs(30),
-        lease_ttl: Duration::from_secs(30),
         sweep_interval: Duration::from_millis(100),
         rates: Rates {
             email_per_address: 100,

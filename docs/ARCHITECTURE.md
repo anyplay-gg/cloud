@@ -2,7 +2,7 @@
 
 How the cloud grows from one process on a home server to a cluster that carries a whole player network, and why it is built that way. The decisions are in [docs/adr](adr); the words are those of the network's [CONTEXT.md](https://github.com/anyplay-gg/network/blob/main/CONTEXT.md).
 
-The patterns here come from what large player networks have said in public: talks, engineering blogs, postmortems and documentation. None of it comes from anyone's internal or leaked material, and the cloud never stands in for anyone's servers ([the clean line](https://github.com/anyplay-gg/network/blob/main/docs/adr/0003-the-clean-line.md)).
+The patterns here come from what large player networks have said in public: talks, engineering blogs, postmortems and documentation. None of it comes from anyone's internal or leaked material, and the cloud never stands in for a publisher service that still runs ([the line is drawn at the law](https://github.com/anyplay-gg/network/blob/main/docs/adr/0021-the-line-is-drawn-at-the-law.md)).
 
 ## One program, two shapes
 
@@ -49,7 +49,7 @@ A node holds nothing that another node needs. Any node can answer any request, a
 | Sessions, members, invitations | store | joins from many nodes must see one capacity and one member list |
 | Parties, party members, party invitations | store | one party per account and 8 members, whichever node writes |
 | Conversations, messages, read marks | store | durable for 30 days; the conversation's counter gives each message its number |
-| Virtual address leases | store | unique across the network |
+| Virtual addresses | store (the member rows) | unique inside a session |
 | Event connections (the sockets) | the node that holds them | they cannot move |
 | Who is signed in, who is banned | a cache in each node, filled from the store | checked on every request; changes arrive as news |
 | Rate-limit counters | each node | cheap and approximate; a shared limiter can come later |
@@ -134,6 +134,6 @@ Game traffic goes directly between players where the network allows it and throu
 
 ### Known limits
 
-- Virtual addresses come from `198.18.0.0/15`, one per online account, which caps a cloud at about 131,000 players online at once. Addresses only have to differ inside a session, so the cloud API will move to per-session addresses before that limit is near.
+- Virtual addresses come from `198.18.0.0/15` and belong to the members of a session; they only differ inside a session, so a cloud is not capped by the size of the range ([network ADR 0020](https://github.com/anyplay-gg/network/blob/main/docs/adr/0020-virtual-addresses-belong-to-sessions.md)). The old `leases` table is not written any more and is dropped by a later migration, once no node older than the one that stopped writing it runs.
 - Rate limits count per node, so a cluster of N nodes allows up to N times the limit to a client that spreads its requests. A load balancer that picks the node by the client's address keeps that close to the limit; a shared limiter removes it.
 - A node learns of a device signed in elsewhere from the store, at its first request. When a device signs out, the other nodes hear of it over NATS; a node that misses that note accepts the device's access token until it expires, at most 15 minutes. Bans are read again from the store at every sweep.

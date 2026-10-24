@@ -1,0 +1,29 @@
+# The website next to the cloud, on the same host name. Optional: add it with
+#   COMPOSE_FILE=compose.yaml:compose.web.yaml   (in .env, so update.sh and every compose call see it)
+# and a checkout of anyplay-gg/web beside cloud/ and network/ (or WEB_DIR pointing at one).
+services:
+  web:
+    build:
+      context: ${WEB_DIR:-../../web}
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/apps/web/.next/cache
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  caddy:
+    depends_on:
+      - web
+    volumes:
+      - ./web.caddy:/etc/caddy/site.d/web.caddy:ro
