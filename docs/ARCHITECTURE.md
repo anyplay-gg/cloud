@@ -111,8 +111,8 @@ Game traffic goes directly between players where the network allows it and throu
 | Stage | What | State |
 |---|---|---|
 | 1 | Everything shared moves into the store; the store runs on SQLite and Postgres; tests on both | done |
-| 2 | News over NATS; the cluster test | next |
-| 3 | Revisions on sessions and presence; clients spread their reconnects | |
+| 2 | News over NATS; the cluster test | done |
+| 3 | Revisions on sessions and presence; clients spread their reconnects | next |
 | 4 | Operations: health, readiness, metrics, drain, JSON logs | |
 | 5 | Kubernetes: a Helm chart, tried on a kind cluster in CI | |
 | 6 | Load harness and published numbers | |
@@ -122,3 +122,4 @@ Game traffic goes directly between players where the network allows it and throu
 
 - Virtual addresses come from `198.18.0.0/15`, one per online account, which caps a cloud at about 131,000 players online at once. Addresses only have to differ inside a session, so the cloud API will move to per-session addresses before that limit is near.
 - Rate limits count per node, so a cluster of N nodes allows up to N times the limit to a client that spreads its requests. A load balancer that picks the node by the client's address keeps that close to the limit; a shared limiter removes it.
+- A node learns of a device signed in elsewhere from the store, at its first request. When a device signs out, the other nodes hear of it over NATS; a node that misses that note accepts the device's access token until it expires, at most 15 minutes. Bans are read again from the store at every sweep.

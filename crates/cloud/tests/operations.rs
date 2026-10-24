@@ -624,6 +624,9 @@ async fn a_new_signing_key_is_made_on_first_start_and_kept() {
 
 #[tokio::test]
 async fn shutting_down_closes_event_connections_and_stops_serving() {
+    // This test builds its own client, so it cannot count on another test having set the
+    // crypto provider first.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let dir = tempfile::tempdir().unwrap();
     let config = anyplay_cloud::Config {
         data_dir: dir.path().to_path_buf(),

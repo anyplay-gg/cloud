@@ -13,6 +13,7 @@ publish = false
 [workspace.dependencies]
 anyplay-api = { path = "../network/crates/api" }
 anyplay-ticket = { path = "crates/ticket" }
+async-nats = { version = "0.50", default-features = false, features = ["ring"] }
 anyhow = "1"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "ws", "query"] }
 base64 = "0.22"

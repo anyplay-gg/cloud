@@ -5,6 +5,7 @@
 //! banned) the upgrade succeeds and the connection closes at once with the matching close code,
 //! so a client that only sees WebSocket close codes still learns what to do.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use anyplay_api::{Event, close};
@@ -47,7 +48,7 @@ pub async fn events(
             code: close::TOKEN_EXPIRED,
             reason: "access token expired",
         },
-        Ok(auth) => match state.check_device(auth.device, auth.account) {
+        Ok(auth) => match state.check_device(auth.device, auth.account).await {
             Ok(()) => {
                 count_request(&state, auth.account)?;
                 Verdict::Open(auth)
@@ -90,10 +91,10 @@ async fn send_event(socket: &mut WebSocket, event: &Event) -> bool {
     )
 }
 
-async fn send_close(socket: &mut WebSocket, code: u16, reason: &'static str) {
+async fn send_close(socket: &mut WebSocket, code: u16, reason: Cow<'static, str>) {
     let frame = CloseFrame {
         code,
-        reason: reason.into(),
+        reason: reason.into_owned().into(),
     };
     let _ = tokio::time::timeout(SEND_TIMEOUT, socket.send(Message::Close(Some(frame)))).await;
 }
@@ -102,7 +103,7 @@ async fn refuse(mut socket: WebSocket, event: Option<Event>, code: u16, reason: 
     if let Some(event) = event {
         send_event(&mut socket, &event).await;
     }
-    send_close(&mut socket, code, reason).await;
+    send_close(&mut socket, code, reason.into()).await;
 }
 
 async fn run(state: AppState, auth: Auth, mut socket: WebSocket) {

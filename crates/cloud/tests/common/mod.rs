@@ -3,7 +3,8 @@
 //!
 //! The database is a SQLite file, or, when `ANYPLAY_TEST_DATABASE_URL` names a PostgreSQL
 //! database such as `postgres://postgres:secret@127.0.0.1:5432/postgres`, a new database on that
-//! server for each cloud. CI runs every test both ways.
+//! server for each cloud. CI runs every test both ways. With `ANYPLAY_TEST_NATS_URL` as well,
+//! [`TestCloud::cluster`] starts several nodes of one cloud.
 #![allow(dead_code)]
 
 use std::sync::Arc;
@@ -31,7 +32,7 @@ pub struct TestCloud {
     pub state: AppState,
     pub mail: Arc<MemoryMailer>,
     pub http: reqwest::Client,
-    _dir: tempfile::TempDir,
+    _dir: Arc<tempfile::TempDir>,
     _server: JoinHandle<std::io::Result<()>>,
 }
 
@@ -141,13 +142,52 @@ impl TestCloud {
     }
 
     pub async fn with(config: impl FnOnce(&mut Config), tuning: impl FnOnce(&mut Tuning)) -> Self {
+        let dir = Arc::new(tempfile::tempdir().unwrap());
+        let database_url = postgres_database().await;
+        Self::node(dir, database_url, None, config, tuning).await
+    }
+
+    /// `n` nodes of one cloud: one database, one NATS server and one signing key, each node on
+    /// its own port. `None` unless both `ANYPLAY_TEST_DATABASE_URL` and `ANYPLAY_TEST_NATS_URL`
+    /// are set.
+    pub async fn cluster(n: usize, config: impl Fn(&mut Config)) -> Option<Vec<Self>> {
+        let nats = std::env::var("ANYPLAY_TEST_NATS_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty())?;
+        let database_url = postgres_database().await?;
+        // The nodes share the data folder, so the first creates the signing key and the others
+        // read it.
+        let dir = Arc::new(tempfile::tempdir().unwrap());
+        let mut nodes = Vec::new();
+        for _ in 0..n {
+            nodes.push(
+                Self::node(
+                    dir.clone(),
+                    Some(database_url.clone()),
+                    Some(nats.clone()),
+                    &config,
+                    |_| {},
+                )
+                .await,
+            );
+        }
+        Some(nodes)
+    }
+
+    async fn node(
+        dir: Arc<tempfile::TempDir>,
+        database_url: Option<String>,
+        nats_url: Option<String>,
+        config: impl FnOnce(&mut Config),
+        tuning: impl FnOnce(&mut Tuning),
+    ) -> Self {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let dir = tempfile::tempdir().unwrap();
         let mut cfg = Config {
             data_dir: dir.path().to_path_buf(),
-            database_url: postgres_database().await,
+            database_url,
             // Many test clouds share one database server.
             database_connections: 4,
+            nats_url,
             name: "Test cloud".into(),
             relays: vec![
                 "https://relay-a.example".into(),

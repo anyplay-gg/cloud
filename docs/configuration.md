@@ -15,6 +15,7 @@ Without a file, the defaults apply. The cloud runs that way for development: sig
 | `data_dir` | `data` | The folder with the database (`anyplay-cloud.db`) and the signing key (`signing.key`, with the public half in `signing.pub`). The key is created on first start. Back this folder up. |
 | `database_url` | none | A PostgreSQL database instead of the file in `data_dir`, such as `postgres://cloud:secret@db.internal/cloud`. Add `?sslmode=verify-full&sslrootcert=<file>` to check the server's certificate. The cloud creates its tables on the first start. A cloud needs Postgres only when it runs as several nodes ([ADR 0003](adr/0003-postgres-for-a-cluster.md)). |
 | `database_connections` | `16` | The most connections the cloud keeps open to its database. |
+| `nats_url` | none | A NATS server, such as `nats://nats.internal:4222` (`tls://` for TLS). With it the cloud runs as one node of a cluster: the nodes share the database of `database_url`, which must be set, and tell each other about changes over NATS ([ADR 0004](adr/0004-nats-carries-news-not-state.md)). Every node needs the same signing key, so give them the same `signing.key` in `data_dir`. |
 | `name` | `AnyPlay cloud` | The public name, shown by `GET /v1/info` and in sign-in mails. 1 to 64 characters. |
 | `relays` | none | The URLs of your relays, such as `https://relay.example.com`. The cloud hands out a ticket for each. In an environment variable, separate them with commas. |
 | `mail` | `log` | `log` writes sign-in codes to the log. `smtp` sends them. |

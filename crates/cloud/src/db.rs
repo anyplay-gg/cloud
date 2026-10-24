@@ -301,6 +301,15 @@ pub async fn device_to_evict(pool: &Pool, account: u64, keep: i64) -> sqlx::Resu
     Ok(row.filter(|(_, n)| *n >= keep).map(|(id, _)| u(id)))
 }
 
+/// The account a device belongs to, if the device is signed in.
+pub async fn device_owner(pool: &Pool, id: u64) -> sqlx::Result<Option<u64>> {
+    let row: Option<(i64,)> = sqlx::query_as("SELECT account_id FROM devices WHERE id = $1")
+        .bind(i(id))
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|(account,)| u(account)))
+}
+
 pub async fn delete_device(pool: &Pool, id: u64) -> sqlx::Result<()> {
     sqlx::query("DELETE FROM devices WHERE id = $1")
         .bind(i(id))
