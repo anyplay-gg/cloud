@@ -429,14 +429,15 @@ pub async fn presence_of_friends(
         .collect())
 }
 
-/// Locks the presence row of an account until the transaction ends. PostgreSQL only: on SQLite
-/// the write transaction holds the whole store already.
-pub async fn lock_presence(conn: &mut Conn, account: u64) -> sqlx::Result<()> {
-    sqlx::query("SELECT account_id FROM presence WHERE account_id = $1 FOR UPDATE")
-        .bind(i(account))
-        .execute(conn)
-        .await?;
-    Ok(())
+/// Locks the presence row of an account until the transaction ends, and says whether there is
+/// one. PostgreSQL only: on SQLite the write transaction holds the whole store already.
+pub async fn lock_presence(conn: &mut Conn, account: u64) -> sqlx::Result<bool> {
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT account_id FROM presence WHERE account_id = $1 FOR UPDATE")
+            .bind(i(account))
+            .fetch_optional(conn)
+            .await?;
+    Ok(row.is_some())
 }
 
 /// Records that friends are told about this presence now, and returns the revision to tell them
