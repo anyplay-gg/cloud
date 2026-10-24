@@ -2,8 +2,9 @@
 //! through the control protocol as a launcher would, and two fake games on the bridge.
 //!
 //! They sign up, become friends, see each other play, and one joins the other's session from
-//! the launcher. The games then exchange datagrams through the tunnel. A second run keeps one
-//! player on the relay only and checks that the tunnel to them goes through the relay.
+//! the launcher. The games then exchange datagrams through the tunnel. Two more runs put one
+//! player on relay only, from the start and while playing, and check that the tunnel to them goes
+//! through the relay.
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -207,19 +208,34 @@ async fn relay(signer: &anyplay_ticket::Signer) -> (iroh_relay::server::Server, 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_players_meet_and_play_through_the_tunnel() {
-    assert_eq!(meet_and_play(false).await, Link::Direct);
+    assert_eq!(meet_and_play(AliceRelay::Never).await, Link::Direct);
 }
 
 /// A player on relay only never hands the other an address, so the tunnel to them stays on the
 /// relay where it would otherwise go direct.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_player_on_relay_only_is_reached_through_the_relay() {
-    assert_eq!(meet_and_play(true).await, Link::Relay);
+    assert_eq!(meet_and_play(AliceRelay::FromStart).await, Link::Relay);
 }
 
-/// Alice and Bobby meet and play; Alice keeps to the relay when `alice_relay_only`. Returns the
-/// tunnel to Alice as Bobby's launcher shows it, once it has had a few seconds to go direct.
-async fn meet_and_play(alice_relay_only: bool) -> Link {
+/// Turned on while playing, relay only moves a direct tunnel to the relay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_only_turned_on_moves_a_direct_tunnel_to_the_relay() {
+    assert_eq!(meet_and_play(AliceRelay::TurnedOn).await, Link::Relay);
+}
+
+/// When Alice's net service keeps to the relay.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AliceRelay {
+    Never,
+    FromStart,
+    TurnedOn,
+}
+
+/// Alice and Bobby meet and play. Returns the tunnel to Alice as Bobby's launcher shows it, once
+/// it has had a few seconds to go direct; with [`AliceRelay::TurnedOn`], once Alice turned relay
+/// only on after that.
+async fn meet_and_play(alice_relay: AliceRelay) -> Link {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let cloud_dir = tempfile::tempdir().unwrap();
@@ -239,7 +255,7 @@ async fn meet_and_play(alice_relay_only: bool) -> Link {
     let cloud_url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(serve(listener, state, std::future::pending()));
 
-    let mut alice = Launcher::start(alice_relay_only).await;
+    let mut alice = Launcher::start(alice_relay == AliceRelay::FromStart).await;
     let mut bobby = Launcher::start(false).await;
     let alice_id = alice
         .sign_up(&cloud_url, &mail, "alice@example.org", "Alice")
@@ -447,6 +463,24 @@ async fn meet_and_play(alice_relay_only: bool) -> Link {
     } else {
         first_link
     };
+    if alice_relay == AliceRelay::TurnedOn {
+        assert_eq!(alice_link, Link::Direct);
+        alice.ok(Command::RelayOnly { on: true }).await;
+        return bobby
+            .wait("the tunnel to Alice on the relay", |event| match event {
+                Event::Session {
+                    session: Some(shown),
+                } if shown
+                    .members
+                    .iter()
+                    .any(|m| m.account.id == alice_id && m.link == Some(Link::Relay)) =>
+                {
+                    Some(Link::Relay)
+                }
+                _ => None,
+            })
+            .await;
+    }
 
     // Bobby's game ends: he leaves, and Alice's game hears that he is gone.
     bobby.ok(Command::GameEnd).await;
