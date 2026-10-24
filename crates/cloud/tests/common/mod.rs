@@ -65,6 +65,33 @@ impl Reply {
     }
 }
 
+/// An HTTP/1.1 answer with a `content-length` body, once all of it has arrived.
+fn read_answer(bytes: &[u8]) -> Option<Reply> {
+    let end = bytes.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
+    let head = std::str::from_utf8(&bytes[..end]).expect("the head is text");
+    let mut lines = head.lines();
+    let status = lines.next()?.split(' ').nth(1)?.parse().ok()?;
+    let mut headers = reqwest::header::HeaderMap::new();
+    for line in lines.filter(|l| !l.is_empty()) {
+        let (name, value) = line.split_once(':')?;
+        headers.insert(
+            reqwest::header::HeaderName::from_bytes(name.trim().as_bytes()).ok()?,
+            value.trim().parse().ok()?,
+        );
+    }
+    let len: usize = headers
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let body = bytes.get(end..end + len)?;
+    Some(Reply {
+        status,
+        headers,
+        body: serde_json::from_slice(body).unwrap_or(Value::Null),
+    })
+}
+
 /// Timings short enough for tests and limits high enough not to get in the way.
 pub fn fast_tuning() -> Tuning {
     Tuning {
@@ -148,6 +175,31 @@ impl TestCloud {
             status,
             headers,
             body,
+        }
+    }
+
+    /// Writes `request` as it is on a new connection and reads the answer: for requests that a
+    /// client library would not send the same way.
+    pub async fn raw(&self, request: &[u8]) -> Reply {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let mut stream = TcpStream::connect(&self.base).await.unwrap();
+        stream.write_all(request).await.unwrap();
+        let mut answer = Vec::new();
+        let mut buf = [0; 4096];
+        loop {
+            if let Some(reply) = read_answer(&answer) {
+                return reply;
+            }
+            let read = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buf))
+                .await
+                .expect("no answer in time")
+                .unwrap();
+            assert!(
+                read > 0,
+                "the connection closed before the answer: {:?}",
+                String::from_utf8_lossy(&answer)
+            );
+            answer.extend_from_slice(&buf[..read]);
         }
     }
 
