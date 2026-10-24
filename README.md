@@ -104,7 +104,7 @@ Every pull request runs formatting, Clippy with warnings as errors and all tests
 
 ## What the cloud never does
 
-It never sees game files, never contacts Sony's servers and never stands in for a publisher's servers. The [clean line](https://github.com/anyplay-gg/network/blob/main/docs/adr/0003-the-clean-line.md) explains why. A game whose online part needs its publisher's servers stays offline.
+It never sees game files, never contacts Sony's servers and never stands in for a publisher service that still runs. [The line is drawn at the law](https://github.com/anyplay-gg/network/blob/main/docs/adr/0021-the-line-is-drawn-at-the-law.md) explains where the network's line lies. A game whose online play runs on a live publisher service stays offline on the PlayStation side. Revival servers for services a publisher has shut down are allowed and not built yet.
 
 ## License
 
