@@ -300,7 +300,7 @@ pub async fn sign_in_finish(
         session,
         token: None,
     };
-    let landing = flow::finish_login(&state, &mut visit, &account).await?;
+    let landing = flow::finish_login(&state, &mut visit, &account, flow::Proof::Passkey).await?;
     Ok(super::with_cookie(
         &state,
         &visit,

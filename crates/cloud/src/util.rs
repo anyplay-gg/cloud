@@ -81,6 +81,17 @@ pub fn is_http_url(text: &str) -> bool {
         && !text.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
+/// An address with most of its name hidden, for a notice or a hint: `a***@example.com`.
+pub fn mask_email(email: &str) -> String {
+    match email.split_once('@') {
+        Some((name, domain)) => {
+            let first: String = name.chars().take(1).collect();
+            format!("{first}***@{domain}")
+        }
+        None => "***".to_owned(),
+    }
+}
+
 /// Trims and lowercases an e-mail address and checks its basic shape.
 pub fn normalize_email(text: &str) -> Option<String> {
     let email = text.trim().to_ascii_lowercase();

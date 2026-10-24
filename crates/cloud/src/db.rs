@@ -253,14 +253,16 @@ pub async fn deletion_of(pool: &Pool, id: u64) -> sqlx::Result<Option<u64>> {
     Ok(row.and_then(|(at,)| at).map(u))
 }
 
-/// Schedules the deletion of an account. One that is scheduled already keeps its time.
-pub async fn schedule_deletion(pool: &Pool, id: u64, at: u64) -> sqlx::Result<()> {
-    sqlx::query("UPDATE accounts SET deletion_at = $2 WHERE id = $1 AND deletion_at IS NULL")
-        .bind(i(id))
-        .bind(i(at))
-        .execute(pool)
-        .await?;
-    Ok(())
+/// Schedules the deletion of an account; true when it was not scheduled yet. One that is
+/// scheduled already keeps its time.
+pub async fn schedule_deletion(pool: &Pool, id: u64, at: u64) -> sqlx::Result<bool> {
+    let result =
+        sqlx::query("UPDATE accounts SET deletion_at = $2 WHERE id = $1 AND deletion_at IS NULL")
+            .bind(i(id))
+            .bind(i(at))
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 /// Cancels a scheduled deletion that is not due yet; true when there was one. From the time on

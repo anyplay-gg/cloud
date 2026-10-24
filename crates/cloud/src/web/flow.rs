@@ -41,6 +41,15 @@ pub struct Grant {
     pub challenge: String,
 }
 
+/// How the player proved who they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Proof {
+    /// A code sent to their address.
+    Code,
+    /// A passkey.
+    Passkey,
+}
+
 /// Where a step of the flow leaves the player.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Landing {
@@ -206,7 +215,7 @@ pub async fn verify_code(
                 return ban_by_address(state, visit, &email, error).await;
             }
             match db::account_by_email(&state.db, &email).await? {
-                Some(account) => finish_login(state, visit, &account).await,
+                Some(account) => finish_login(state, visit, &account, Proof::Code).await,
                 None => {
                     if state.config.signup == anyplay_api::Signup::Closed {
                         return Err(auth::signups_closed());
@@ -299,7 +308,7 @@ pub async fn create_from_details(
     match auth::create_account(state, &signup, handle, true, terms_version).await {
         Ok(account) => {
             visit.session.data.login = None;
-            finish_login(state, visit, &account)
+            finish_login(state, visit, &account, Proof::Code)
                 .await
                 .map_err(DetailsError::of)
         }
@@ -328,7 +337,7 @@ pub async fn accept_terms(
     visit: &mut Visit,
     accept: bool,
 ) -> Result<Landing, AppError> {
-    let (Some(Login::Terms { account }), Some(version)) =
+    let (Some(Login::Terms { account, passkey }), Some(version)) =
         (visit.session.data.login.clone(), state.config.terms())
     else {
         return Ok(Landing::SignIn);
@@ -338,7 +347,8 @@ pub async fn accept_terms(
     }
     store::accept_terms(&state.db, account, version, now()).await?;
     visit.session.data.login = None;
-    complete_login(state, visit, account).await
+    let proof = if passkey { Proof::Passkey } else { Proof::Code };
+    complete_login(state, visit, account, proof).await
 }
 
 /// An address with an active ban. When the account still exists the player can see the statement
@@ -365,6 +375,7 @@ pub async fn finish_login(
     state: &AppState,
     visit: &mut Visit,
     account: &AccountRow,
+    proof: Proof,
 ) -> Result<Landing, AppError> {
     if state.ban_of(account.id()).is_some() {
         return super::ban::send_to(state, visit, account.id()).await;
@@ -374,11 +385,12 @@ pub async fn finish_login(
     {
         visit.session.data.login = Some(Login::Terms {
             account: account.id(),
+            passkey: proof == Proof::Passkey,
         });
         store::save_data(&state.db, &visit.session).await?;
         return Ok(Landing::Terms);
     }
-    complete_login(state, visit, account.id()).await
+    complete_login(state, visit, account.id(), proof).await
 }
 
 /// The last step of a sign-in. For the app on the player's PC it makes the one-time code and
@@ -387,6 +399,7 @@ pub async fn complete_login(
     state: &AppState,
     visit: &mut Visit,
     account: u64,
+    proof: Proof,
 ) -> Result<Landing, AppError> {
     if let Some(authorize) = visit.session.data.authorize.take() {
         let grant = Grant {
@@ -409,7 +422,11 @@ pub async fn complete_login(
         return Ok(Landing::Handoff);
     }
     store::end_session(&state.db, &visit.session).await?;
-    *visit = sign_in_session(state, account, SessionData::default()).await?;
+    let data = SessionData {
+        passkey_ms: (proof == Proof::Passkey).then(crate::util::now_ms),
+        ..SessionData::default()
+    };
+    *visit = sign_in_session(state, account, data).await?;
     Ok(Landing::Account)
 }
 
