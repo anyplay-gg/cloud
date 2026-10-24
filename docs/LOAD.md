@@ -116,8 +116,8 @@ Storm on one SQLite node with `--reconnect immediate`: 100% back after 10.3 s (5
 ## Where the bottleneck showed
 
 1. **The store connection pool.** In the storm, the login wave on SQLite and the sessions run, `store connections busy` was at the limit of 16 in most samples while the CPU was far from used (1.7 cores of 20 in the wave). Handlers wait for a connection. The `/metrics` of a node has no number for that wait yet; the harness infers it from the in-process pool. A metric for pool wait and size would let an operator see this on a real cluster.
-2. **The friend writes are one lane per node.** The friend graph ran at about 950 calls per second on one node and 600 on two, with 270 to 410 ms of handler time per call at a concurrency of 256, while the store was almost idle (2 to 3 of 16 connections). That is the `social` mutex of `AppState`, which serializes friend requests, accepts and blocks in a node. It works as designed and is cheap at human rates (a player sends a few friend requests a day), but a launch day or an import of friend lists runs through one lane. On two nodes it was slower, not faster: each node has its own lock and the calls are slower on PostgreSQL than on SQLite (not examined further).
-3. **`GET /v1/friends` after a reconnect.** It is the most expensive call of a storm (mean handler time 340 ms to 1.3 s under 5,000 simultaneous reconnects, against 1 to 3 ms unloaded).
+2. **The friend writes are one lane per node.** The friend graph ran at about 950 calls per second on one node and 600 on two, with 270 to 410 ms of handler time per call at a concurrency of 256, while the store was almost idle (2 to 3 of 16 connections). That is the `social` mutex of `AppState`, which serializes friend requests, accepts and blocks in a node. It works as designed and is cheap at human rates (a player sends a few friend requests a day), but a launch day or an import of friend lists runs through one lane. On two nodes it was slower, not faster: each node has its own lock and the calls are slower on PostgreSQL than on SQLite (not examined further). Fixed: see [The three bottlenecks, measured and fixed](#the-three-bottlenecks-measured-and-fixed).
+3. **`GET /v1/friends` after a reconnect.** It is the most expensive call of a storm (mean handler time 340 ms to 1.3 s under 5,000 simultaneous reconnects, against 1 to 3 ms unloaded). Fixed in the same section.
 
 ## A performance bug: joins deadlock the connection pool
 
@@ -141,6 +141,56 @@ anyplay-load --players 1000 --scenarios sessions --session-rate 30 --session-sec
 At 10 sessions per second all succeed. From 15 per second on, the node stalls for the rest of the run: at 30 per second `session_create` 143 of 599 succeeded, `session_join` 62 of 429, 709 requests timed out, 117 answered 500 (`internal`), the store error counter rose by 138, and the CPU was idle (0.1 cores). The same command on PostgreSQL with 16 connections is clean. The same stall hit the first 5,000-player run at 30 sessions per second on SQLite.
 
 The fix is to run the block check on the transaction's connection, or before it begins, as `friends_of` and `address_of` already are. The cloud does not fix it in this change. Other handlers that call `state.db` inside an open transaction should be checked with the same method (a small `--db-connections` and a rate that overlaps).
+
+## The three bottlenecks, measured and fixed
+
+The friend writes, `GET /v1/friends` and the gamer cards were measured again with their fixes, against the same code without them, on one machine in one run.
+
+Machine: AMD Ryzen 7 7735HS laptop, 16 logical cores, 30 GB, Arch Linux, nothing else running. Date 2026-10-24. Network commit `c5585ac`. Before: cloud `abe602f` (main with the cards scenario of this change and nothing else); after: cloud `400013e`. Release builds, the commands and settings of [The numbers](#the-numbers) for A and B; the cards runs add `--scenarios cards --cards-rate 200 --cards-size 10` or `100`. PostgreSQL 18 and NATS 2.15 on the same laptop, PostgreSQL's data in memory. Before and after ran back to back, one round each. The before side, measured three more times in an earlier run on the same machine, came within 25% of these numbers (the storm moved most). The raw JSON is in [`crates/load/results/2026-10-24-friends-cards/`](../crates/load/results/2026-10-24-friends-cards).
+
+Friend graph (25,000 requests and 25,000 accepts, 256 at a time):
+
+| Setup | Seconds | `friend_request` p50 / p99 / max | `friend_accept` p50 / p99 / max |
+|---|---|---|---|
+| A, SQLite, before | 21.3 | 108 / 137 / 144 ms | 109 / 137 / 144 ms |
+| A, SQLite, after | **13.5** | 69 / 78 / 99 ms | 69 / 78 / 82 ms |
+| B, two nodes, PostgreSQL, before | 49.2 | 248 / 386 / 398 ms | 249 / 385 / 398 ms |
+| B, two nodes, PostgreSQL, after | **16.6** | 117 / 208 / 246 ms | 46 / 89 / 121 ms |
+
+`GET /v1/friends` in the storm (`drop`, spec reconnect, 5,000 players):
+
+| Setup | Answered when the storm ended | p50 | p99 |
+|---|---|---|---|
+| A, SQLite, before | 5,000 | 701 ms | 1,152 ms |
+| A, SQLite, after | 5,000 | **152 ms** | 320 ms |
+| B, two nodes, PostgreSQL, before | 3,496 (the rest still waiting) | 1,036 ms | 1,219 ms |
+| B, two nodes, PostgreSQL, after | 5,000 | **267 ms** | 361 ms |
+
+The storm ends when every player is back; each fetches its lists after the welcome, so a list still waiting then is not counted. The time until all players were back (2.0 s on A, 2.1 to 2.2 s on B) did not change: it is set by the reconnect rule.
+
+Gamer cards, 200 calls per second for 30 s:
+
+| Setup | Cards per call | Succeeded | p50 | p99 |
+|---|---|---|---|---|
+| A, SQLite, before | 10 | 5,998 of 5,998 | 3.0 ms | 3.5 ms |
+| A, SQLite, after | 10 | 5,998 of 5,998 | 1.1 ms | 1.7 ms |
+| A, SQLite, before | 100 | 5,999 of 5,999 | 15.1 ms | 16.4 ms |
+| A, SQLite, after | 100 | 5,999 of 5,999 | **1.9 ms** | 3.5 ms |
+| B, two nodes, PostgreSQL, before | 10 | 5,999 of 5,999 | 13.6 ms | 15.2 ms |
+| B, two nodes, PostgreSQL, after | 10 | 5,999 of 5,999 | 3.0 ms | 3.8 ms |
+| B, two nodes, PostgreSQL, before | 100 | **996 of 5,495** | 30,001 ms | 30,002 ms |
+| B, two nodes, PostgreSQL, after | 100 | 5,999 of 5,999 | **8.9 ms** | 10.8 ms |
+
+Before, 100 cards per call on PostgreSQL kept all 16 store connections busy (15.9 on average) 4,499 calls ended at the client's 30 s timeout, and the harness skipped 504 more it had no room for. After, 0.9 connections were busy on average.
+
+### What changed
+
+- **Friend writes hold the two accounts, not one lock per node.** A request, accept, cancel, unfriend, block or unblock runs in one store transaction that, on PostgreSQL, locks the rows of the two accounts in the order of their IDs. Changes between other accounts go on at the same time, and the limits (friends, open requests, blocks, a new account's daily requests) count what every node has written. The lock per node did not: two nodes let a new account send 11 requests of an allowance of 10 in 2 of 5 runs of a test that sends 20 at once through both; with the change 10 of 10 runs keep to 10.
+- **SQLite takes its writers in order.** SQLite lets one writer in at a time and makes the others retry after sleeps that grow the longer they have waited, so later writers win over earlier ones. Without the lock per node, and before this, the slowest friend request on SQLite took 1.1 to 1.7 s against a p99 of 0.2 s. Write transactions on SQLite now wait in a queue of the node and reach SQLite in the order they asked; a store test of twelve waiting writers fails 10 of 10 times without the queue.
+- **`GET /v1/friends` reads everything on one store connection.** It asked the pool for a connection five times (friends, both request lists, blocks, presence), and in a storm each ask waits.
+- **Gamer cards in a fixed number of queries.** `GET /v1/cards` read each account, its relation to the viewer, its privacy, trophies and avatar one by one: up to six queries per card, each on a connection of its own, for up to 100 cards per call. It now reads each part for all the cards at once, on one connection: at most seven queries per call.
+
+What is left: on PostgreSQL the friend graph now keeps all 16 store connections busy (16.0 on average, 1.5 before), so the pool is its limit, as it already was for the storm (item 1 below).
 
 ## What the harness did to itself
 

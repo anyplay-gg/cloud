@@ -1,0 +1,367 @@
+{
+  "tool": "anyplay-load",
+  "version": "0.1.0",
+  "date": "2026-10-24",
+  "commit": "400013e449",
+  "label": null,
+  "machine": {
+    "cpu": "AMD Ryzen 7 7735HS with Radeon Graphics",
+    "logical_cores": 16,
+    "physical_cores": 8,
+    "memory_gb": 30.1,
+    "os": "Linux (Arch Linux rolling)"
+  },
+  "mode": "in-process",
+  "store": "postgres",
+  "nodes": 2,
+  "settings": {
+    "cards_rate": 200.0,
+    "cards_seconds": 30.0,
+    "cards_size": 10,
+    "commit": null,
+    "concurrency": 256,
+    "db_connections": 16,
+    "default_limits": false,
+    "drain_seconds": 5,
+    "friends": 10,
+    "json": "after-B-pg2-cards10.json",
+    "label": null,
+    "mail_log": null,
+    "max_in_flight": 5000,
+    "metrics_url": [],
+    "node_threads": 4,
+    "nodes": 2,
+    "pid": [],
+    "players": 5000,
+    "presence_rate": 50.0,
+    "presence_seconds": 30.0,
+    "quiet": false,
+    "rate": 200.0,
+    "reconnect": "spec",
+    "returning": 0.0,
+    "scenarios": [
+      "cards"
+    ],
+    "session_hold": 1.0,
+    "session_rate": 10.0,
+    "session_seconds": 30.0,
+    "session_size": 4,
+    "storm": "drop",
+    "storm_target": 0.95,
+    "storm_timeout": 120.0,
+    "threads": 6,
+    "url": []
+  },
+  "scenarios": [
+    {
+      "name": "login-wave",
+      "seconds": 25.001443926,
+      "players": 5000,
+      "connections_held": 5000,
+      "http_calls": 19999,
+      "http_per_s": 799.9137993466945,
+      "ops": {
+        "auth_code": {
+          "count": 5000,
+          "ok": 5000,
+          "p50_ms": 1.311,
+          "p95_ms": 1.465,
+          "p99_ms": 1.563,
+          "max_ms": 24.466,
+          "status": {
+            "200": 5000
+          }
+        },
+        "auth_email": {
+          "count": 5000,
+          "ok": 5000,
+          "p50_ms": 0.491,
+          "p95_ms": 0.584,
+          "p99_ms": 0.639,
+          "max_ms": 10.373,
+          "status": {
+            "200": 5000
+          }
+        },
+        "auth_signup": {
+          "count": 5000,
+          "ok": 5000,
+          "p50_ms": 1.817,
+          "p95_ms": 2.005,
+          "p99_ms": 2.263,
+          "max_ms": 28.678,
+          "status": {
+            "200": 5000
+          }
+        },
+        "e2e_login": {
+          "count": 5000,
+          "ok": 5000,
+          "p50_ms": 5.965,
+          "p95_ms": 6.516,
+          "p99_ms": 8.401,
+          "max_ms": 37.069,
+          "status": {
+            "200": 5000
+          }
+        },
+        "friends_list": {
+          "count": 4999,
+          "ok": 4999,
+          "p50_ms": 1.207,
+          "p95_ms": 1.587,
+          "p99_ms": 2.143,
+          "max_ms": 7.471,
+          "status": {
+            "200": 4999
+          }
+        },
+        "ws_connect": {
+          "count": 5000,
+          "ok": 5000,
+          "p50_ms": 2.273,
+          "p95_ms": 2.65,
+          "p99_ms": 3.367,
+          "max_ms": 19.437,
+          "status": {
+            "101": 5000
+          }
+        }
+      },
+      "http_status": {
+        "200": 19999
+      },
+      "events": {
+        "welcome": 5000
+      },
+      "counters": {},
+      "delivery": null,
+      "storm": null,
+      "server": {
+        "store_errors": 0,
+        "sweep_failures": 0,
+        "news_sent": 0,
+        "news_received": 0,
+        "event_connections_end": 5000,
+        "top_routes": [
+          {
+            "route": "/v1/auth/signup",
+            "status": "200",
+            "count": 5000,
+            "mean_ms": 1.7620740453999986,
+            "total_s": 8.810370226999993
+          },
+          {
+            "route": "/v1/auth/code",
+            "status": "200",
+            "count": 5000,
+            "mean_ms": 1.2371671186000006,
+            "total_s": 6.185835593000004
+          },
+          {
+            "route": "/v1/friends",
+            "status": "200",
+            "count": 4999,
+            "mean_ms": 1.1511825361072223,
+            "total_s": 5.754761498000004
+          },
+          {
+            "route": "/v1/auth/email",
+            "status": "200",
+            "count": 5000,
+            "mean_ms": 0.39892719779999986,
+            "total_s": 1.9946359889999992
+          },
+          {
+            "route": "/v1/events",
+            "status": "101",
+            "count": 5000,
+            "mean_ms": 0.05635558860000003,
+            "total_s": 0.28177794300000014
+          }
+        ]
+      },
+      "process": [
+        {
+          "process": "harness + in-process cloud",
+          "cpu_avg_cores": 0.6814038637996113,
+          "cpu_peak_cores": 0.7168821069482941,
+          "rss_peak_mb": 1346.1171875
+        }
+      ],
+      "pool": {
+        "pool_size_max": 6,
+        "busy_avg": 0.7575757575757576,
+        "busy_peak": 2,
+        "saturated_share": 0.0
+      },
+      "notes": [
+        "5000 of 5000 players signed in",
+        "200 logins per second offered"
+      ]
+    },
+    {
+      "name": "friend-graph",
+      "seconds": 16.632934617,
+      "players": 5000,
+      "connections_held": 5000,
+      "http_calls": 50001,
+      "http_per_s": 3006.14420433635,
+      "ops": {
+        "friend_accept": {
+          "count": 25000,
+          "ok": 25000,
+          "p50_ms": 47.118,
+          "p95_ms": 67.309,
+          "p99_ms": 85.563,
+          "max_ms": 131.465,
+          "status": {
+            "204": 25000
+          }
+        },
+        "friend_request": {
+          "count": 25000,
+          "ok": 25000,
+          "p50_ms": 123.25,
+          "p95_ms": 192.649,
+          "p99_ms": 205.594,
+          "max_ms": 231.099,
+          "status": {
+            "200": 25000
+          }
+        },
+        "friends_list": {
+          "count": 1,
+          "ok": 1,
+          "p50_ms": 1.396,
+          "p95_ms": 1.396,
+          "p99_ms": 1.396,
+          "max_ms": 1.396,
+          "status": {
+            "200": 1
+          }
+        }
+      },
+      "http_status": {
+        "200": 25001,
+        "204": 25000
+      },
+      "events": {
+        "friends": 100000
+      },
+      "counters": {},
+      "delivery": null,
+      "storm": null,
+      "server": {
+        "store_errors": 0,
+        "sweep_failures": 0,
+        "news_sent": 100000,
+        "news_received": 30000,
+        "event_connections_end": 5000,
+        "top_routes": [
+          {
+            "route": "/v1/friends/requests",
+            "status": "200",
+            "count": 25000,
+            "mean_ms": 126.44555934276013,
+            "total_s": 3161.138983569004
+          },
+          {
+            "route": "/v1/friends/requests/{id}/accept",
+            "status": "204",
+            "count": 25000,
+            "mean_ms": 42.36478036508001,
+            "total_s": 1059.1195091270001
+          },
+          {
+            "route": "/v1/friends",
+            "status": "200",
+            "count": 1,
+            "mean_ms": 1.3087110000000735,
+            "total_s": 0.0013087110000000735
+          }
+        ]
+      },
+      "process": [
+        {
+          "process": "harness + in-process cloud",
+          "cpu_avg_cores": 3.522510082576811,
+          "cpu_peak_cores": 3.594721928542624,
+          "rss_peak_mb": 1443.19140625
+        }
+      ],
+      "pool": {
+        "pool_size_max": 16,
+        "busy_avg": 15.969696969696969,
+        "busy_peak": 16,
+        "saturated_share": 0.9696969696969697
+      },
+      "notes": [
+        "25000 of 25000 friendships made, about 10 friends per player"
+      ]
+    },
+    {
+      "name": "cards",
+      "seconds": 30.005698067,
+      "players": 5000,
+      "connections_held": 5000,
+      "http_calls": 5999,
+      "http_per_s": 199.92869309705034,
+      "ops": {
+        "cards": {
+          "count": 5999,
+          "ok": 5999,
+          "p50_ms": 3.027,
+          "p95_ms": 3.517,
+          "p99_ms": 3.842,
+          "max_ms": 6.477,
+          "status": {
+            "200": 5999
+          }
+        }
+      },
+      "http_status": {
+        "200": 5999
+      },
+      "events": {},
+      "counters": {
+        "offered": 5999
+      },
+      "delivery": null,
+      "storm": null,
+      "server": {
+        "store_errors": 0,
+        "sweep_failures": 0,
+        "news_sent": 0,
+        "news_received": 0,
+        "event_connections_end": 5000,
+        "top_routes": [
+          {
+            "route": "/v1/cards",
+            "status": "200",
+            "count": 5999,
+            "mean_ms": 2.936208853308887,
+            "total_s": 17.61431691100001
+          }
+        ]
+      },
+      "process": [
+        {
+          "process": "harness + in-process cloud",
+          "cpu_avg_cores": 0.2375711795327706,
+          "cpu_peak_cores": 0.26868965349178237,
+          "rss_peak_mb": 1443.671875
+        }
+      ],
+      "pool": {
+        "pool_size_max": 16,
+        "busy_avg": 0.325,
+        "busy_peak": 2,
+        "saturated_share": 0.0
+      },
+      "notes": [
+        "200 calls per second of 10 accounts for 30 s by 5000 players"
+      ]
+    }
+  ]
+}
