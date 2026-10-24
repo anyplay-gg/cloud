@@ -69,3 +69,9 @@ jobs:
           RELAY_DOMAIN: relay.example.com
           ACME_EMAIL: operator@example.com
         run: docker compose -f cloud/deploy/compose.yaml config --quiet
+
+  # Links, title IDs in code, licences and advisories: the rules every AnyPlay repository shares.
+  rules:
+    uses: anyplay-gg/.github/.github/workflows/rules.yml@main
+    with:
+      network: true
