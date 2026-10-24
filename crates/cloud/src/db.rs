@@ -7,6 +7,7 @@
 //! migrations exist twice, with the same tables and columns. IDs are at most 2^53 - 1, so they
 //! are stored as `i64` and converted at the edge. Every value reaches SQL as a bound parameter.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use sqlx::any::{AnyPoolOptions, install_default_drivers};
@@ -90,6 +91,15 @@ fn u(id: i64) -> u64 {
     id as u64
 }
 
+/// The IDs as the inside of an SQL `IN (...)`. They are integers, so nothing can be injected. The
+/// slice must not be empty: `IN ()` is not valid SQL.
+fn id_list(ids: &[u64]) -> String {
+    ids.iter()
+        .map(|id| i(*id).to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 #[derive(Clone, Debug, FromRow)]
 pub struct AccountRow {
     pub id: i64,
@@ -169,6 +179,23 @@ pub async fn account(pool: &Pool, id: u64) -> sqlx::Result<Option<AccountRow>> {
         .bind(i(id))
         .fetch_optional(pool)
         .await
+}
+
+/// The accounts with these IDs in one query, by ID; an ID without an account is missing.
+pub async fn accounts_by_ids(
+    conn: &mut Conn,
+    ids: &[u64],
+) -> sqlx::Result<HashMap<u64, AccountRow>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<AccountRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT id, handle, email, created FROM accounts WHERE id IN ({})",
+        id_list(ids)
+    )))
+    .fetch_all(conn)
+    .await?;
+    Ok(rows.into_iter().map(|row| (row.id(), row)).collect())
 }
 
 /// `key` is the handle in lower case.
@@ -888,16 +915,48 @@ pub async fn trophy_counts(pool: &Pool, account: u64) -> sqlx::Result<anyplay_ap
             .await?;
     let mut count = anyplay_api::Count::default();
     for (grade, n) in rows {
-        let n = u32::try_from(n).unwrap_or(u32::MAX);
-        match grade_of(&grade) {
-            Some(anyplay_api::Grade::Bronze) => count.bronze = n,
-            Some(anyplay_api::Grade::Silver) => count.silver = n,
-            Some(anyplay_api::Grade::Gold) => count.gold = n,
-            Some(anyplay_api::Grade::Platinum) => count.platinum = n,
-            None => {}
-        }
+        add_to_count(&mut count, &grade, n);
     }
     Ok(count)
+}
+
+/// The number of records per grade for each of the accounts, in one query. An account without
+/// records has the empty count, as with `trophy_counts`.
+pub async fn trophy_counts_of(
+    conn: &mut Conn,
+    accounts: &[u64],
+) -> sqlx::Result<HashMap<u64, anyplay_api::Count>> {
+    if accounts.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(i64, String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT account_id, grade, COUNT(*) FROM trophies WHERE account_id IN ({}) \
+         GROUP BY account_id, grade",
+        id_list(accounts)
+    )))
+    .fetch_all(conn)
+    .await?;
+    let mut counts: HashMap<u64, anyplay_api::Count> = accounts
+        .iter()
+        .map(|id| (*id, anyplay_api::Count::default()))
+        .collect();
+    for (account, grade, n) in rows {
+        if let Some(count) = counts.get_mut(&u(account)) {
+            add_to_count(count, &grade, n);
+        }
+    }
+    Ok(counts)
+}
+
+fn add_to_count(count: &mut anyplay_api::Count, grade: &str, n: i64) {
+    let n = u32::try_from(n).unwrap_or(u32::MAX);
+    match grade_of(grade) {
+        Some(anyplay_api::Grade::Bronze) => count.bronze = n,
+        Some(anyplay_api::Grade::Silver) => count.silver = n,
+        Some(anyplay_api::Grade::Gold) => count.gold = n,
+        Some(anyplay_api::Grade::Platinum) => count.platinum = n,
+        None => {}
+    }
 }
 
 /// How many accounts have a record for the title.
@@ -928,16 +987,100 @@ pub async fn privacy_of(pool: &Pool, account: u64) -> sqlx::Result<anyplay_api::
     .bind(i(account))
     .fetch_optional(pool)
     .await?;
-    Ok(row.map_or_else(
-        anyplay_api::Privacy::default,
-        |(trophies, about, favourites, avatar, playtime)| anyplay_api::Privacy {
-            trophies: audience_of(&trophies),
-            about: audience_of(&about),
-            favourites: audience_of(&favourites),
-            avatar: audience_of(&avatar),
-            playtime: audience_of(&playtime),
-        },
-    ))
+    Ok(row.map_or_else(anyplay_api::Privacy::default, privacy_from_row))
+}
+
+type PrivacyRow = (String, String, String, String, String);
+
+fn privacy_from_row(
+    (trophies, about, favourites, avatar, playtime): PrivacyRow,
+) -> anyplay_api::Privacy {
+    anyplay_api::Privacy {
+        trophies: audience_of(&trophies),
+        about: audience_of(&about),
+        favourites: audience_of(&favourites),
+        avatar: audience_of(&avatar),
+        playtime: audience_of(&playtime),
+    }
+}
+
+/// What each of the accounts shows, in one query; an account without a setting is missing.
+pub async fn privacies_of(
+    conn: &mut Conn,
+    accounts: &[u64],
+) -> sqlx::Result<HashMap<u64, anyplay_api::Privacy>> {
+    if accounts.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(i64, String, String, String, String, String)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT account_id, trophies, about, favourites, avatar, playtime FROM privacy \
+             WHERE account_id IN ({})",
+            id_list(accounts)
+        )))
+        .fetch_all(conn)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, trophies, about, favourites, avatar, playtime)| {
+            (
+                u(id),
+                privacy_from_row((trophies, about, favourites, avatar, playtime)),
+            )
+        })
+        .collect())
+}
+
+/// Which of `others` `account` blocked or was blocked by, in one query.
+pub async fn blocked_among(
+    conn: &mut Conn,
+    account: u64,
+    others: &[u64],
+) -> sqlx::Result<HashSet<u64>> {
+    if others.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let list = id_list(others);
+    let rows: Vec<(i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT blocker, blocked FROM blocks \
+         WHERE (blocker = $1 AND blocked IN ({list})) OR (blocked = $1 AND blocker IN ({list}))"
+    )))
+    .bind(i(account))
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(blocker, blocked)| {
+            u(if u(blocker) == account {
+                blocked
+            } else {
+                blocker
+            })
+        })
+        .collect())
+}
+
+/// Which of `others` are friends of `account`, in one query.
+pub async fn friends_among(
+    conn: &mut Conn,
+    account: u64,
+    others: &[u64],
+) -> sqlx::Result<HashSet<u64>> {
+    if others.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let list = id_list(others);
+    let rows: Vec<(i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT low, high FROM friends \
+         WHERE (low = $1 AND high IN ({list})) OR (high = $1 AND low IN ({list}))"
+    )))
+    .bind(i(account))
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(low, high)| u(if u(low) == account { high } else { low }))
+        .collect())
 }
 
 pub async fn set_privacy(

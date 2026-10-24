@@ -1,6 +1,6 @@
 //! Profiles, avatars and playtime (migration 0006).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyplay_api::PlaytimeEntry;
 
@@ -98,6 +98,23 @@ pub async fn avatar_hash_of(pool: &Pool, account: u64) -> sqlx::Result<Option<St
         .fetch_optional(pool)
         .await?;
     Ok(row.map(|(hash,)| hash))
+}
+
+/// The avatar hash of each of the accounts that has an avatar, in one query.
+pub async fn avatar_hashes_of(
+    conn: &mut sqlx::AnyConnection,
+    accounts: &[u64],
+) -> sqlx::Result<HashMap<u64, String>> {
+    if accounts.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(i64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT account_id, hash FROM avatars WHERE account_id IN ({})",
+        super::id_list(accounts)
+    )))
+    .fetch_all(conn)
+    .await?;
+    Ok(rows.into_iter().map(|(id, hash)| (u(id), hash)).collect())
 }
 
 /// The whole avatar row of an account, for the export.

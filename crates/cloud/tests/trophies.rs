@@ -1,10 +1,11 @@
 mod common;
 
 use anyplay_api::{
-    AccountTrophies, Audience, Cards, Count, Grade, MAX_CARDS, MAX_TROPHY_NUMBER,
+    AccountTrophies, Audience, AvatarSet, Cards, Count, Grade, MAX_CARDS, MAX_TROPHY_NUMBER,
     MAX_TROPHY_UPLOAD, Privacy, RARITY_MIN_PLAYERS, Rarity, TrophiesAdded, TrophyRarity,
 };
 use common::{Reply, TestCloud, User};
+use image::{ImageFormat, Rgba, RgbaImage};
 use serde_json::{Value, json};
 
 fn now() -> u64 {
@@ -470,4 +471,197 @@ async fn export_holds_the_records_and_deletion_removes_them() {
         .await
         .unwrap();
     assert_eq!(settings, 0);
+}
+
+/// Sets who sees the trophies and the avatar of `user`.
+async fn set_parts(cloud: &TestCloud, user: &User, trophies: &str, avatar: &str) {
+    cloud
+        .put(
+            "/v1/me/privacy",
+            user.token(),
+            Some(json!({"trophies": trophies, "avatar": avatar})),
+        )
+        .await
+        .ok(200);
+}
+
+/// Gives `user` a picture of its own colour and returns its hash.
+async fn give_avatar(cloud: &TestCloud, user: &User, shade: u8) -> String {
+    let picture = RgbaImage::from_pixel(32, 32, Rgba([shade, 40, 200, 255]));
+    let mut bytes = Vec::new();
+    picture
+        .write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Png)
+        .unwrap();
+    let set: AvatarSet = cloud
+        .http
+        .put(format!("http://{}/v1/me/avatar", cloud.base))
+        .bearer_auth(user.token())
+        .header("content-type", "image/png")
+        .body(bytes)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    set.avatar
+}
+
+#[tokio::test]
+async fn one_call_for_a_mix_of_accounts_gives_each_its_own_card() {
+    let cloud = TestCloud::start().await;
+    let (alec, sam) = cloud.friends("Alec", "Sam").await;
+    let friend_hidden = cloud.sign_up("Hidden").await;
+    let stranger = cloud.sign_up("Stranger").await;
+    let shy = cloud.sign_up("Shy").await;
+    let blocker = cloud.sign_up("Blocker").await;
+    let blocked = cloud.sign_up("Blocked").await;
+    let bare = cloud.sign_up("Bare").await;
+    cloud
+        .post(
+            "/v1/friends/requests",
+            alec.token(),
+            json!({"handle": friend_hidden.handle}),
+        )
+        .await
+        .ok(200);
+    cloud
+        .post_empty(
+            &format!("/v1/friends/requests/{}/accept", alec.id),
+            friend_hidden.token(),
+        )
+        .await
+        .ok(204);
+    let t = now();
+    let grades = |n: &[(&str, u16)]| -> Vec<Value> {
+        let mut number = 0;
+        let mut out = Vec::new();
+        for (grade, count) in n {
+            for _ in 0..*count {
+                out.push(trophy(number, grade, t));
+                number += 1;
+            }
+        }
+        out
+    };
+    // Different counts for everyone, so a mix-up between accounts shows.
+    for (user, list) in [
+        (&alec, grades(&[("platinum", 1)])),
+        (&sam, grades(&[("bronze", 3), ("gold", 1)])),
+        (&friend_hidden, grades(&[("silver", 4)])),
+        (
+            &stranger,
+            grades(&[("silver", 2), ("gold", 2), ("bronze", 1)]),
+        ),
+        (&shy, grades(&[("bronze", 5)])),
+        (&blocker, grades(&[("gold", 6)])),
+        (&blocked, grades(&[("gold", 7)])),
+    ] {
+        upload(&cloud, user, "PPSA01234", list).await.ok(200);
+    }
+    set_parts(&cloud, &alec, "nobody", "nobody").await;
+    // Sam keeps the default: friends.
+    set_parts(&cloud, &friend_hidden, "nobody", "friends").await;
+    set_parts(&cloud, &stranger, "everyone", "everyone").await;
+    // Shy keeps the default too, and Bare has no trophies and no avatar but shows everything.
+    set_parts(&cloud, &blocker, "everyone", "everyone").await;
+    set_parts(&cloud, &blocked, "everyone", "everyone").await;
+    set_parts(&cloud, &bare, "everyone", "everyone").await;
+    let mut hashes = std::collections::HashMap::new();
+    for (shade, user) in [
+        &alec,
+        &sam,
+        &friend_hidden,
+        &stranger,
+        &shy,
+        &blocker,
+        &blocked,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        hashes.insert(user.id, give_avatar(&cloud, user, shade as u8 * 30).await);
+    }
+    assert_eq!(
+        hashes
+            .values()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        hashes.len(),
+        "the pictures differ"
+    );
+    cloud
+        .put(&format!("/v1/blocks/{}", blocked.id), alec.token(), None)
+        .await
+        .ok(204);
+    cloud
+        .put(&format!("/v1/blocks/{}", alec.id), blocker.token(), None)
+        .await
+        .ok(204);
+
+    let missing = 987_654;
+    let ids = [
+        alec.id,
+        sam.id,
+        friend_hidden.id,
+        stranger.id,
+        shy.id,
+        blocker.id,
+        blocked.id,
+        bare.id,
+        missing,
+    ];
+    let list: Vec<String> = ids.iter().rev().map(u64::to_string).collect();
+    let cards: Cards = cloud
+        .get(
+            &format!("/v1/cards?accounts={}", list.join(",")),
+            alec.token(),
+        )
+        .await
+        .ok(200)
+        .json();
+
+    let count = |bronze, silver, gold, platinum| {
+        Some(Count {
+            bronze,
+            silver,
+            gold,
+            platinum,
+        })
+    };
+    let hash = |user: &User| Some(hashes[&user.id].clone());
+    let expected = [
+        // Own beats the privacy and the default.
+        (&alec, count(0, 0, 0, 1), hash(&alec)),
+        // A friend shows what is not for nobody.
+        (&sam, count(3, 0, 1, 0), hash(&sam)),
+        (&friend_hidden, None, hash(&friend_hidden)),
+        (&stranger, count(1, 2, 2, 0), hash(&stranger)),
+        // A stranger sees nothing of the default.
+        (&shy, None, None),
+        // Blocked in either direction: nothing.
+        (&blocker, None, None),
+        (&blocked, None, None),
+        // Nothing to show is still an answer, not a missing part.
+        (&bare, count(0, 0, 0, 0), None),
+    ];
+    let mut sorted: Vec<_> = expected.iter().collect();
+    sorted.sort_by_key(|(user, _, _)| user.id);
+    let got: Vec<_> = cards
+        .cards
+        .iter()
+        .map(|c| {
+            (
+                c.account.id.0,
+                c.account.handle.clone(),
+                c.trophies,
+                c.avatar.clone(),
+            )
+        })
+        .collect();
+    let want: Vec<_> = sorted
+        .iter()
+        .map(|(user, trophies, avatar)| (user.id, user.handle.clone(), *trophies, avatar.clone()))
+        .collect();
+    assert_eq!(got, want);
 }

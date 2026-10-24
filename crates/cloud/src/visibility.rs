@@ -4,6 +4,8 @@
 //! The account itself always; its friends unless it shows the part to nobody; everyone else only
 //! if it shows the part to everyone. A block in either direction hides every part.
 
+use std::collections::HashMap;
+
 use anyplay_api::{Audience, Part, Privacy};
 
 use crate::db::{self, Pool};
@@ -85,6 +87,38 @@ pub async fn viewing_as(pool: &Pool, viewer: Option<u64>, owner: u64) -> sqlx::R
             seen => Ok(seen),
         },
     }
+}
+
+/// How `viewer` stands to each of `owners` and what each shows, in three queries on one
+/// connection however many owners there are. The answer for an owner is the one `viewing` gives.
+pub async fn viewing_many(
+    conn: &mut sqlx::AnyConnection,
+    viewer: u64,
+    owners: &[u64],
+) -> sqlx::Result<HashMap<u64, Viewing>> {
+    let others: Vec<u64> = owners.iter().copied().filter(|o| *o != viewer).collect();
+    let blocked = db::blocked_among(conn, viewer, &others).await?;
+    let friends = db::friends_among(conn, viewer, &others).await?;
+    let privacies = db::privacies_of(conn, &others).await?;
+    Ok(owners
+        .iter()
+        .map(|&owner| {
+            let seen = if owner == viewer {
+                Viewing::new(Relation::Own, Privacy::default())
+            } else if blocked.contains(&owner) {
+                Viewing::new(Relation::Blocked, Privacy::default())
+            } else {
+                let relation = if friends.contains(&owner) {
+                    Relation::Friend
+                } else {
+                    Relation::Stranger
+                };
+                let privacy = privacies.get(&owner).copied().unwrap_or_default();
+                Viewing::new(relation, privacy)
+            };
+            (owner, seen)
+        })
+        .collect())
 }
 
 /// True when `viewer` may see `part` of `owner`.
