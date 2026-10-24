@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use anyplay_cloud::cli::{Cli, Command};
 use anyplay_cloud::{
-    Config, Tuning, config, load_signing_key, mail, open, serve, serve_metrics, shutdown_signal,
+    Config, Tuning, config, mail, open, serve, serve_metrics, shutdown_signal, signing_key,
 };
 use clap::Parser as _;
 use tokio::net::TcpListener;
@@ -26,7 +26,15 @@ async fn main() -> Result<()> {
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => run(config).await,
         Command::Keygen => {
-            let (signer, created) = load_signing_key(&config.data_dir)?;
+            let (signer, created) = signing_key(&config)?;
+            if let Some(file) = &config.signing_key_file {
+                eprintln!(
+                    "Read the signing key in {}; nothing was written.",
+                    file.display()
+                );
+                println!("{}", signer.verifier().to_base64());
+                return Ok(());
+            }
             if created {
                 eprintln!(
                     "Created {}/{}.",

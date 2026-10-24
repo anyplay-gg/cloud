@@ -1,0 +1,13 @@
+apiVersion: v2
+name: anyplay-cloud
+description: The AnyPlay cloud as a cluster of nodes behind one Service. PostgreSQL and NATS are prerequisites, not part of this chart.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/anyplay-gg/cloud
+sources:
+  - https://github.com/anyplay-gg/cloud
+keywords:
+  - anyplay
+  - cloud

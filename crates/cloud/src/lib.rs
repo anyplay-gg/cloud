@@ -53,6 +53,25 @@ pub fn load_signing_key(data_dir: &std::path::Path) -> Result<(Signer, bool)> {
     Ok((signer, created))
 }
 
+/// The signing key as the settings name it. With `signing_key_file` the key is only read from
+/// that file: nothing is created, nothing is written next to it, and a missing or unreadable file
+/// is an error, so a node never signs with a key the other nodes do not have. Without it the key
+/// lives in `data_dir` ([`load_signing_key`]). The flag says whether a key was created.
+pub fn signing_key(config: &Config) -> Result<(Signer, bool)> {
+    match &config.signing_key_file {
+        Some(path) => {
+            let signer = Signer::load(path).with_context(|| {
+                format!(
+                    "cannot read the signing key {} (signing_key_file); it must exist and hold the base64 key that `anyplay-cloud keygen` made",
+                    path.display()
+                )
+            })?;
+            Ok((signer, false))
+        }
+        None => load_signing_key(&config.data_dir),
+    }
+}
+
 /// Opens the data directory (database and signing key), loads who is signed in and who is banned,
 /// and starts the background sweeper.
 pub async fn open(
@@ -60,7 +79,7 @@ pub async fn open(
     tuning: Tuning,
     mailer: Arc<dyn mail::Mailer>,
 ) -> Result<AppState> {
-    let (signer, created) = load_signing_key(&config.data_dir)?;
+    let (signer, created) = signing_key(&config)?;
     if created {
         tracing::info!("created a new signing key");
     }

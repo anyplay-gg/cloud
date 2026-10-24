@@ -1,0 +1,50 @@
+# Values for the kind cluster in .github/workflows/kubernetes.yml. PostgreSQL (postgres.yaml) and
+# NATS run in the namespace "deps"; the cloud runs in "anyplay", which enforces the restricted
+# Pod Security profile. The Secrets are made by the workflow.
+replicas: 2
+
+image:
+  repository: anyplay-cloud
+  tag: ci
+  pullPolicy: Never
+
+natsUrl: nats://nats.deps.svc.cluster.local:4222
+
+secrets:
+  existingSecret: anyplay-cloud
+signingKey:
+  existingSecret: anyplay-cloud-signing
+
+config:
+  name: AnyPlay kind
+  mail: log
+  drainSeconds: 5
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    memory: 384Mi
+
+networkPolicy:
+  metricsFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: deps
+  postgres:
+    to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: deps
+        podSelector:
+          matchLabels:
+            app: postgres
+  nats:
+    to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: deps
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: nats

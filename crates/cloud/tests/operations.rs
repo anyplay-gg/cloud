@@ -622,6 +622,47 @@ async fn a_new_signing_key_is_made_on_first_start_and_kept() {
     assert_eq!(public.trim(), first.verifier().to_base64());
 }
 
+#[test]
+fn a_signing_key_file_is_only_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = dir.path().join("key");
+    let signer = anyplay_ticket::Signer::generate();
+    std::fs::write(
+        &key,
+        format!(
+            "{}
+",
+            signer.secret_base64()
+        ),
+    )
+    .unwrap();
+    let config = anyplay_cloud::Config {
+        signing_key_file: Some(key.clone()),
+        data_dir: dir.path().join("data"),
+        ..anyplay_cloud::Config::default()
+    };
+    let (loaded, created) = anyplay_cloud::signing_key(&config).unwrap();
+    assert!(!created);
+    assert_eq!(loaded.verifier(), signer.verifier());
+    let seen: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(seen, ["key"], "no signing.pub, no data folder");
+
+    // A missing file is an error that names the setting, and nothing is created.
+    std::fs::remove_file(&key).unwrap();
+    let error = anyplay_cloud::signing_key(&config).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("signing_key_file"),
+        "{error:#}"
+    );
+    assert!(!key.exists());
+    // So is a file that holds no key.
+    std::fs::write(&key, "not a key").unwrap();
+    assert!(anyplay_cloud::signing_key(&config).is_err());
+}
+
 #[tokio::test]
 async fn shutting_down_closes_event_connections_and_stops_serving() {
     // This test builds its own client, so it cannot count on another test having set the
