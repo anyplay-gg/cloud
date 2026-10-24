@@ -426,6 +426,8 @@ pub struct AccountView {
     pub passkeys: Vec<PasskeyView>,
     pub devices: Vec<DeviceView>,
     pub max_passkeys: usize,
+    /// When the account will be deleted, if the player asked for it.
+    pub deletion: Option<u64>,
 }
 
 fn platform_name(platform: &str) -> &str {
@@ -505,10 +507,23 @@ pub fn account(ctx: &Ctx<'_>, view: &AccountView) -> String {
         devices.push_str("</ul>\n");
     }
 
+    let pending = match view.deletion {
+        Some(at) => format!(
+            "<section class=\"section\" aria-labelledby=\"deletion-title\">\n\
+             <h2 id=\"deletion-title\">Deletion scheduled</h2>\n\
+             <p>This account will be deleted on {at}. Until then you can keep it.</p>\n\
+             <form method=\"post\" action=\"/web/account/delete/cancel\">{csrf}\
+             <div class=\"actions\"><button class=\"btn\" type=\"submit\">Cancel the deletion</button></div>\
+             </form>\n</section>\n",
+            at = time_tag(at),
+            csrf = csrf_field(ctx),
+        ),
+        None => String::new(),
+    };
     let body = format!(
         "<h1>Your account</h1>\n\
          <dl class=\"facts\"><dt>Handle</dt><dd>{handle}</dd><dt>E-mail</dt><dd>{email}</dd>\
-         <dt>Created</dt><dd>{created}</dd></dl>\n\
+         <dt>Created</dt><dd>{created}</dd></dl>\n{pending}\
          <section class=\"section\" aria-labelledby=\"passkeys-title\">\n\
          <h2 id=\"passkeys-title\">Passkeys</h2>\n\
          <p>A passkey signs you in with your fingerprint, face or screen lock. Your e-mail code still works if you lose it.</p>\n\
@@ -682,6 +697,7 @@ mod tests {
                 last_used: 0,
             }],
             max_passkeys: 10,
+            deletion: Some(0),
         };
         let mut ctx = ctx();
         ctx.handle = Some(evil);

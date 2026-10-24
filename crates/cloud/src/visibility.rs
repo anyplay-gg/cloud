@@ -61,6 +61,17 @@ pub async fn viewing(pool: &Pool, viewer: u64, owner: u64) -> sqlx::Result<Viewi
     Ok(Viewing::new(relation, db::privacy_of(pool, owner).await?))
 }
 
+/// Like [`viewing`] for a viewer who may be signed out: a signed-out viewer is a stranger.
+pub async fn viewing_as(pool: &Pool, viewer: Option<u64>, owner: u64) -> sqlx::Result<Viewing> {
+    match viewer {
+        Some(viewer) => viewing(pool, viewer, owner).await,
+        None => Ok(Viewing::new(
+            Relation::Stranger,
+            db::privacy_of(pool, owner).await?,
+        )),
+    }
+}
+
 /// True when `viewer` may see `part` of `owner`.
 pub async fn may_see(pool: &Pool, viewer: u64, owner: u64, part: Part) -> sqlx::Result<bool> {
     Ok(viewing(pool, viewer, owner).await?.can(part))

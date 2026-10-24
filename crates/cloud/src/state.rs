@@ -382,6 +382,16 @@ impl Inner {
     /// Signs the account out of every device and every browser session, and refuses the access
     /// tokens it has issued so far: the "not before" time is now.
     pub async fn sign_out_everywhere(&self, account: u64) -> Result<(), AppError> {
+        self.refuse_tokens_until_now(account).await?;
+        for device in db::devices_of(&self.db, account).await? {
+            self.sign_out_device(device.id()).await?;
+        }
+        crate::web::store::end_sessions_of(&self.db, account).await?;
+        Ok(())
+    }
+
+    /// Refuses the access tokens the account has issued so far: the "not before" time is now.
+    async fn refuse_tokens_until_now(&self, account: u64) -> Result<(), AppError> {
         let at = util::now();
         crate::binding::set_tokens_valid_from(&self.db, account, at).await?;
         {
@@ -390,10 +400,63 @@ impl Inner {
             *entry = (*entry).max(at);
         }
         self.news.tell_nodes(&AuthNote::NotBefore { account, at });
+        Ok(())
+    }
+
+    /// Schedules the deletion of an account for the end of the grace period and signs it out of
+    /// every device and, but for `keep` (the browser session that asked, by its hash), every
+    /// browser, so that whoever holds a copy of a session or a token cannot go on with it. The
+    /// player can cancel until the time. Returns that time (Unix seconds); an account that was
+    /// scheduled already keeps its first time.
+    pub async fn schedule_deletion(
+        &self,
+        account: u64,
+        keep: Option<&[u8]>,
+    ) -> Result<u64, AppError> {
+        let at = util::now() + self.tuning.deletion_grace.as_secs();
+        let new = db::schedule_deletion(&self.db, account, at).await?;
+        self.sign_out_all_but(account, keep).await?;
+        let at = db::deletion_of(&self.db, account).await?.unwrap_or(at);
+        if new && let Some(row) = db::account(&self.db, account).await? {
+            let (subject, body) = crate::mail::deletion_scheduled_message(
+                &self.config.name,
+                &crate::web::pages::date(at),
+                &crate::mail::contact_line(&self.config),
+            );
+            self.send_notice(&row.email, &subject, &body).await;
+        }
+        Ok(at)
+    }
+
+    /// Sends a notice about an account to an address. A failure is logged and does not stop
+    /// what the notice is about.
+    pub async fn send_notice(&self, to: &str, subject: &str, body: &str) {
+        let sent = tokio::time::timeout(
+            Duration::from_secs(20),
+            self.mailer.send_notice(to, subject, body),
+        )
+        .await;
+        if !matches!(sent, Ok(Ok(()))) {
+            tracing::error!("cannot send a notice");
+        }
+    }
+
+    /// Signs the account out of every device, refuses the access tokens issued so far and ends
+    /// every browser session but `keep` (a session's hash), the one that asked.
+    pub async fn sign_out_all_but(
+        &self,
+        account: u64,
+        keep: Option<&[u8]>,
+    ) -> Result<(), AppError> {
+        self.refuse_tokens_until_now(account).await?;
         for device in db::devices_of(&self.db, account).await? {
             self.sign_out_device(device.id()).await?;
         }
-        crate::web::store::end_sessions_of(&self.db, account).await?;
+        for other in crate::web::store::sessions_of(&self.db, account).await? {
+            if Some(other.id_hash.as_slice()) != keep {
+                crate::web::store::end_session_of(&self.db, account, &other.id_hash).await?;
+            }
+        }
         Ok(())
     }
 
@@ -512,6 +575,7 @@ impl Inner {
         };
         self.invitations_gone(&gone);
         self.sweep_social(now).await?;
+        self.sweep_deletions().await;
         let mut dirty = offline;
         for account in leaving {
             dirty.extend(self.leave_everything(account).await?);
@@ -523,6 +587,36 @@ impl Inner {
 }
 
 impl Inner {
+    /// Deletes the accounts whose grace period after a deletion request has ended. Once the
+    /// time has come the player can no longer cancel ([`db::cancel_deletion`]), so a due account
+    /// is deleted whatever else happens; two nodes deleting the same account is harmless. An
+    /// account that cannot be deleted is tried again in ten minutes, so that a few failing rows
+    /// do not hold up the others.
+    async fn sweep_deletions(&self) {
+        let now = util::now();
+        let due = match db::deletions_due(&self.db, now, 20).await {
+            Ok(due) => due,
+            Err(error) => {
+                tracing::error!(%error, "cannot read the accounts due for deletion");
+                return;
+            }
+        };
+        for account in due {
+            match self.delete_account(account).await {
+                Ok(()) => tracing::info!("deleted an account after its grace period"),
+                Err(error) => {
+                    tracing::error!(
+                        class = error.body.error.as_str(),
+                        "cannot delete an account; trying again in ten minutes"
+                    );
+                    if let Err(error) = db::postpone_deletion(&self.db, account, now + 600).await {
+                        tracing::error!(%error, "cannot postpone a deletion");
+                    }
+                }
+            }
+        }
+    }
+
     /// Deletes moderation data past its retention, at most once an hour per node. A failure is
     /// logged and tried again at the next sweep.
     async fn sweep_moderation(&self) {

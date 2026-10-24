@@ -36,6 +36,15 @@ impl Mailer for LoadMailer {
             Ok(())
         })
     }
+
+    fn send_notice<'a>(
+        &'a self,
+        _to: &'a str,
+        _subject: &'a str,
+        _body: &'a str,
+    ) -> BoxFuture<'a, Result<(), MailError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// Where the sign-in codes come from.

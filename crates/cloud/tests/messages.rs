@@ -925,7 +925,7 @@ async fn the_export_holds_the_accounts_own_messages_and_deleting_removes_them() 
     // other side and the group goes on without them.
     let mut eb = cloud.events(bea.token()).await;
     let mut ec = cloud.events(cy.token()).await;
-    cloud.delete("/v1/me", hub.token()).await.ok(204);
+    cloud.delete_account_now(&hub).await;
     assert!(matches!(
         eb.until(|e| matches!(e, Event::ConversationGone { .. })).await,
         Event::ConversationGone { id } if id == direct.id

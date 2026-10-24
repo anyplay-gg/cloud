@@ -457,7 +457,7 @@ async fn export_holds_the_records_and_deletion_removes_them() {
                "avatar": "friends", "playtime": "friends"})
     );
 
-    cloud.delete("/v1/me", alec.token()).await.ok(204);
+    cloud.delete_account_now(&alec).await;
     let db = &cloud.state.db;
     assert_eq!(
         anyplay_cloud::db::title_players(db, "PPSA01234")

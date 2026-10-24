@@ -10,6 +10,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use serde::Deserialize;
 
+use super::flow::Landing;
 use super::pages::{self, AppealPart, BanView};
 use super::store::{self, Session};
 use super::{
@@ -56,12 +57,12 @@ pub fn view_of(statement: Option<&Statement>, until: Option<u64>) -> BanView {
 /// A banned account proved who it is: remember it in the session and go to the statement.
 pub async fn send_to(
     state: &AppState,
-    mut visit: Visit,
+    visit: &mut Visit,
     account: u64,
-) -> Result<(Visit, &'static str), AppError> {
+) -> Result<Landing, AppError> {
     visit.session.data.banned = Some(account);
     store::save_data(&state.db, &visit.session).await?;
-    Ok((visit, "/web/banned"))
+    Ok(Landing::Banned)
 }
 
 /// The page for a ban that is not tied to a signed-in account (an address that was banned and

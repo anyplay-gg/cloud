@@ -118,6 +118,9 @@ pub struct Config {
     /// For how many days a device may sign in without a device key, and so refresh without a
     /// proof. 0 makes the key mandatory ([ADR 0016 of the network]).
     pub legacy_device_days: u64,
+    /// The folder with the built web portal (a single-page app: `index.html` and its assets).
+    /// With it the cloud serves the portal from its own origin. Needs `public_url`.
+    pub portal_dir: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -159,6 +162,7 @@ impl Default for Config {
             public_url: None,
             terms_version: None,
             legacy_device_days: 30,
+            portal_dir: None,
         }
     }
 }
@@ -309,6 +313,9 @@ impl Config {
         if let Some(v) = get("LEGACY_DEVICE_DAYS") {
             self.legacy_device_days = parse("LEGACY_DEVICE_DAYS", &v)?;
         }
+        if let Some(v) = get("PORTAL_DIR") {
+            self.portal_dir = Some(v.into());
+        }
         Ok(())
     }
 
@@ -401,6 +408,16 @@ impl Config {
         }
         if self.legacy_device_days > 365 {
             bail!("legacy_device_days must be at most 365");
+        }
+        if let Some(dir) = &self.portal_dir {
+            if self.web_origin().is_none() {
+                bail!(
+                    "portal_dir needs public_url: the portal is served from the origin of the account web"
+                );
+            }
+            if !dir.join("index.html").is_file() {
+                bail!("portal_dir {} has no index.html", dir.display());
+            }
         }
         Ok(())
     }
@@ -499,6 +516,8 @@ pub struct Tuning {
     /// A browser session younger than this may do sensitive things (remove a passkey, sign out
     /// everywhere, delete the account); an older one signs in again first.
     pub fresh_for: Duration,
+    /// How long after the player asks to delete the account it is deleted, and they can cancel.
+    pub deletion_grace: Duration,
 }
 
 impl Default for Tuning {
@@ -523,6 +542,7 @@ impl Default for Tuning {
             link_ttl: Duration::from_secs(60),
             ceremony_ttl: Duration::from_secs(5 * 60),
             fresh_for: Duration::from_secs(15 * 60),
+            deletion_grace: Duration::from_secs(30 * 24 * 60 * 60),
         }
     }
 }
@@ -689,6 +709,29 @@ mod tests {
         ] {
             assert!(check_public_url(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_portal_folder_is_read_and_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config
+            .apply_env(|name| match name {
+                "PORTAL_DIR" => Some(dir.path().display().to_string()),
+                "PUBLIC_URL" => Some("https://play.example.com".into()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(config.portal_dir.as_deref(), Some(dir.path()));
+        assert!(config.validate().is_err(), "a folder without index.html");
+        std::fs::write(dir.path().join("index.html"), "<html></html>").unwrap();
+        config.validate().unwrap();
+        config.public_url = None;
+        assert!(
+            config.validate().is_err(),
+            "the portal is served from the origin of the account web"
+        );
+        assert_eq!(Config::default().portal_dir, None);
     }
 
     #[test]

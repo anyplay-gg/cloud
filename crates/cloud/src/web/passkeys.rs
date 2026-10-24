@@ -6,6 +6,10 @@
 //! authenticator names the account in the user handle, which must be the one this cloud derives
 //! for the account that owns the credential. User verification is required, so a passkey is
 //! both factors in one.
+//!
+//! The ceremonies are four functions ([`begin_registration`], [`finish_registration`],
+//! [`begin_assertion`], [`verify_assertion`]) that the routes of the HTML pages and of the portal
+//! API ([`super::api`]) both call.
 
 use axum::Json;
 use axum::extract::State;
@@ -20,7 +24,7 @@ use webauthn_rs::prelude::{
 
 use super::store::{self, MAX_PASSKEYS, Session};
 use super::{Visit, check_csrf_api, existing_api, flow, limit_ip_api};
-use crate::db;
+use crate::db::{self, AccountRow};
 use crate::error::{AppError, Result};
 use crate::http::{ApiJson, ClientIp};
 use crate::state::AppState;
@@ -65,13 +69,9 @@ struct RegistrationState {
     state: PasskeyRegistration,
 }
 
-pub async fn register_start(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    ApiJson(_body): ApiJson<serde_json::Value>,
-) -> Result<Json<serde_json::Value>> {
-    let (_, account) = account_session(&state, &headers).await?;
-    let web = web(&state)?;
+/// Starts adding a passkey to an account: the ceremony's ID and the options for the browser.
+pub async fn begin_registration(state: &AppState, account: u64) -> Result<serde_json::Value> {
+    let web = web(state)?;
     let existing = store::passkeys_of(&state.db, account).await?;
     if existing.len() >= MAX_PASSKEYS {
         return Err(AppError::limit(format!(
@@ -106,26 +106,20 @@ pub async fn register_start(
         state.tuning.ceremony_ttl,
     )
     .await?;
-    Ok(Json(json!({"id": id, "options": options})))
+    Ok(json!({"id": id, "options": options}))
 }
 
-#[derive(Deserialize)]
-pub struct FinishRegistration {
-    id: String,
-    #[serde(default)]
-    name: String,
-    credential: RegisterPublicKeyCredential,
-}
-
-pub async fn register_finish(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    ApiJson(body): ApiJson<FinishRegistration>,
-) -> Result<Json<serde_json::Value>> {
-    let (mut session, account) = account_session(&state, &headers).await?;
-    let web = web(&state)?;
+/// Finishes adding a passkey. Returns its ID (the credential ID).
+pub async fn finish_registration(
+    state: &AppState,
+    account: u64,
+    ceremony: &str,
+    name: &str,
+    credential: &RegisterPublicKeyCredential,
+) -> Result<Vec<u8>> {
+    let web = web(state)?;
     let expired = || AppError::bad_request("This passkey request expired. Try again.");
-    let data = store::flow_take(&state.db, REGISTER, &body.id)
+    let data = store::flow_take(&state.db, REGISTER, ceremony)
         .await?
         .ok_or_else(expired)?;
     let held: RegistrationState = serde_json::from_str(&data).map_err(|_| expired())?;
@@ -134,12 +128,12 @@ pub async fn register_finish(
     }
     let passkey = web
         .webauthn
-        .finish_passkey_registration(&body.credential, &held.state)
+        .finish_passkey_registration(credential, &held.state)
         .map_err(|error| {
             tracing::info!(?error, "a passkey registration was refused");
             AppError::bad_request("Your device did not make a valid passkey. Try again.")
         })?;
-    let name = body.name.trim();
+    let name = name.trim();
     let existing = store::passkeys_of(&state.db, account).await?;
     if existing.len() >= MAX_PASSKEYS {
         return Err(AppError::limit(format!(
@@ -151,9 +145,10 @@ pub async fn register_finish(
     } else {
         format!("Passkey {}", existing.len() + 1)
     };
+    let id = passkey.cred_id().as_slice().to_vec();
     let added = store::insert_passkey(
         &state.db,
-        passkey.cred_id().as_slice(),
+        &id,
         account,
         &name,
         &serde_json::to_string(&passkey).unwrap_or_default(),
@@ -166,20 +161,41 @@ pub async fn register_finish(
             "This passkey is already registered.",
         ));
     }
+    Ok(id)
+}
+
+#[derive(Deserialize)]
+pub struct FinishRegistration {
+    id: String,
+    #[serde(default)]
+    name: String,
+    credential: RegisterPublicKeyCredential,
+}
+
+pub async fn register_start(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiJson(_body): ApiJson<serde_json::Value>,
+) -> Result<Json<serde_json::Value>> {
+    let (_, account) = account_session(&state, &headers).await?;
+    Ok(Json(begin_registration(&state, account).await?))
+}
+
+pub async fn register_finish(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<FinishRegistration>,
+) -> Result<Json<serde_json::Value>> {
+    let (mut session, account) = account_session(&state, &headers).await?;
+    finish_registration(&state, account, &body.id, &body.name, &body.credential).await?;
     session.data.notice = Some("Passkey added.".to_owned());
     store::save_data(&state.db, &session).await?;
     Ok(Json(json!({"ok": true})))
 }
 
-pub async fn sign_in_start(
-    State(state): State<AppState>,
-    ClientIp(ip): ClientIp,
-    headers: HeaderMap,
-) -> Result<Json<serde_json::Value>> {
-    let session = existing_api(&state, &headers).await?;
-    check_csrf_api(&session, &headers)?;
-    limit_ip_api(&state, "passkey", ip, state.tuning.rates.code_per_ip)?;
-    let web = web(&state)?;
+/// Starts a sign-in with a passkey that names its account: the ceremony's ID and the options.
+pub async fn begin_assertion(state: &AppState) -> Result<serde_json::Value> {
+    let web = web(state)?;
     let (options, authentication) =
         web.webauthn
             .start_discoverable_authentication()
@@ -194,29 +210,34 @@ pub async fn sign_in_start(
         state.tuning.ceremony_ttl,
     )
     .await?;
-    Ok(Json(json!({"id": id, "options": options})))
+    Ok(json!({"id": id, "options": options}))
+}
+
+pub async fn sign_in_start(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>> {
+    let session = existing_api(&state, &headers).await?;
+    check_csrf_api(&session, &headers)?;
+    limit_ip_api(&state, "passkey", ip, state.tuning.rates.code_per_ip)?;
+    Ok(Json(begin_assertion(&state).await?))
 }
 
 #[derive(Deserialize)]
 pub struct FinishSignIn {
-    id: String,
-    credential: PublicKeyCredential,
+    pub id: String,
+    pub credential: PublicKeyCredential,
 }
 
 fn refused() -> AppError {
     AppError::unauthorized("That passkey did not work. Use an e-mail code instead.")
 }
 
-pub async fn sign_in_finish(
-    State(state): State<AppState>,
-    ClientIp(ip): ClientIp,
-    headers: HeaderMap,
-    ApiJson(body): ApiJson<FinishSignIn>,
-) -> Result<axum::response::Response> {
-    let session = existing_api(&state, &headers).await?;
-    check_csrf_api(&session, &headers)?;
-    limit_ip_api(&state, "passkey", ip, state.tuning.rates.code_per_ip)?;
-    let web = web(&state)?;
+/// Checks a passkey's answer to the ceremony `body.id` that [`begin_assertion`] started. Returns
+/// the account that owns the passkey and counts the use. It signs nobody in.
+pub async fn verify_assertion(state: &AppState, body: &FinishSignIn) -> Result<AccountRow> {
+    let web = web(state)?;
     let held = store::flow_take(&state.db, SIGN_IN, &body.id)
         .await?
         .ok_or_else(refused)?;
@@ -260,22 +281,29 @@ pub async fn sign_in_finish(
         now(),
     )
     .await?;
-
-    let account = db::account(&state.db, account_id)
+    db::account(&state.db, account_id)
         .await?
-        .ok_or_else(refused)?;
-    let (visit, next) = flow::finish_login(
-        &state,
-        Visit {
-            session,
-            token: None,
-        },
-        &account,
-    )
-    .await?;
+        .ok_or_else(refused)
+}
+
+pub async fn sign_in_finish(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<FinishSignIn>,
+) -> Result<axum::response::Response> {
+    let session = existing_api(&state, &headers).await?;
+    check_csrf_api(&session, &headers)?;
+    limit_ip_api(&state, "passkey", ip, state.tuning.rates.code_per_ip)?;
+    let account = verify_assertion(&state, &body).await?;
+    let mut visit = Visit {
+        session,
+        token: None,
+    };
+    let landing = flow::finish_login(&state, &mut visit, &account, flow::Proof::Passkey).await?;
     Ok(super::with_cookie(
         &state,
         &visit,
-        Json(json!({"next": next})).into_response(),
+        Json(json!({"next": landing.path()})).into_response(),
     ))
 }
