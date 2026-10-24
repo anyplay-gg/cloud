@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 use anyplay_relay::config::{Config, TlsMode};
+use anyplay_relay::metrics;
 use clap::Parser;
 use iroh_relay::server::Server;
 
@@ -30,12 +31,31 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::load(cli.config.as_deref())?;
     let verifier = config.verifier().await?;
-    let server_config = config.server_config(verifier).await?;
+    let access = config.access(verifier);
+    let server_config = config.server_config_with(access.clone()).await?;
     let mut server = Server::spawn(server_config)
         .await
         .context("cannot start the relay")?;
+    if let Some(addr) = config.metrics_bind {
+        let listener = metrics::bind(addr)
+            .await
+            .with_context(|| format!("cannot serve metrics on {addr}"))?;
+        tracing::info!(%addr, "metrics");
+        tokio::spawn(metrics::serve(
+            listener,
+            metrics::Sources {
+                admission: access.admission().clone(),
+                stats: access.stats().clone(),
+                iroh: server.metrics().server.clone(),
+            },
+        ));
+    }
     tracing::info!(
         tls = ?config.tls,
+        client_bytes_per_second = ?config.client_bytes_per_second,
+        max_clients = config.max_clients,
+        max_connections_per_account = config.max_connections_per_account,
+        max_ticket_lifetime_secs = config.max_ticket_lifetime_secs,
         http = ?server.http_addr(),
         https = ?server.https_addr(),
         quic = ?server.quic_addr(),
