@@ -1,0 +1,32 @@
+[package]
+name = "anyplay-cloud-fuzz"
+description = "Coverage-guided fuzz targets for the token check of the cloud and its relays"
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace: the targets build only with cargo-fuzz on a nightly toolchain.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+anyplay-ticket = { path = "../crates/ticket" }
+
+[[bin]]
+name = "ticket_forged"
+path = "fuzz_targets/ticket_forged.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ticket_altered"
+path = "fuzz_targets/ticket_altered.rs"
+test = false
+doc = false
+bench = false

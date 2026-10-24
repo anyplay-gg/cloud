@@ -1,0 +1,74 @@
+name: fuzz
+
+# Coverage-guided fuzzing of the token check, which reads what any client sends to the cloud and
+# its relays: a minute per target on pull requests that touch it, a quarter of an hour every
+# night. The corpus each run grows is kept in the cache for the next one; an input that breaks a
+# target is kept as an artifact.
+
+on:
+  pull_request:
+    paths:
+      - "crates/ticket/**"
+      - "fuzz/**"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    - cron: "47 2 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds per target
+        default: "900"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+# The workspace names the network's API crate by relative path (`../network/crates/api`), so the
+# job checks out both repositories side by side, as CI does.
+
+jobs:
+  fuzz:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [ticket_forged, ticket_altered]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloud
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          path: cloud
+      - uses: actions/checkout@v7.0.1
+        with:
+          repository: anyplay-gg/network
+          path: network
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          workspaces: cloud/fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - uses: actions/cache@v6.1.0
+        with:
+          path: cloud/fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Fuzz
+        env:
+          SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && '60' || inputs.seconds || '900' }}
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time="$SECONDS_PER_TARGET"
+      - name: Shrink the corpus
+        if: github.event_name != 'pull_request'
+        run: cargo fuzz cmin ${{ matrix.target }}
+      - if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: crash-${{ matrix.target }}
+          path: cloud/fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore

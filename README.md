@@ -6,12 +6,13 @@ The central services of the AnyPlay network: accounts, friends, presence, sessio
 
 ## What is in this repository
 
-| Crate | What it is |
+| Path | What it is |
 |---|---|
 | `crates/cloud` | `anyplay-cloud`, the server. Durable data is in one SQLite file ([why](docs/adr/0001-sqlite.md)); presence, sessions and invitations live in memory. |
 | `crates/relay` | `anyplay-relay`, an [iroh](https://www.iroh.computer/) relay that admits an endpoint only with a ticket the cloud signed for it. |
 | `crates/ticket` | `anyplay-ticket`, the signed token format that the cloud and the relay share. |
 | `deploy/` | Dockerfile, `compose.yaml`, Caddyfile and an example `.env`. |
+| `fuzz/` | [Fuzz targets](fuzz/README.md) for the token check, run every night. |
 
 ## Hosting your own
 
