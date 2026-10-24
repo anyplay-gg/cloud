@@ -64,6 +64,9 @@ pub async fn run(opts: Options) -> Result<Report> {
         if opts.scenarios.contains(&Scenario::Sessions) {
             emit(scenarios::session_churn(&ctx, &sampler).await);
         }
+        if opts.scenarios.contains(&Scenario::Cards) {
+            emit(scenarios::cards_fetch(&ctx, &sampler).await);
+        }
         if opts.scenarios.contains(&Scenario::Storm) {
             emit(scenarios::reconnect_storm(&ctx, &sampler).await);
         }

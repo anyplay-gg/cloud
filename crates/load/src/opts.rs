@@ -13,6 +13,8 @@ pub enum Scenario {
     Presence,
     /// Players create, join and leave sessions.
     Sessions,
+    /// Players fetch the gamer cards of their friends.
+    Cards,
     /// Connections drop at once, or a node stops; players come back.
     Storm,
 }
@@ -115,6 +117,16 @@ pub struct Options {
     /// Seconds of presence churn.
     #[arg(long, default_value_t = 30.0)]
     pub presence_seconds: f64,
+    /// Gamer card calls per second, all players together.
+    #[arg(long, default_value_t = 200.0)]
+    pub cards_rate: f64,
+    /// Seconds of gamer card calls.
+    #[arg(long, default_value_t = 30.0)]
+    pub cards_seconds: f64,
+    /// Accounts named in one gamer card call (at most 100); the player's friends first, then
+    /// other players.
+    #[arg(long, default_value_t = 10)]
+    pub cards_size: usize,
     /// Sessions created per second.
     #[arg(long, default_value_t = 10.0)]
     pub session_rate: f64,
