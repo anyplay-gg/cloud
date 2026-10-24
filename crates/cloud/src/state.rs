@@ -296,6 +296,7 @@ impl Inner {
         }
         let gone = live::take_of_account(&mut *self.db.acquire().await?, account).await?;
         self.invitations_gone(&gone);
+        self.leave_party(account).await?;
         Ok(dirty)
     }
 
@@ -372,6 +373,7 @@ impl Inner {
         let devices = db::devices_of(&self.db, account).await?;
         // Sessions and invitations first, while their members can still be told.
         let dirty = self.leave_everything(account).await?;
+        self.forget_conversations(account).await?;
         self.news.close_account(
             account,
             &Event::SignedOut,
@@ -436,6 +438,7 @@ impl Inner {
             (offline, gone, leaving)
         };
         self.invitations_gone(&gone);
+        self.sweep_social(now).await?;
         let mut dirty = offline;
         for account in leaving {
             dirty.extend(self.leave_everything(account).await?);

@@ -50,6 +50,16 @@ pub async fn export(State(state): State<AppState>, auth: Auth) -> Result<Json<Va
     let (about, favourites) = db::profiles::profile_of(&state.db, auth.account).await?;
     let avatar = db::profiles::avatar_of(&state.db, auth.account).await?;
     let playtime = db::profiles::playtime_of(&state.db, auth.account).await?;
+    let (conversations, messages, party) = {
+        let mut conn = state.db.acquire().await?;
+        let conversations = crate::chat::conversations_of(&mut conn, auth.account).await?;
+        let messages = crate::chat::written_by(&mut conn, auth.account).await?;
+        let party = match crate::party::party_id_of(&mut conn, auth.account).await? {
+            Some(id) => crate::party::party(&mut conn, &id).await?.map(|p| p.view()),
+            None => None,
+        };
+        (conversations, messages, party)
+    };
     let sessions = {
         let mut conn = state.db.acquire().await?;
         let mut views = Vec::new();
@@ -87,6 +97,11 @@ pub async fn export(State(state): State<AppState>, auth: Auth) -> Result<Json<Va
             "png": base64::engine::general_purpose::STANDARD.encode(&a.picture),
         })),
         "playtime": playtime,
+        "party": party,
+        "conversations": conversations,
+        "messages": messages.iter().map(|(conversation, seq, text, created)| json!({
+            "conversation": conversation, "seq": seq, "text": text, "created": created,
+        })).collect::<Vec<_>>(),
     })))
 }
 
