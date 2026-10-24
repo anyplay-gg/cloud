@@ -24,7 +24,7 @@ cloud/deploy/update.sh --dry-run                         # show what would chang
 2. Runs the pre-hook.
 3. Tags the images that run now as `anyplay-rollback/<image>:previous`, so a rollback does not need the build cache.
 4. Checks out the new commits (detached) and **builds while the old version keeps serving**. If the build fails, it puts the old commits back and stops; the running version was never touched.
-5. Runs `docker compose up -d --wait`. Compose replaces only the services whose image or settings changed.
+5. Runs `docker compose up -d --wait`. Compose replaces only the services whose image or settings changed. When the Caddyfile or a site file (`deploy/*.caddy`) changed, it also starts a new Caddy container: Caddy reads them through single-file mounts, which keep showing the old file after a checkout.
 6. Checks that `/v1/info` answers over the public address, through Caddy and TLS, and that every container is running after a few seconds.
 7. On success it prunes dangling images and build cache older than seven days. On failure it checks out the previous commits, puts the previous images back, starts them and checks again.
 
@@ -55,5 +55,7 @@ The landing page (anyplay-gg/web) can run on the cloud's host name: Caddy sends 
 1. Check out [anyplay-gg/web](https://github.com/anyplay-gg/web) beside `cloud/` and `network/` (or set `WEB_DIR` in `.env` to its path).
 2. Add `COMPOSE_FILE=compose.yaml:compose.web.yaml` to `deploy/.env`. Compose reads it there, so `update.sh` and every `docker compose` call include the website from then on.
 3. Run `update.sh` as usual. It builds the website from the checkout as it is; update that checkout with `git pull` first.
+
+4. Set `ANYPLAY_CLOUD_PORTAL_EXTERNAL=true` (with `ANYPLAY_CLOUD_PUBLIC_URL`) in the cloud's environment, so the launcher's sign-in opens the website's `/sign-in` and `/create` pages instead of the cloud's own.
 
 To take the website down again, remove the `COMPOSE_FILE` line and run `docker compose up -d --remove-orphans`.
