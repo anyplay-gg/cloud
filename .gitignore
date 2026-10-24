@@ -1,0 +1,10 @@
+/target
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+/data/
+/deploy/data/
+/deploy/.env
+# Local build workaround for the windows-gnu toolchain, see README "Development".
+/.cargo/

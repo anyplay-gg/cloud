@@ -1,0 +1,417 @@
+//! Two players on one machine: a cloud, a relay that checks tickets, two net services driven
+//! through the control protocol as a launcher would, and two fake games on the bridge.
+//!
+//! They sign up, become friends, see each other play, and one joins the other's session from
+//! the launcher. The games then exchange datagrams through the tunnel.
+
+use std::collections::HashMap;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use anyplay_bridge_protocol::{ActivateResult, Message, PeerState};
+use anyplay_cloud::mail::MemoryMailer;
+use anyplay_cloud::{Config, Tuning, open, serve};
+use anyplay_control::anyplay_api::{AccountId, FriendLists};
+use anyplay_control::{
+    Answer, Cloud, Command, Event, Failure, GameStarted, Output, command_line, parse_output,
+};
+use anyplay_fake_game::{Bridge, session_id};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, DuplexStream, WriteHalf};
+use tokio::sync::{mpsc, oneshot};
+
+const TITLE: &str = "TEST00001";
+const LIMIT: Duration = Duration::from_secs(30);
+
+type Waiters = Arc<Mutex<HashMap<u64, oneshot::Sender<Answer>>>>;
+
+/// Plays the launcher's side of the control protocol for one net service.
+struct Launcher {
+    write: WriteHalf<DuplexStream>,
+    waiters: Waiters,
+    events: mpsc::UnboundedReceiver<Event>,
+    next: u64,
+    _data: tempfile::TempDir,
+}
+
+impl Launcher {
+    async fn start() -> Launcher {
+        let data = tempfile::tempdir().unwrap();
+        let (service_end, launcher_end) = tokio::io::duplex(1 << 20);
+        let (service_read, service_write) = tokio::io::split(service_end);
+        let config = anyplay_net::Config {
+            data: data.path().to_path_buf(),
+            file_credentials: true,
+            relay_roots: Vec::new(),
+            bind: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
+            device_name: "Test PC".into(),
+        };
+        tokio::spawn(anyplay_net::run(
+            config,
+            service_read,
+            service_write,
+            std::future::pending(),
+        ));
+        let (read, write) = tokio::io::split(launcher_end);
+        let waiters: Waiters = Arc::default();
+        let (events_tx, events) = mpsc::unbounded_channel();
+        {
+            let waiters = waiters.clone();
+            tokio::spawn(async move {
+                let mut lines = tokio::io::BufReader::new(read).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    match parse_output(&line) {
+                        Some(Output::Answer(answer)) => {
+                            let waiter = waiters.lock().unwrap().remove(&answer.id);
+                            if let Some(waiter) = waiter {
+                                let _ = waiter.send(answer);
+                            }
+                        }
+                        Some(Output::Event(event)) => {
+                            let _ = events_tx.send(event);
+                        }
+                        None => panic!("unreadable line from the net service: {line}"),
+                    }
+                }
+            });
+        }
+        Launcher {
+            write,
+            waiters,
+            events,
+            next: 1,
+            _data: data,
+        }
+    }
+
+    async fn call<T: serde::de::DeserializeOwned>(
+        &mut self,
+        command: Command,
+    ) -> Result<T, Failure> {
+        let id = self.next;
+        self.next += 1;
+        let (tx, rx) = oneshot::channel();
+        self.waiters.lock().unwrap().insert(id, tx);
+        self.write
+            .write_all(command_line(id, &command).as_bytes())
+            .await
+            .unwrap();
+        tokio::time::timeout(LIMIT, rx)
+            .await
+            .expect("no answer in time")
+            .expect("the net service went away")
+            .into_result()
+    }
+
+    async fn ok(&mut self, command: Command) -> serde_json::Value {
+        let shown = format!("{command:?}");
+        self.call(command)
+            .await
+            .unwrap_or_else(|failure| panic!("{shown} failed: {failure:?}"))
+    }
+
+    /// Waits for an event that `pick` accepts, skipping the others.
+    async fn wait<T>(&mut self, what: &str, pick: impl Fn(&Event) -> Option<T>) -> T {
+        tokio::time::timeout(LIMIT, async {
+            loop {
+                let event = self.events.recv().await.expect("events ended");
+                if let Some(found) = pick(&event) {
+                    return found;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("no {what} in time"))
+    }
+
+    async fn friends(&mut self, what: &str, test: impl Fn(&FriendLists) -> bool) -> FriendLists {
+        self.wait(what, |event| match event {
+            Event::Friends(lists) if test(lists) => Some(lists.clone()),
+            _ => None,
+        })
+        .await
+    }
+
+    /// Signs up a new account with the code the cloud mailed.
+    async fn sign_up(
+        &mut self,
+        cloud: &str,
+        mail: &MemoryMailer,
+        email: &str,
+        handle: &str,
+    ) -> AccountId {
+        self.ok(Command::Hello {
+            launcher: "test".into(),
+            cloud: cloud.into(),
+        })
+        .await;
+        self.ok(Command::Email {
+            email: email.into(),
+        })
+        .await;
+        let code = mail.last_code(email).expect("no code mailed");
+        let answer = self.ok(Command::Code { code }).await;
+        assert_eq!(answer["result"], "new_account");
+        self.ok(Command::SignUp {
+            handle: handle.into(),
+            age_confirmed: true,
+        })
+        .await;
+        self.wait("sign-in", |event| match event {
+            Event::State {
+                cloud: Cloud::Online,
+                account: Some(account),
+                ..
+            } => Some(account.id),
+            _ => None,
+        })
+        .await
+    }
+
+    async fn start_game(&mut self, join: Option<String>) -> Bridge {
+        let started: GameStarted = self
+            .call(Command::GameStart {
+                title_id: TITLE.into(),
+                title: "Test Game".into(),
+                version: "01.000".into(),
+                build: "0.1.3".into(),
+                join,
+            })
+            .await
+            .expect("game start");
+        let bridge = Bridge::connect(
+            &started.env["ANYPS5_NET_ENDPOINT"],
+            &started.env["ANYPS5_NET_TOKEN"],
+        )
+        .await
+        .expect("bridge connects");
+        bridge
+            .wait_state(LIMIT, |state| state.signed_in)
+            .await
+            .expect("the game sees the player signed in");
+        bridge
+    }
+}
+
+async fn relay(signer: &anyplay_ticket::Signer) -> (iroh_relay::server::Server, String) {
+    let mut relay = iroh_relay::server::RelayConfig::new((Ipv4Addr::LOCALHOST, 0));
+    relay.access = Arc::new(anyplay_relay::TicketAccess::new(signer.verifier()));
+    let mut config = iroh_relay::server::ServerConfig::default();
+    config.relay = Some(relay);
+    let server = iroh_relay::server::Server::spawn(config).await.unwrap();
+    let url = format!("http://{}", server.http_addr().unwrap());
+    (server, url)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_players_meet_and_play_through_the_tunnel() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let cloud_dir = tempfile::tempdir().unwrap();
+    let (signer, _) = anyplay_cloud::load_signing_key(cloud_dir.path()).unwrap();
+    let (_relay, relay_url) = relay(&signer).await;
+    let mail = Arc::new(MemoryMailer::default());
+    let config = Config {
+        data_dir: cloud_dir.path().to_path_buf(),
+        name: "End-to-end cloud".into(),
+        relays: vec![relay_url],
+        ..Config::default()
+    };
+    let state = open(config, Tuning::default(), mail.clone()).await.unwrap();
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let cloud_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(serve(listener, state, std::future::pending()));
+
+    let mut alice = Launcher::start().await;
+    let mut bobby = Launcher::start().await;
+    let alice_id = alice
+        .sign_up(&cloud_url, &mail, "alice@example.org", "Alice")
+        .await;
+    let bobby_id = bobby
+        .sign_up(&cloud_url, &mail, "bobby@example.org", "Bobby")
+        .await;
+
+    let answer = alice
+        .ok(Command::AddFriend {
+            handle: "bobby".into(),
+        })
+        .await;
+    assert_eq!(answer["result"], "requested");
+    bobby
+        .friends("the request", |l| {
+            l.incoming.iter().any(|r| r.account.id == alice_id)
+        })
+        .await;
+    bobby.ok(Command::Accept { account: alice_id }).await;
+    alice
+        .friends("the new friend", |l| {
+            l.friends.iter().any(|f| f.account.id == bobby_id)
+        })
+        .await;
+
+    // Alice plays and opens a session the way a game does.
+    let game_a = alice.start_game(None).await;
+    let reply = game_a
+        .web(
+            "anyplay",
+            "POST",
+            "/v1/sessions",
+            br#"{"max_members":4,"visibility":"friends"}"#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        reply.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&reply.body)
+    );
+    let session = session_id(&reply).expect("session id");
+    assert_eq!(
+        game_a.activate(&session).await.unwrap(),
+        ActivateResult::Done
+    );
+
+    // A request in a format the network does not know is refused, never answered with a guess.
+    let unknown = game_a
+        .web("someGroup", "GET", "/v1/things", b"")
+        .await
+        .unwrap();
+    assert_eq!(unknown.status, 0);
+
+    // Bobby sees Alice playing in a session he may join, and joins it from his launcher.
+    let lists = bobby
+        .friends("Alice's session", |l| {
+            l.friends.iter().any(|f| {
+                f.account.id == alice_id
+                    && f.presence
+                        .activity
+                        .as_ref()
+                        .and_then(|a| a.session.as_ref())
+                        .is_some_and(|s| s.joinable)
+            })
+        })
+        .await;
+    let seen = lists
+        .friends
+        .iter()
+        .find(|f| f.account.id == alice_id)
+        .unwrap();
+    let activity = seen.presence.activity.clone().unwrap();
+    assert_eq!(activity.title_id, TITLE);
+    assert_eq!(activity.session.unwrap().id, session);
+
+    let mismatch = bobby
+        .call::<serde_json::Value>(Command::CheckJoin {
+            session: session.clone(),
+            title_id: TITLE.into(),
+            version: "01.050".into(),
+            build: "0.1.3".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(mismatch.code, "version_mismatch");
+    assert_eq!(mismatch.expected.unwrap().version, "01.000");
+    bobby
+        .ok(Command::CheckJoin {
+            session: session.clone(),
+            title_id: TITLE.into(),
+            version: "01.000".into(),
+            build: "0.1.3".into(),
+        })
+        .await;
+
+    let game_b = bobby.start_game(Some(session.clone())).await;
+    let intent = game_b
+        .wait_event(LIMIT, |m| match m {
+            Message::Intent(intent) => Some(intent),
+            _ => None,
+        })
+        .await
+        .expect("join intent");
+    assert_eq!(intent.intent_type, "joinSession");
+    assert_eq!(
+        intent.properties,
+        vec![("sessionId".to_owned(), session.clone())]
+    );
+    assert_eq!(
+        game_b.activate(&session).await.unwrap(),
+        ActivateResult::Done
+    );
+
+    let connected = |m: Message| match m {
+        Message::Peer(peer) if peer.peer_state == PeerState::Connected => Some(peer),
+        _ => None,
+    };
+    let alice_seen_by_b = game_b
+        .wait_event(LIMIT, connected)
+        .await
+        .expect("tunnel at B");
+    let bobby_seen_by_a = game_a
+        .wait_event(LIMIT, connected)
+        .await
+        .expect("tunnel at A");
+    assert_eq!(alice_seen_by_b.account_id, alice_id.0);
+    assert_eq!(bobby_seen_by_a.account_id, bobby_id.0);
+    assert_eq!(alice_seen_by_b.address, game_a.state().address);
+    assert_eq!(bobby_seen_by_a.address, game_b.state().address);
+
+    let socket_a = game_a.socket(3658).await.unwrap();
+    let socket_b = game_b.socket(3658).await.unwrap();
+    let mut answered = false;
+    for round in 0u32..50 {
+        socket_b
+            .send_to(alice_seen_by_b.address, 3658, &round.to_le_bytes())
+            .await
+            .unwrap();
+        let Ok(Ok((from, port, bytes))) =
+            tokio::time::timeout(Duration::from_millis(300), socket_a.recv()).await
+        else {
+            continue;
+        };
+        assert_eq!((from, port), (bobby_seen_by_a.address, 3658));
+        socket_a.send_to(from, port, &bytes).await.unwrap();
+        let (back_from, _, back) = tokio::time::timeout(Duration::from_secs(5), socket_b.recv())
+            .await
+            .expect("no answer back")
+            .unwrap();
+        assert_eq!(back_from, alice_seen_by_b.address);
+        assert_eq!(back, round.to_le_bytes());
+        answered = true;
+        break;
+    }
+    assert!(answered, "no datagram crossed the tunnel");
+
+    // Both launchers show the session with a live tunnel to the other player.
+    let links = bobby
+        .wait("the tunnel in the session", |event| match event {
+            Event::Session {
+                session: Some(shown),
+            } if shown.members.len() == 2
+                && shown.members.iter().any(|m| {
+                    m.link
+                        .is_some_and(|l| l != anyplay_control::Link::Connecting)
+                }) =>
+            {
+                Some(shown.clone())
+            }
+            _ => None,
+        })
+        .await;
+    assert_eq!(links.id, session);
+
+    // Bobby's game ends: he leaves, and Alice's game hears that he is gone.
+    bobby.ok(Command::GameEnd).await;
+    drop(socket_b);
+    drop(game_b);
+    let gone = game_a
+        .wait_event(LIMIT, |m| match m {
+            Message::Peer(peer) if peer.peer_state == PeerState::Disconnected => Some(peer),
+            _ => None,
+        })
+        .await
+        .expect("Alice hears that Bobby left");
+    assert_eq!(gone.account_id, bobby_id.0);
+}

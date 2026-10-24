@@ -1,0 +1,16 @@
+{
+	email {$ACME_EMAIL}
+	# Pinned, so that the relay knows where Caddy keeps the certificate it reads.
+	acme_ca https://acme-v02.api.letsencrypt.org/directory
+}
+
+# The cloud. Caddy sets X-Forwarded-For, which the cloud trusts (trust_proxy).
+{$CLOUD_DOMAIN} {
+	reverse_proxy cloud:8080
+}
+
+# Caddy only fetches and renews the certificate of the relay's host name; the relay reads the
+# files itself, because it also needs the certificate for QUIC on UDP.
+{$RELAY_DOMAIN} {
+	respond "AnyPlay relay" 200
+}

@@ -1,0 +1,89 @@
+# A complete AnyPlay cloud: the cloud, a relay and Caddy for TLS.
+#
+#   cp .env.example .env     # then edit it
+#   docker compose up -d
+#
+# Build context: the folder that holds the `cloud/` and `network/` checkouts (see Dockerfile).
+
+name: anyplay
+
+x-build: &build
+  context: ../..
+  dockerfile: cloud/deploy/Dockerfile
+
+services:
+  cloud:
+    build:
+      <<: *build
+      target: cloud
+    restart: unless-stopped
+    environment:
+      ANYPLAY_CLOUD_NAME: ${CLOUD_NAME:-AnyPlay cloud}
+      # The relay listens for HTTPS on 8443 because Caddy holds port 443; see docs/configuration.md.
+      ANYPLAY_CLOUD_RELAYS: https://${RELAY_DOMAIN:?set RELAY_DOMAIN in .env}:8443
+      ANYPLAY_CLOUD_TRUST_PROXY: "true"
+      ANYPLAY_CLOUD_MAIL: ${MAIL:-smtp}
+      ANYPLAY_CLOUD_MAIL_FROM: ${MAIL_FROM:-}
+      ANYPLAY_CLOUD_SMTP_HOST: ${SMTP_HOST:-}
+      ANYPLAY_CLOUD_SMTP_PORT: ${SMTP_PORT:-}
+      ANYPLAY_CLOUD_SMTP_TLS: ${SMTP_TLS:-starttls}
+      ANYPLAY_CLOUD_SMTP_USERNAME: ${SMTP_USERNAME:-}
+      ANYPLAY_CLOUD_SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      ANYPLAY_CLOUD_SIGNUP: ${SIGNUP:-open}
+      ANYPLAY_CLOUD_PRIVACY_URL: ${PRIVACY_URL:-}
+      ANYPLAY_CLOUD_TERMS_URL: ${TERMS_URL:-}
+      ANYPLAY_CLOUD_ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+    volumes:
+      - cloud-data:/data
+
+  relay:
+    build:
+      <<: *build
+      target: relay
+    restart: unless-stopped
+    depends_on:
+      cloud:
+        condition: service_healthy
+    environment:
+      # The cloud writes its public key here on its first start; the relay waits for it.
+      ANYPLAY_RELAY_CLOUD_PUBLIC_KEY_FILE: /cloud/signing.pub
+      ANYPLAY_RELAY_TLS: reloading
+      # Caddy keeps the certificate of ${RELAY_DOMAIN} here; the relay waits for it to appear.
+      ANYPLAY_RELAY_CERT_FILE: /caddy/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${RELAY_DOMAIN}/${RELAY_DOMAIN}.crt
+      ANYPLAY_RELAY_KEY_FILE: /caddy/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${RELAY_DOMAIN}/${RELAY_DOMAIN}.key
+      ANYPLAY_RELAY_HTTP_BIND: 0.0.0.0:3340
+      ANYPLAY_RELAY_HTTPS_BIND: 0.0.0.0:8443
+      ANYPLAY_RELAY_QUIC_BIND: 0.0.0.0:7842
+    ports:
+      - "8443:8443"
+      - "7842:7842/udp"
+    volumes:
+      - cloud-data:/cloud:ro
+      - caddy-data:/caddy:ro
+
+  caddy:
+    build:
+      <<: *build
+      target: caddy
+    restart: unless-stopped
+    depends_on:
+      - cloud
+    environment:
+      CLOUD_DOMAIN: ${CLOUD_DOMAIN:?set CLOUD_DOMAIN in .env}
+      RELAY_DOMAIN: ${RELAY_DOMAIN:?set RELAY_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    # Caddy runs as an unprivileged user and still binds the standard ports.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  cloud-data:
+  caddy-data:
+  caddy-config:

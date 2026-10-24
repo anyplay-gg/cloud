@@ -1,0 +1,46 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/anyplay-gg/cloud"
+rust-version = "1.88"
+publish = false
+
+[workspace.dependencies]
+anyplay-api = { path = "../network/crates/api" }
+anyplay-ticket = { path = "crates/ticket" }
+anyhow = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "ws", "query"] }
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+ed25519-dalek = "3"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1-rustls-tls"] }
+rand = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "derive"] }
+subtle = "2"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync", "fs"] }
+tokio-tungstenite = "0.30"
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Dependencies run at a usable speed in debug builds. It also keeps windows-gnu able to link
+# iroh-relay, which is a cdylib as well: unoptimized, it would export more symbols than a DLL holds.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

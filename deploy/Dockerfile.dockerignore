@@ -1,0 +1,10 @@
+# The build context is the folder that holds the cloud and network checkouts. Take only those.
+*
+!cloud
+!network
+
+**/.git
+**/target
+**/data
+**/.env
+**/.cargo
