@@ -112,7 +112,8 @@ pub async fn unblock(
 /// `GET /me/profile`
 pub async fn my_profile(State(state): State<AppState>, member: Member) -> ApiResult {
     let id = member.id();
-    Ok(Json(profiles::profile_as(&state, Some(id), id).await?).into_response())
+    let seen = viewing_as(&state.db, Some(id), id).await?;
+    Ok(Json(profiles::profile_seen(&state, &seen, id).await?).into_response())
 }
 
 /// `PATCH /me/profile`: sets the text and the favourite titles; a part left out stays.
@@ -186,13 +187,14 @@ struct TrophySummary {
     titles: Vec<TitleSummary>,
 }
 
-fn add(count: &mut Count, grade: Grade) {
-    match grade {
-        Grade::Bronze => count.bronze += 1,
-        Grade::Silver => count.silver += 1,
-        Grade::Gold => count.gold += 1,
-        Grade::Platinum => count.platinum += 1,
-    }
+fn add(count: &mut Count, grade: Grade, n: u32) {
+    let slot = match grade {
+        Grade::Bronze => &mut count.bronze,
+        Grade::Silver => &mut count.silver,
+        Grade::Gold => &mut count.gold,
+        Grade::Platinum => &mut count.platinum,
+    };
+    *slot = slot.saturating_add(n);
 }
 
 /// The trophy records of an account, counted by grade, in total and per title (the title with
@@ -201,14 +203,15 @@ fn add(count: &mut Count, grade: Grade) {
 async fn summary(state: &AppState, owner: u64) -> Result<TrophySummary, AppError> {
     let mut counts = Count::default();
     let mut titles: Vec<TitleSummary> = Vec::new();
-    for row in db::trophies_of(&state.db, owner).await? {
-        let Some(trophy) = row.trophy() else { continue };
-        add(&mut counts, trophy.grade);
-        let index = match titles.iter().position(|t| t.title_id == row.title_id) {
+    // The store counts: at most one row per title and grade comes back, however many records
+    // the player has.
+    for (title_id, grade, n, last) in db::trophy_summary(&state.db, owner).await? {
+        add(&mut counts, grade, n);
+        let index = match titles.iter().position(|t| t.title_id == title_id) {
             Some(index) => index,
             None => {
                 titles.push(TitleSummary {
-                    title_id: row.title_id.clone(),
+                    title_id: title_id.clone(),
                     counts: Count::default(),
                     earned: 0,
                     last_earned: 0,
@@ -217,9 +220,9 @@ async fn summary(state: &AppState, owner: u64) -> Result<TrophySummary, AppError
             }
         };
         let title = &mut titles[index];
-        add(&mut title.counts, trophy.grade);
-        title.earned += 1;
-        title.last_earned = title.last_earned.max(trophy.earned);
+        add(&mut title.counts, grade, n);
+        title.earned = title.earned.saturating_add(n);
+        title.last_earned = title.last_earned.max(last);
     }
     titles.sort_by(|a, b| {
         b.last_earned
@@ -277,7 +280,7 @@ pub async fn user(
     let viewer_id = viewer(&state, &headers).await;
     let owner = owner_of(&state, &name).await?;
     let seen = viewing_as(&state.db, viewer_id, owner.id()).await?;
-    let profile = profiles::profile_as(&state, viewer_id, owner.id()).await?;
+    let profile = profiles::profile_seen(&state, &seen, owner.id()).await?;
     let trophies = if seen.can(Part::Trophies) {
         Some(db::trophy_counts(&state.db, owner.id()).await?)
     } else {

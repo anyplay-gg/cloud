@@ -4,7 +4,6 @@ use anyplay_api::{Account, AccountId, Me};
 use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
 use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -23,9 +22,11 @@ pub async fn me(State(state): State<AppState>, auth: Auth) -> Result<Json<Me>> {
     Ok(Json(me_of(&account)))
 }
 
-pub async fn delete_me(State(state): State<AppState>, auth: Auth) -> Result<StatusCode> {
-    state.delete_account(auth.account).await?;
-    Ok(StatusCode::NO_CONTENT)
+/// Schedules the deletion of the account for the end of the grace period and signs every device
+/// out, this one too. The answer holds the time; the player cancels on the web portal.
+pub async fn delete_me(State(state): State<AppState>, auth: Auth) -> Result<Json<Value>> {
+    let at = state.schedule_deletion(auth.account, None).await?;
+    Ok(Json(json!({"deletion": {"at": at}})))
 }
 
 /// Everything the cloud stores about the account.

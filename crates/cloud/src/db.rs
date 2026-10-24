@@ -263,15 +263,26 @@ pub async fn schedule_deletion(pool: &Pool, id: u64, at: u64) -> sqlx::Result<()
     Ok(())
 }
 
-/// Cancels a scheduled deletion; true when there was one.
-pub async fn cancel_deletion(pool: &Pool, id: u64) -> sqlx::Result<bool> {
-    let result = sqlx::query(
-        "UPDATE accounts SET deletion_at = NULL WHERE id = $1 AND deletion_at IS NOT NULL",
-    )
-    .bind(i(id))
-    .execute(pool)
-    .await?;
+/// Cancels a scheduled deletion that is not due yet; true when there was one. From the time on
+/// the sweep deletes the account and nothing cancels it, so a cancel and the sweep cannot race.
+pub async fn cancel_deletion(pool: &Pool, id: u64, now: u64) -> sqlx::Result<bool> {
+    let result =
+        sqlx::query("UPDATE accounts SET deletion_at = NULL WHERE id = $1 AND deletion_at > $2")
+            .bind(i(id))
+            .bind(i(now))
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() == 1)
+}
+
+/// Moves a due deletion to `at`, when the sweep could not carry it out.
+pub async fn postpone_deletion(pool: &Pool, id: u64, at: u64) -> sqlx::Result<()> {
+    sqlx::query("UPDATE accounts SET deletion_at = $2 WHERE id = $1 AND deletion_at IS NOT NULL")
+        .bind(i(id))
+        .bind(i(at))
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// The accounts whose deletion is due at `now`, the longest overdue first.
@@ -801,6 +812,31 @@ pub async fn trophies_of(pool: &Pool, account: u64) -> sqlx::Result<Vec<TrophyRo
     .bind(i(account))
     .fetch_all(pool)
     .await
+}
+
+/// An account's trophy records counted per title and grade, with the time of the latest.
+pub async fn trophy_summary(
+    pool: &Pool,
+    account: u64,
+) -> sqlx::Result<Vec<(String, anyplay_api::Grade, u32, u64)>> {
+    let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+        "SELECT title_id, grade, COUNT(*), MAX(earned) FROM trophies WHERE account_id = $1 \
+         GROUP BY title_id, grade ORDER BY title_id, grade",
+    )
+    .bind(i(account))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(title, grade, n, last)| {
+            Some((
+                title,
+                grade_of(&grade)?,
+                u32::try_from(n).unwrap_or(u32::MAX),
+                u(last),
+            ))
+        })
+        .collect())
 }
 
 /// The number of an account's records per grade.

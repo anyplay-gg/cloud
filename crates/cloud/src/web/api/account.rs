@@ -191,6 +191,8 @@ pub async fn device_sign_out(
     member: Member,
     Path(id): Path<String>,
 ) -> ApiResult {
+    // Signing a device out is signing out something other than this browser.
+    member.require_fresh(&state)?;
     let device = parse_id(&id)?;
     if db::device_owner(&state.db, device).await? != Some(member.id()) {
         return Err(AppError::not_found().into());
@@ -210,6 +212,11 @@ pub async fn session_sign_out(
         return Err(AppError::not_found().into());
     };
     let current = found.id_hash == member.session.id_hash;
+    // A browser may sign itself out; ending another one takes a fresh session, or a thief with a
+    // stale copy could end the owner's sessions and keep the only one.
+    if !current {
+        member.require_fresh(&state)?;
+    }
     store::end_session_of(&state.db, member.id(), &found.id_hash).await?;
     let response = Json(json!({"ok": true, "signed_out": current})).into_response();
     Ok(if current {
@@ -237,6 +244,7 @@ pub async fn sign_out_everywhere(
 
 /// `GET /account/export`: everything the cloud stores about the account, as a JSON file.
 pub async fn export(State(state): State<AppState>, member: Member) -> ApiResult {
+    member.require_fresh(&state)?;
     let data = crate::routes::accounts::export_json(&state, member.id()).await?;
     let body = serde_json::to_vec_pretty(&data).unwrap_or_default();
     let mut response = (StatusCode::OK, body).into_response();
@@ -320,6 +328,22 @@ pub async fn email_confirm(
     if !db::set_email(&state.db, member.id(), &email).await? {
         return Err(AppError::bad_request("That address cannot be used for this account.").into());
     }
+    // The old address hears of it, and nothing else that was signed in stays signed in: a thief
+    // who changed the address does not keep the devices and browsers of the owner's session.
+    let (subject, body) = crate::mail::email_changed_message(&state.config.name, &email);
+    let sent = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        state
+            .mailer
+            .send_notice(&member.account.email, &subject, &body),
+    )
+    .await;
+    if !matches!(sent, Ok(Ok(()))) {
+        tracing::error!("cannot send the notice of a new e-mail address");
+    }
+    state
+        .sign_out_all_but(member.id(), Some(&member.session.id_hash))
+        .await?;
     Ok(Json(json!({"email": email})).into_response())
 }
 
@@ -349,24 +373,19 @@ pub async fn deletion_start(
         fail.body["field"] = json!("handle");
         return Err(fail);
     }
-    let id = member.id();
-    let at = now() + state.tuning.deletion_grace.as_secs();
-    db::schedule_deletion(&state.db, id, at).await?;
-    for device in db::devices_of(&state.db, id).await? {
-        state.sign_out_device(device.id()).await?;
-    }
-    for other in store::sessions_of(&state.db, id).await? {
-        if other.id_hash != member.session.id_hash {
-            store::end_session_of(&state.db, id, &other.id_hash).await?;
-        }
-    }
-    let at = db::deletion_of(&state.db, id).await?.unwrap_or(at);
+    let at = state
+        .schedule_deletion(member.id(), Some(&member.session.id_hash))
+        .await?;
     Ok(Json(json!({"deletion": {"at": at}})).into_response())
 }
 
 /// `DELETE /account/deletion`
 pub async fn deletion_cancel(State(state): State<AppState>, member: Member) -> ApiResult {
-    db::cancel_deletion(&state.db, member.id()).await?;
+    if !db::cancel_deletion(&state.db, member.id(), now()).await?
+        && db::deletion_of(&state.db, member.id()).await?.is_some()
+    {
+        return Err(AppError::forbidden("The grace period has ended.").into());
+    }
     Ok(Json(json!({"deletion": null})).into_response())
 }
 

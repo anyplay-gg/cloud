@@ -61,14 +61,23 @@ pub async fn viewing(pool: &Pool, viewer: u64, owner: u64) -> sqlx::Result<Viewi
     Ok(Viewing::new(relation, db::privacy_of(pool, owner).await?))
 }
 
-/// Like [`viewing`] for a viewer who may be signed out: a signed-out viewer is a stranger.
+/// What a viewer sees on a public page, as the web portal shows it. The viewer may be signed
+/// out, and then is a stranger. A viewer who is blocked either way is a stranger too: a page that
+/// showed a blocked viewer less than a visitor who is not signed in would tell them about the
+/// block. (A block still keeps them from friend-only parts, as any stranger is.)
 pub async fn viewing_as(pool: &Pool, viewer: Option<u64>, owner: u64) -> sqlx::Result<Viewing> {
-    match viewer {
-        Some(viewer) => viewing(pool, viewer, owner).await,
-        None => Ok(Viewing::new(
+    let stranger = || async {
+        Ok(Viewing::new(
             Relation::Stranger,
             db::privacy_of(pool, owner).await?,
-        )),
+        ))
+    };
+    match viewer {
+        None => stranger().await,
+        Some(viewer) => match viewing(pool, viewer, owner).await? {
+            seen if seen.relation() == Relation::Blocked => stranger().await,
+            seen => Ok(seen),
+        },
     }
 }
 

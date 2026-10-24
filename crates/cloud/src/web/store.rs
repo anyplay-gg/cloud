@@ -4,6 +4,7 @@
 //! PostgreSQL. Cookie values, flow IDs and codes are random; only their SHA-256 is stored, so a
 //! copy of the database is no way into a session.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -85,6 +86,8 @@ pub struct Session {
     /// The token that forms and scripts of this session must send back.
     pub csrf: String,
     pub data: SessionData,
+    /// What `data` was when the session was loaded: `save_data` writes only what changed since.
+    loaded: Arc<Mutex<SessionData>>,
     pub created_ms: i64,
 }
 
@@ -97,6 +100,11 @@ pub struct SessionInfo {
 }
 
 impl Session {
+    /// What is in `data` now has been written: later saves write only what changes from here.
+    fn saved(&self) {
+        *self.loaded.lock().unwrap_or_else(|e| e.into_inner()) = self.data.clone();
+    }
+
     /// True when `sent` is this session's CSRF token.
     pub fn csrf_ok(&self, sent: &str) -> bool {
         crate::util::ct_eq(self.csrf.as_bytes(), sent.as_bytes())
@@ -150,6 +158,7 @@ pub async fn create_session(
             account,
             csrf,
             data: data.clone(),
+            loaded: Arc::new(Mutex::new(data.clone())),
             created_ms,
         },
     ))
@@ -190,21 +199,85 @@ pub async fn load_session(
         .bind(now)
         .execute(pool)
         .await?;
+    let data: SessionData = serde_json::from_str(&data).unwrap_or_default();
     Ok(Some(Session {
         id_hash,
         account: account.map(|a| a as u64),
         csrf,
-        data: serde_json::from_str(&data).unwrap_or_default(),
+        loaded: Arc::new(Mutex::new(data.clone())),
+        data,
         created_ms,
     }))
 }
 
+/// What `mine` changed against `loaded` laid over `theirs`, the data as it is stored now. A
+/// request that only reads a session never undoes what another request wrote to it.
+fn merge(loaded: &SessionData, mine: &SessionData, theirs: SessionData) -> SessionData {
+    macro_rules! pick {
+        ($field:ident) => {
+            if mine.$field != loaded.$field {
+                mine.$field.clone()
+            } else {
+                theirs.$field
+            }
+        };
+    }
+    SessionData {
+        authorize: pick!(authorize),
+        login: pick!(login),
+        notice: pick!(notice),
+        banned: pick!(banned),
+        handoff: pick!(handoff),
+        verified_ms: pick!(verified_ms),
+        step_up: pick!(step_up),
+        email_change: pick!(email_change),
+    }
+}
+
+/// Saves what the request changed in the session's data, field by field. If another request
+/// wrote the data between the read and the write, the merge is made again.
 pub async fn save_data(pool: &Pool, session: &Session) -> sqlx::Result<()> {
+    let loaded = session
+        .loaded
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    for _ in 0..8 {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT data FROM web_sessions WHERE id_hash = $1")
+                .bind(&session.id_hash[..])
+                .fetch_optional(pool)
+                .await?;
+        let Some((stored,)) = row else {
+            // The session has ended.
+            return Ok(());
+        };
+        let theirs = serde_json::from_str(&stored).unwrap_or_default();
+        let merged =
+            serde_json::to_string(&merge(&loaded, &session.data, theirs)).unwrap_or_default();
+        if merged == stored {
+            session.saved();
+            return Ok(());
+        }
+        let done =
+            sqlx::query("UPDATE web_sessions SET data = $1 WHERE id_hash = $2 AND data = $3")
+                .bind(&merged)
+                .bind(&session.id_hash[..])
+                .bind(&stored)
+                .execute(pool)
+                .await?;
+        if done.rows_affected() == 1 {
+            session.saved();
+            return Ok(());
+        }
+    }
+    // Eight writers in a row won: take ours.
     sqlx::query("UPDATE web_sessions SET data = $1 WHERE id_hash = $2")
         .bind(serde_json::to_string(&session.data).unwrap_or_default())
         .bind(&session.id_hash[..])
         .execute(pool)
         .await?;
+    session.saved();
     Ok(())
 }
 

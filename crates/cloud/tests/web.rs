@@ -849,15 +849,38 @@ async fn the_data_export_and_the_deletion_of_the_account() {
     assert_eq!(wrong.status, 400);
     assert_eq!(cloud.get("/v1/me", alec.token()).await.status, 200);
 
-    let gone = browser
+    // Deleting waits for the grace period: devices are signed out, the account stays, and this
+    // browser stays signed in.
+    let scheduled = browser
         .post_form(
             "/web/account/delete",
             &[("csrf", &csrf), ("handle", "alec")],
         )
         .await;
-    assert_eq!(gone.status, 200);
-    assert!(gone.text().contains("Account deleted"));
+    assert_eq!(scheduled.status, 200);
+    assert!(scheduled.text().contains("Account deletion scheduled"));
+    assert!(scheduled.text().contains("30 days"));
     assert_eq!(cloud.get("/v1/me", alec.token()).await.status, 401);
+    assert_eq!(browser.get("/web/account").await.status, 200);
+    assert!(
+        anyplay_cloud::db::deletion_of(&cloud.state.db, alec.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    // When the time has come the sweep deletes it.
+    sqlx::query("UPDATE accounts SET deletion_at = 1 WHERE id = $1")
+        .bind(alec.id as i64)
+        .execute(&cloud.state.db)
+        .await
+        .unwrap();
+    cloud.state.sweep().await.unwrap();
+    assert!(
+        anyplay_cloud::db::account(&cloud.state.db, alec.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(browser.get("/web/account").await.location(), "/web/sign-in");
 }
 

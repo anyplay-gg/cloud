@@ -302,20 +302,59 @@ async fn a_public_profile_shows_each_viewer_what_the_player_shows_them() {
         Value::Null
     );
 
-    // A block hides every part, and does not say so to the blocked one.
+    // A block does not show on the page: whoever is blocked, either way, sees exactly what a
+    // visitor who is not signed in sees, and no relation. (Less would tell them of the block.)
+    cloud
+        .put(
+            "/v1/me/privacy",
+            alec.token(),
+            Some(
+                json!({"about": "everyone", "favourites": "friends", "trophies": "everyone",
+                        "avatar": "everyone", "playtime": "everyone"}),
+            ),
+        )
+        .await
+        .ok(200);
+    let without_viewer = |mut page: Value| {
+        page.as_object_mut().unwrap().remove("viewer");
+        page
+    };
+    let public = without_viewer(out.get("/users/alec").await.ok(200));
+    assert_eq!(public["about"], "I play at night.");
+    assert_eq!(public["trophies"]["bronze"], 1);
+    assert_eq!(public["favourites"], Value::Null);
+    let public_trophies = out.get("/users/alec/trophies").await.ok(200);
+
     alecs
         .send(Method::PUT, &format!("/blocks/{}", dave.id), json!({}))
         .await
         .ok(200);
     let blocked_viewer = Portal::signed_in(&cloud, &dave).await;
     let seen = blocked_viewer.get("/users/alec").await.ok(200);
-    assert_eq!(seen["account"]["handle"], "Alec");
     assert_eq!(seen["viewer"]["relation"], "none");
-    // Alec blocked Dave: Dave still sees what a stranger sees, but Alec's page shows the block.
+    assert_eq!(seen["viewer"]["blocked"], false, "Dave did not block Alec");
+    assert_eq!(
+        without_viewer(seen),
+        public,
+        "the same as a signed-out visitor"
+    );
+    assert_eq!(
+        blocked_viewer.get("/users/alec/trophies").await.ok(200),
+        public_trophies
+    );
+    // Alec's own page of Dave shows the block he made.
     assert_eq!(
         alecs.get("/users/dave").await.ok(200)["viewer"]["blocked"],
         true
     );
+    // The other way round: Dave blocks Alec. Alec still sees what a stranger of Dave sees.
+    blocked_viewer
+        .send(Method::PUT, &format!("/blocks/{}", alec.id), json!({}))
+        .await
+        .ok(200);
+    let daves = blocked_viewer.get("/users/alec").await.ok(200);
+    assert_eq!(daves["viewer"]["blocked"], true);
+    assert_eq!(without_viewer(daves), public);
 
     // Nobody by that name, and names that cannot be handles.
     out.get("/users/nobody").await.error(404, "not_found");
@@ -409,4 +448,38 @@ async fn public_reads_are_limited_per_address() {
     let limited = portal.get("/users/alec").await;
     limited.error(429, "rate_limited");
     assert!(limited.header("retry-after").is_some());
+}
+
+#[tokio::test]
+async fn trophies_are_counted_by_the_store_not_read_one_by_one() {
+    let cloud = TestCloud::start().await;
+    let alec = cloud.sign_up("Alec").await;
+    let t = 1_700_000_000u64;
+    let many: Vec<Value> = (0..200u64)
+        .map(|n| {
+            json!({"number": n, "grade": if n % 4 == 0 { "silver" } else { "bronze" }, "earned": t + n})
+        })
+        .collect();
+    upload_trophies(&cloud, &alec, "PPSA01234", json!(many)).await;
+    upload_trophies(
+        &cloud,
+        &alec,
+        "PPSA09999",
+        json!([{"number": 1, "grade": "gold", "earned": t}]),
+    )
+    .await;
+    // Two grades in one title and one in the other: three rows, however many records.
+    let rows = anyplay_cloud::db::trophy_summary(&cloud.state.db, alec.id)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    let own = Portal::signed_in(&cloud, &alec).await;
+    let mine = own.get("/me/trophies").await.ok(200);
+    assert_eq!(
+        mine["counts"],
+        json!({"bronze": 150, "silver": 50, "gold": 1, "platinum": 0})
+    );
+    assert_eq!(mine["titles"][0]["title_id"], "PPSA01234");
+    assert_eq!(mine["titles"][0]["earned"], 200);
+    assert_eq!(mine["titles"][0]["last_earned"], t + 199);
 }

@@ -241,7 +241,7 @@ async fn deleting_an_account_removes_it_everywhere_and_tells_the_others() {
         .await
         .ok(204);
 
-    cloud.delete("/v1/me", a.token()).await.ok(204);
+    cloud.delete_account_now(&a).await;
     assert_eq!(ea.next().await, Event::SignedOut);
     assert_eq!(ea.close_code().await, Some(close::SIGNED_OUT));
     let mut saw_offline = false;
@@ -391,7 +391,7 @@ async fn reports_are_stored_and_validated() {
     assert_eq!(reports[1]["reported"]["handle"], "Sam");
     assert!(reports[1]["content"].as_str().unwrap().contains("Sam"));
     // A report outlives its reporter, who is forgotten.
-    cloud.delete("/v1/me", a.token()).await.ok(204);
+    cloud.delete_account_now(&a).await;
     let reports = admin(&cloud, Method::GET, "/admin/v1/reports", None)
         .await
         .ok(200)
