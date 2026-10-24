@@ -22,9 +22,9 @@ pub mod events;
 pub mod friends;
 pub mod messages;
 pub mod misc;
+pub mod moderation;
 pub mod parties;
 pub mod profiles;
-pub mod moderation;
 pub mod sessions;
 pub mod trophies;
 
