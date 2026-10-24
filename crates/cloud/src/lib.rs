@@ -14,6 +14,7 @@ use anyhow::{Context as _, Result};
 use anyplay_ticket::Signer;
 use tokio::net::TcpListener;
 
+pub mod addresses;
 pub mod avatar;
 pub mod binding;
 pub mod chat;

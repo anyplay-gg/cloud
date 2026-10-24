@@ -489,3 +489,44 @@ async fn a_party_endpoint_announced_on_one_node_reaches_a_member_on_the_other() 
     };
     assert_eq!(party.members[0].endpoint, "cd".repeat(32));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn members_joining_one_session_through_both_nodes_at_once_get_different_addresses() {
+    let (one, two) = cluster_or_skip!();
+    let owner = one.sign_up("Alec").await;
+    let session: Session = one
+        .post(
+            "/v1/sessions",
+            owner.token(),
+            json!({"title_id": "PPSA00001", "title": "Game", "version": "1.00", "build": "b1",
+                   "max_members": 16, "visibility": "friends", "endpoint": "ab".repeat(32)}),
+        )
+        .await
+        .ok(200)
+        .json();
+    let mut joiners = Vec::new();
+    for n in 0..8 {
+        let user = one.sign_up(&format!("Joiner{n}")).await;
+        befriend(&one, &owner, &user).await;
+        joiners.push(user);
+    }
+    let joins = joiners.iter().enumerate().map(|(n, user)| {
+        // Every other joiner goes through the other node.
+        let node = if n % 2 == 0 { &one } else { &two };
+        let path = format!("/v1/sessions/{}/join", session.id);
+        let body = json!({"version": "1.00", "build": "b1", "endpoint": format!("{:02x}", n + 2).repeat(32)});
+        async move { node.post(&path, user.token(), body).await }
+    });
+    for reply in futures_util::future::join_all(joins).await {
+        reply.ok(200);
+    }
+    let session: Session = two
+        .get(&format!("/v1/sessions/{}", session.id), owner.token())
+        .await
+        .ok(200)
+        .json();
+    assert_eq!(session.members.len(), 9);
+    let distinct: std::collections::HashSet<_> =
+        session.members.iter().map(|m| m.address.clone()).collect();
+    assert_eq!(distinct.len(), 9, "{:?}", session.members);
+}

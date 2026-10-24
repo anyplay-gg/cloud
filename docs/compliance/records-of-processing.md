@@ -57,7 +57,7 @@ Each activity lists the items required by Art. 30(1)(b) to (g): purposes, catego
 | Data | Handle, tunnel endpoint ID, relay URL, virtual address, game title and version, opaque game data; invitations. |
 | Recipients | Other members of the session. The relay sees IP addresses and the account ID in the ticket when a player uses it. |
 | Transfers | None. |
-| Erasure | Member: 30 seconds after the last connection closes; session: when the last member leaves; invitations: 15 minutes; virtual address: 10 minutes after going offline. |
+| Erasure | Member: 30 seconds after the last connection closes; session: when the last member leaves; invitations: 15 minutes; virtual address: with the member. |
 | Security | Relay tickets are signed by the cloud and checked offline by the relay; game traffic is end-to-end encrypted. |
 
 ### P4. Relay operation
