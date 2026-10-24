@@ -19,8 +19,7 @@ pub async fn info(State(state): State<AppState>) -> Json<Info> {
         signup: state.config.signup,
         privacy: state.config.privacy_url.clone(),
         terms: state.config.terms_url.clone(),
-        // The account web comes with the browser sign-in (cloud #25).
-        web: None,
+        web: state.config.web_origin(),
     })
 }
 
@@ -74,10 +73,14 @@ pub async fn relay_tickets(
             rates.relay_ticket_window,
         )
         .map_err(AppError::rate_limited)?;
-    let expires = now() + state.tuning.relay_ttl_secs;
-    let token = state
-        .signer
-        .issue(&Claims::relay(auth.account, request.endpoint, expires));
+    let issued = now();
+    let expires = issued + state.tuning.relay_ttl_secs;
+    let token = state.signer.issue(&Claims::relay(
+        auth.account,
+        request.endpoint,
+        issued,
+        expires,
+    ));
     Ok(Json(Relays {
         relays: state
             .config

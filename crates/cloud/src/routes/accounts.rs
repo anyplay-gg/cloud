@@ -30,49 +30,61 @@ pub async fn delete_me(State(state): State<AppState>, auth: Auth) -> Result<Stat
 
 /// Everything the cloud stores about the account.
 pub async fn export(State(state): State<AppState>, auth: Auth) -> Result<Json<Value>> {
-    let account = db::account(&state.db, auth.account)
+    Ok(Json(export_json(&state, auth.account).await?))
+}
+
+/// The export of an account as JSON; the API and the account web hand it out.
+pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
+    let account = db::account(&state.db, account_id)
         .await?
         .ok_or_else(AppError::not_found)?;
-    let devices = db::devices_of(&state.db, auth.account).await?;
+    let devices = db::devices_of(&state.db, account_id).await?;
     let related = |rows: Vec<db::Related>| -> Vec<Value> {
         rows.into_iter()
             .map(|r| json!({"account": {"id": r.id(), "handle": r.handle}, "since": r.since()}))
             .collect()
     };
-    let friends = db::friends_of(&state.db, auth.account).await?;
-    let incoming = db::incoming_requests(&state.db, auth.account).await?;
-    let outgoing = db::outgoing_requests(&state.db, auth.account).await?;
-    let blocked = db::blocked_by(&state.db, auth.account).await?;
+    let friends = db::friends_of(&state.db, account_id).await?;
+    let incoming = db::incoming_requests(&state.db, account_id).await?;
+    let outgoing = db::outgoing_requests(&state.db, account_id).await?;
+    let blocked = db::blocked_by(&state.db, account_id).await?;
     let reports =
-        crate::moderation::store::reports_by(&mut *state.db.acquire().await?, auth.account).await?;
-    let actions = crate::moderation::statements(&state, auth.account).await?;
-    let ban = db::ban_of(&state.db, auth.account).await?;
-    let trophies = db::trophies_of(&state.db, auth.account).await?;
-    let privacy = db::privacy_of(&state.db, auth.account).await?;
-    let (about, favourites) = db::profiles::profile_of(&state.db, auth.account).await?;
-    let avatar = db::profiles::avatar_of(&state.db, auth.account).await?;
-    let playtime = db::profiles::playtime_of(&state.db, auth.account).await?;
+        crate::moderation::store::reports_by(&mut *state.db.acquire().await?, account_id).await?;
+    let actions = crate::moderation::statements(state, account_id).await?;
+    let ban = db::ban_of(&state.db, account_id).await?;
+    let trophies = db::trophies_of(&state.db, account_id).await?;
+    let privacy = db::privacy_of(&state.db, account_id).await?;
+    let (about, favourites) = db::profiles::profile_of(&state.db, account_id).await?;
+    let avatar = db::profiles::avatar_of(&state.db, account_id).await?;
+    let playtime = db::profiles::playtime_of(&state.db, account_id).await?;
     let (conversations, messages, party) = {
         let mut conn = state.db.acquire().await?;
-        let conversations = crate::chat::conversations_of(&mut conn, auth.account).await?;
-        let messages = crate::chat::written_by(&mut conn, auth.account).await?;
-        let party = match crate::party::party_id_of(&mut conn, auth.account).await? {
+        let conversations = crate::chat::conversations_of(&mut conn, account_id).await?;
+        let messages = crate::chat::written_by(&mut conn, account_id).await?;
+        let party = match crate::party::party_id_of(&mut conn, account_id).await? {
             Some(id) => crate::party::party(&mut conn, &id).await?.map(|p| p.view()),
             None => None,
         };
         (conversations, messages, party)
     };
+    let passkeys = crate::web::store::passkeys_of(&state.db, account_id).await?;
+    let consent: (Option<i64>, Option<String>, Option<i64>) = sqlx::query_as(
+        "SELECT age_confirmed_at, terms_version, terms_accepted_at FROM accounts WHERE id = $1",
+    )
+    .bind(account_id as i64)
+    .fetch_one(&state.db)
+    .await?;
     let sessions = {
         let mut conn = state.db.acquire().await?;
         let mut views = Vec::new();
-        for id in live::sessions_of(&mut conn, auth.account).await? {
+        for id in live::sessions_of(&mut conn, account_id).await? {
             if let Some(session) = live::session(&mut conn, &id).await? {
                 views.push(session.view());
             }
         }
         views
     };
-    Ok(Json(json!({
+    Ok(json!({
         "exported": now(),
         "account": me_of(&account),
         "devices": devices.iter().map(|d| json!({
@@ -95,6 +107,13 @@ pub async fn export(State(state): State<AppState>, auth: Auth) -> Result<Json<Va
             "title_id": t.title_id, "number": t.number, "grade": t.grade, "earned": t.earned,
         })).collect::<Vec<_>>(),
         "privacy": privacy,
+        "passkeys": passkeys.iter().map(|k| json!({
+            "name": k.name, "created": k.created, "last_used": k.last_used,
+        })).collect::<Vec<_>>(),
+        "consent": {
+            "age_confirmed_at": consent.0, "terms_version": consent.1,
+            "terms_accepted_at": consent.2,
+        },
         "profile": {"about": about, "favourites": favourites},
         "avatar": avatar.map(|a| json!({
             "hash": a.hash, "updated": a.updated,
@@ -106,7 +125,7 @@ pub async fn export(State(state): State<AppState>, auth: Auth) -> Result<Json<Va
         "messages": messages.iter().map(|(conversation, seq, text, created)| json!({
             "conversation": conversation, "seq": seq, "text": text, "created": created,
         })).collect::<Vec<_>>(),
-    })))
+    }))
 }
 
 pub async fn by_id(

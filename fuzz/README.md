@@ -5,7 +5,7 @@ Coverage-guided fuzzing with [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuz
 | Target | What it reads | What must hold |
 |---|---|---|
 | `ticket_forged` | any text presented as a token | refused, as either kind, at any time |
-| `ticket_altered` | a token the cloud signed, with bytes overwritten | it passes only as it was issued, with the claims it was issued with |
+| `ticket_altered` | a token the cloud signed (version 2 access and relay, and a legacy version 1 access token), with bytes overwritten | it passes only as it was issued, with the claims it was issued with |
 
 Both sign with a fixed key that exists only in the targets. The tests in `crates/ticket` cover the same cases by hand on every `cargo test`; these targets search further.
 

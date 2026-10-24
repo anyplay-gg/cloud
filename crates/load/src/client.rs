@@ -247,6 +247,7 @@ fn device() -> Device {
     Device {
         name: "load".into(),
         platform: Platform::Linux,
+        // A load player has no device key: it is a legacy device, which a cloud accepts.
         key: None,
     }
 }

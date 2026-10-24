@@ -80,7 +80,7 @@ impl TicketAccess {
                 .verify(token, Kind::Relay, now)
                 .map_err(|error| match error {
                     TicketError::Expired => TicketResult::Expired,
-                    TicketError::Signature => TicketResult::Signature,
+                    TicketError::Signature | TicketError::UnknownKey => TicketResult::Signature,
                     TicketError::Kind => TicketResult::Kind,
                     TicketError::Malformed => TicketResult::Malformed,
                 })?;
@@ -212,9 +212,13 @@ mod tests {
 
     impl Bench {
         fn ticket(&self, account: u64, key: &SecretKey, lifetime: u64) -> String {
-            let expires = self.now.load(Ordering::Relaxed) + lifetime;
-            self.signer
-                .issue(&Claims::relay(account, endpoint_hex(key), expires))
+            let issued = self.now.load(Ordering::Relaxed);
+            self.signer.issue(&Claims::relay(
+                account,
+                endpoint_hex(key),
+                issued,
+                issued + lifetime,
+            ))
         }
 
         /// A new endpoint of `account` connects.
@@ -258,12 +262,12 @@ mod tests {
             b.access.check(&endpoint, None, now).err(),
             Some(TicketResult::Missing)
         );
-        let other = Signer::generate().issue(&Claims::relay(1, endpoint.clone(), now + 100));
+        let other = Signer::generate().issue(&Claims::relay(1, endpoint.clone(), now, now + 100));
         assert_eq!(
             b.access.check(&endpoint, Some(&other), now).err(),
             Some(TicketResult::Signature)
         );
-        let access_ticket = b.signer.issue(&Claims::access(1, 2, now + 100));
+        let access_ticket = b.signer.issue(&Claims::access(1, 2, now, now + 100));
         assert_eq!(
             b.access.check(&endpoint, Some(&access_ticket), now).err(),
             Some(TicketResult::Kind)

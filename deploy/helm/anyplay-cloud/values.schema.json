@@ -28,6 +28,8 @@
         "signup": { "enum": ["open", "closed"] },
         "privacyUrl": { "type": "string" },
         "termsUrl": { "type": "string" },
+        "publicUrl": { "type": "string" },
+        "termsVersion": { "type": "string" },
         "trustProxy": { "type": "boolean" },
         "databaseConnections": { "type": "integer", "minimum": 1 },
         "drainSeconds": { "type": "integer", "minimum": 0 },

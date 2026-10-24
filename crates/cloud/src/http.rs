@@ -30,6 +30,8 @@ pub fn bearer(headers: &HeaderMap) -> Option<&str> {
 pub struct Auth {
     pub account: u64,
     pub device: u64,
+    /// When the access token was issued, Unix seconds; 0 for a token of version 1.
+    pub issued: u64,
 }
 
 pub enum AuthFailure {
@@ -47,6 +49,7 @@ pub fn verify_access(state: &AppState, headers: &HeaderMap) -> Result<Auth, Auth
             Some(device) => Ok(Auth {
                 account: claims.account,
                 device,
+                issued: claims.issued,
             }),
             None => Err(AuthFailure::Invalid),
         },
@@ -88,7 +91,10 @@ impl FromRequestParts<AppState> for Auth {
                 ));
             }
         };
-        if let Err(error) = state.check_device(auth.device, auth.account).await {
+        if let Err(error) = state
+            .check_device(auth.device, auth.account, auth.issued)
+            .await
+        {
             return Err(if error.body.error == anyplay_api::ErrorCode::Banned {
                 crate::moderation::banned_error(state, auth.account, error.body.until).await
             } else {

@@ -32,6 +32,9 @@ services:
       ANYPLAY_CLOUD_SIGNUP: ${SIGNUP:-open}
       ANYPLAY_CLOUD_PRIVACY_URL: ${PRIVACY_URL:-}
       ANYPLAY_CLOUD_TERMS_URL: ${TERMS_URL:-}
+      ANYPLAY_CLOUD_TERMS_VERSION: ${TERMS_VERSION:-}
+      # The account web and passkeys live on this address.
+      ANYPLAY_CLOUD_PUBLIC_URL: https://${CLOUD_DOMAIN:?set CLOUD_DOMAIN in .env}
       ANYPLAY_CLOUD_ADMIN_TOKEN: ${ADMIN_TOKEN:-}
     volumes:
       - cloud-data:/data

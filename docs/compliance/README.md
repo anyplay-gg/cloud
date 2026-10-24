@@ -40,7 +40,7 @@ The documents cite the article and paragraph and link the text: [GDPR](https://e
 | 13 | Moderation audit log, per-person admin access | DSA Art. 9, 10; GDPR Art. 5(2) | **Built** for moderation: audit log and moderator accounts (task T6). **Open:** the log of orders from authorities. |
 | 14 | Retention rules in force: bans, reports, devices, inactive accounts, logs | GDPR Art. 5(1)(e) | **Partly.** Bans, reports, actions, appeals and the audit log are swept (G1, G2 closed). **Code:** devices and inactive accounts (G3), log retention (G5). |
 | 15 | No e-mail addresses or codes in logs: `mail = smtp`, log rotation, relay and proxy log settings | GDPR Art. 5(1)(c), 32 | **Code and configuration.** Gaps G4, G5. |
-| 16 | Age and terms version recorded at sign-up | GDPR Art. 7(1) if consent, Art. 5(2); DSA Art. 14(2) | **Code.** Gap G9. |
+| 16 | Age and terms version recorded at sign-up | GDPR Art. 7(1) if consent, Art. 5(2); DSA Art. 14(2) | **Done for new accounts** (migration 0008, account web, `terms_version`). Gap G9 keeps the question of older accounts. |
 | 17 | Access and deletion work for all stored data, backups included | GDPR Art. 15, 17, 20 | **Partly.** Gaps G6, G7, G10. |
 | 18 | Procedure for threats to life and orders from authorities | DSA Art. 9, 10, 18 | **Open.** Task T7. |
 | 19 | Launcher: local storage and the privacy text | TDDDG § 25; GDPR Art. 13 | **Open.** Question O9. |

@@ -1045,7 +1045,13 @@ pub async fn sweep_expired(conn: &mut Conn, now_ms: i64) -> sqlx::Result<Vec<Gon
             .bind(now_ms)
             .fetch_all(&mut *conn)
             .await?;
-    for table in ["challenges", "signups"] {
+    for table in [
+        "challenges",
+        "signups",
+        "web_sessions",
+        "web_flows",
+        "proof_nonces",
+    ] {
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "DELETE FROM {table} WHERE expires_ms <= $1"
         )))

@@ -17,6 +17,7 @@ anyplay-net = { path = "../../../network/crates/net" }
 anyplay-relay = { path = "../relay" }
 anyplay-ticket.workspace = true
 iroh-relay = { version = "1.4.1", features = ["server"] }
+reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true

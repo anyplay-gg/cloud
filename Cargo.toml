@@ -12,6 +12,7 @@ publish = false
 
 [workspace.dependencies]
 anyplay-api = { path = "../network/crates/api" }
+anyplay-proof = { path = "../network/crates/proof" }
 anyplay-ticket = { path = "crates/ticket" }
 async-nats = { version = "0.50", default-features = false, features = ["ring"] }
 anyhow = "1"
@@ -34,7 +35,13 @@ subtle = "2"
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync", "fs"] }
 tokio-tungstenite = "0.30"
+# Passkeys. 0.5.5 is the current release (MPL-2.0, which cargo-deny allows). It calls OpenSSL; see the
+# note on `openssl` in crates/cloud/Cargo.toml.
+webauthn-rs = { version = "=0.5.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
+webauthn-authenticator-rs = { version = "=0.5.5", default-features = false, features = ["softpasskey"] }
+openssl = { version = "0.10", features = ["vendored"] }
 toml = "1"
+serde_urlencoded = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 

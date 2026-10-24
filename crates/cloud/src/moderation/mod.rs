@@ -543,9 +543,10 @@ pub async fn banned_error(state: &AppState, account: u64, until: Option<u64>) ->
             None
         }
     };
+    let issued = now();
     let token = state
         .signer
-        .issue(&Claims::appeal(account, now() + APPEAL_TOKEN_SECS));
+        .issue(&Claims::appeal(account, issued, issued + APPEAL_TOKEN_SECS));
     AppError::banned(until).with_ban(BanNotice {
         statement,
         appeal_token: token,

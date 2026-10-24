@@ -1,4 +1,5 @@
-//! A token the cloud signed, altered: the first byte picks an access or a relay token, and each
+//! A token the cloud signed, altered: the first byte picks an access, a relay or a legacy
+//! (version 1) access token, and each
 //! following pair of bytes overwrites one byte of it at a position. A token passes only as it was
 //! issued, so an altered one is refused, and its claims can never be changed.
 
@@ -13,15 +14,25 @@ fuzz_target!(|data: &[u8]| {
     };
     // A fixed key for the fuzzer only; it signs nothing anywhere else.
     let signer = Signer::from_secret([7; 32]);
-    let (claims, kind) = if pick % 2 == 0 {
-        (Claims::access(41, 3, 2_000_000_000), Kind::Access)
-    } else {
-        (
-            Claims::relay(41, "ab".repeat(32), 2_000_000_000),
+    let (claims, kind, legacy) = match pick % 3 {
+        0 => (
+            Claims::access(41, 3, 1_000, 2_000_000_000),
+            Kind::Access,
+            false,
+        ),
+        1 => (
+            Claims::relay(41, "ab".repeat(32), 1_000, 2_000_000_000),
             Kind::Relay,
-        )
+            false,
+        ),
+        // A token of version 1 has no issue time.
+        _ => (Claims::access(41, 3, 0, 2_000_000_000), Kind::Access, true),
     };
-    let issued = signer.issue(&claims);
+    let issued = if legacy {
+        signer.issue_legacy(&claims)
+    } else {
+        signer.issue(&claims)
+    };
 
     let mut bytes = issued.clone().into_bytes();
     let (edits, _) = edits.as_chunks::<2>();

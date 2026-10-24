@@ -28,7 +28,7 @@ Migrations: `crates/cloud/migrations/{sqlite,postgres}/0001_init.sql` and `0002_
 | Proposed | Same, plus automatic deletion after a stated period of inactivity (suggestion: 24 months, with a warning mail; lawyer to confirm). |
 | Who sees it | The player sees their own e-mail. Every signed-in player can look up another account's **handle and ID** (`GET /v1/accounts/{id}`, `?handle=`), never the e-mail. Moderators and the operator with database access see everything. |
 
-The player confirms `age_confirmed` at sign-up, but the cloud does not store it or any age. The request is only checked for `true` (`routes/auth.rs`, `signup`). No record exists that a person agreed to the terms, or to which version. See G9.
+Migration 0008 adds `accounts.age_confirmed_at` (when the player ticked "old enough to agree on my own"; no birth date and no age), `terms_version` and `terms_accepted_at` (the version of `terms_version` in force when the player accepted, and when). They are filled at sign-up on the web and by the API's sign-up (age only there); accounts made before are null. `tokens_valid_from` is the "not before" time that "sign out everywhere" sets. When the operator changes `terms_version`, the account web asks again at the next sign-in and overwrites the version. See G9.
 
 ### 1.2 Sign-in challenge and sign-up permit
 
@@ -53,6 +53,30 @@ The player confirms `age_confirmed` at sign-up, but the cloud does not store it 
 | Kept today | Until sign-out, until it is replaced as the 11th device (`MAX_DEVICES` = 10; the least recently used goes), or until the account is deleted. No expiry by inactivity: `last_used` is stored but nothing reads it for that. `used_refresh` rows live 30 days (`USED_REFRESH_KEEP`), but the pruning runs only when the same device rotates its token again (`db::rotate_refresh`), so rows of a device that stops refreshing stay until the device is deleted. |
 | Proposed | Expire a device not used for 90 days (suggestion; lawyer to confirm). Prune `used_refresh` in the sweep. |
 | Who sees it | The player sees their device list in the export (`GET /v1/me/export`). The operator with database access. |
+
+Since migration 0008 a device also has `device_key` (the public half of a key the player's PC made; nothing secret) and `legacy_until` (until when it may refresh without a proof). `proof_nonces` holds a hash of each accepted proof's nonce for about two minutes (`hash`, `expires_ms`), so a proof is accepted once; the sweep deletes expired rows.
+
+### 1.3a Passkeys
+
+| | |
+|---|---|
+| What | The passkeys of an account: a name the player chose (up to 40 characters), the credential ID, the credential as webauthn-rs stores it (public key, signature counter, flags), when it was added and last used. A passkey holds no biometric data: the fingerprint or face never leaves the player's device. |
+| Where | `passkeys` (`id`, `account_id`, `name`, `credential`, `created`, `last_used`). Ceremonies in progress: `web_flows` (`id_hash`, `kind`, `data`, `expires_ms`). |
+| Why | Sign in without a code; protect the account against phishing. |
+| Basis (proposed) | Art. 6(1)(b). |
+| Kept today | Until the player removes the passkey or the account is deleted (cascade). Ceremonies and one-time codes for 60 seconds to 5 minutes; the sweep deletes them. |
+| Who sees it | The player on the account page and in the export (names and times, not the credentials). |
+
+### 1.3b Browser sessions and the cookie
+
+| | |
+|---|---|
+| What | A session of the account web in one browser: a hash of the cookie value, the account (or none while signing in), a CSRF token, the state of a sign-in in progress (the e-mail address being verified, the loopback address of the app and the PKCE challenge, the device name the app gave) and times. The cookie (`__Host-anyplay` on https) holds a random value only. |
+| Where | `web_sessions` (`id_hash`, `account_id`, `csrf`, `data`, `created_ms`, `expires_ms`). |
+| Why | Keep the player signed in on the account page for a short time; carry a sign-in from one page to the next. |
+| Basis (proposed) | Art. 6(1)(b). The cookie is strictly necessary for the service the player asked for, so TDDDG § 25(2) no. 2 applies and no banner is needed (lawyer to confirm). It is set when a sign-in page opens, `HttpOnly`, `SameSite=Strict`, `Secure`, without `Domain`, and ends with the browser session. |
+| Kept today | 30 minutes unused, 4 hours at most; ended by signing out, signing out everywhere or deleting the account; expired rows are deleted by the sweep. |
+| Who sees it | Nobody. The operator with database access sees the e-mail address of a sign-in in progress. |
 
 ### 1.4 Friends, requests and blocks
 
@@ -254,6 +278,6 @@ Ordered by how much they matter. The IDs are used in the other documents.
 | G6 | **The export is incomplete.** It lacks presence and last-seen, the virtual address lease and the ban hash. It is JSON, which fits the "structured, commonly used and machine-readable" format of [Art. 20(1)](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679). | `routes/accounts.rs` (`export`) | Add presence, lease and device `last_used`; document what is left out and why. |
 | G7 | **Deletion is immediate and complete for live data, but leaves bans, and nothing covers backups.** There is no confirmation step and no record that a deletion happened, so a stolen access token (15 minutes) can delete an account. | `state.delete_account` | Confirm by e-mail code; document backup expiry; keep a non-identifying deletion counter. |
 | G8 | **Closed** for moderation (moderation change). Every action, dismissal, lifting, appeal and role change is a line in `audit_log` with the actor. Moderators are accounts; the admin token acts as `operator`. | `moderation` | |
-| G9 | **No age or terms record.** `age_confirmed` is checked and dropped. No terms or privacy version is recorded at sign-up. The error text names no age. | `routes/auth.rs` (`signup`) | Store `terms_version` and `age_confirmed_at` (not a birth date). Name the minimum age in the text. |
+| G9 | **Age and terms record: done in migration 0008.** `age_confirmed_at`, `terms_version` and `terms_accepted_at` are stored on the account (no birth date); the account web names the age (16 in the EU unless the country sets a lower one) and asks again when `terms_version` changes. Accounts made before the migration have no record; the API's own sign-up records the age only. | `routes/auth.rs` (`create_account`), `web/flow.rs` | Decide whether older accounts are asked once (O-question for the lawyer); the privacy notice should name the cookie and the passkeys. |
 | G10 | **Backups, restore tests and processor contracts are undefined** in the repository. | `docs/configuration.md` | See [open-questions.md](open-questions.md). |
 | G11 | **A stable endpoint ID and handle in sessions** let members recognise each other across sessions. | `members` | Document it; consider a per-session endpoint pseudonym later. |

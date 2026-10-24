@@ -131,6 +131,12 @@ pub fn router(state: AppState) -> Router {
             get(moderation::moderators).post(moderation::grant),
         )
         .route(path::MOD_MODERATOR, delete(moderation::revoke));
+    if state.web.is_some() {
+        router = router
+            .route(path::AUTH_BROWSER_TOKEN, post(crate::web::native::token))
+            .route(path::AUTH_BROWSER_LINK, post(crate::web::native::link))
+            .merge(crate::web::router(state.clone()));
+    }
     if state.config.admin_token.is_some() {
         router = router
             .route(admin::BANS, post(admin::ban))
