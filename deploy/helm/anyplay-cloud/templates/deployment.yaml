@@ -1,0 +1,201 @@
+{{- include "anyplay-cloud.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "anyplay-cloud.fullname" . }}
+  labels:
+    {{- include "anyplay-cloud.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "anyplay-cloud.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "anyplay-cloud.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "anyplay-cloud.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ include "anyplay-cloud.gracePeriod" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: cloud
+          image: {{ include "anyplay-cloud.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.ports.http }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.ports.metrics }}
+              protocol: TCP
+          env:
+            - name: ANYPLAY_CLOUD_LISTEN
+              value: {{ printf "0.0.0.0:%d" (int .Values.ports.http) | quote }}
+            - name: ANYPLAY_CLOUD_METRICS_LISTEN
+              value: {{ printf "0.0.0.0:%d" (int .Values.ports.metrics) | quote }}
+            - name: ANYPLAY_CLOUD_LOG_FORMAT
+              value: {{ .Values.config.logFormat | quote }}
+            - name: ANYPLAY_CLOUD_DRAIN_SECONDS
+              value: {{ .Values.config.drainSeconds | quote }}
+            - name: ANYPLAY_CLOUD_SIGNING_KEY_FILE
+              value: /etc/anyplay/signing/{{ .Values.signingKey.key }}
+            - name: ANYPLAY_CLOUD_NATS_URL
+              value: {{ .Values.natsUrl | quote }}
+            - name: ANYPLAY_CLOUD_DATABASE_CONNECTIONS
+              value: {{ .Values.config.databaseConnections | quote }}
+            - name: ANYPLAY_CLOUD_NAME
+              value: {{ .Values.config.name | quote }}
+            - name: ANYPLAY_CLOUD_MAIL
+              value: {{ .Values.config.mail | quote }}
+            - name: ANYPLAY_CLOUD_MAIL_FROM
+              value: {{ .Values.config.mailFrom | quote }}
+            - name: ANYPLAY_CLOUD_SIGNUP
+              value: {{ .Values.config.signup | quote }}
+            - name: ANYPLAY_CLOUD_TRUST_PROXY
+              value: {{ .Values.config.trustProxy | quote }}
+            {{- with .Values.config.relays }}
+            - name: ANYPLAY_CLOUD_RELAYS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- with .Values.config.privacyUrl }}
+            - name: ANYPLAY_CLOUD_PRIVACY_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.termsUrl }}
+            - name: ANYPLAY_CLOUD_TERMS_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if eq .Values.config.mail "smtp" }}
+            - name: ANYPLAY_CLOUD_SMTP_HOST
+              value: {{ .Values.config.smtpHost | quote }}
+            - name: ANYPLAY_CLOUD_SMTP_TLS
+              value: {{ .Values.config.smtpTls | quote }}
+            {{- with .Values.config.smtpPort }}
+            - name: ANYPLAY_CLOUD_SMTP_PORT
+              value: {{ . | quote }}
+            {{- end }}
+            - name: ANYPLAY_CLOUD_SMTP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.keys.smtpUsername }}
+                  optional: true
+            - name: ANYPLAY_CLOUD_SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.keys.smtpPassword }}
+                  optional: true
+            {{- end }}
+            - name: ANYPLAY_CLOUD_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.keys.databaseUrl }}
+            - name: ANYPLAY_CLOUD_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret }}
+                  key: {{ .Values.secrets.keys.adminToken }}
+                  optional: true
+            {{- range $name, $value := .Values.config.extra }}
+            - name: {{ printf "ANYPLAY_CLOUD_%s" $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: signing-key
+              mountPath: /etc/anyplay/signing
+              readOnly: true
+            # The root file system is read-only. With signing_key_file and PostgreSQL the cloud
+            # writes nothing; these two folders are there for anything that might.
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: signing-key
+          secret:
+            secretName: {{ .Values.signingKey.existingSecret }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.signingKey.key }}
+                path: {{ .Values.signingKey.key }}
+        - name: data
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- range .Values.topologySpreadConstraints }}
+        - {{- toYaml . | nindent 10 }}
+          labelSelector:
+            matchLabels:
+              {{- include "anyplay-cloud.selectorLabels" $ | nindent 14 }}
+          matchLabelKeys:
+            - pod-template-hash
+        {{- end }}
+      {{- end }}

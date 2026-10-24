@@ -1,0 +1,207 @@
+# Values of the AnyPlay cloud chart. The guide is docs/kubernetes.md in the repository.
+# Secrets are taken by reference only: this chart never contains one.
+
+# How many nodes run. Ignored when autoscaling is on.
+replicas: 2
+
+image:
+  # No public image exists yet: build deploy/Dockerfile (--target cloud) and push it to your
+  # registry; see docs/kubernetes.md.
+  repository: ghcr.io/anyplay-gg/anyplay-cloud
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# The cloud's settings (docs/configuration.md). Each becomes ANYPLAY_CLOUD_<NAME>.
+config:
+  name: AnyPlay cloud
+  # The URLs of your relays. The chart does not deploy relays.
+  relays: []
+  # smtp or log. With smtp, smtpHost is required. The log mode writes sign-in codes to the log
+  # and is for tests only.
+  mail: smtp
+  mailFrom: "AnyPlay cloud <noreply@localhost>"
+  smtpHost: ""
+  smtpPort: ""
+  smtpTls: starttls
+  signup: open
+  privacyUrl: ""
+  termsUrl: ""
+  # The nodes sit behind an Ingress or load balancer that sets X-Forwarded-For.
+  trustProxy: true
+  databaseConnections: 16
+  # Seconds a node reports itself not ready after SIGTERM before it closes its connections.
+  drainSeconds: 5
+  logFormat: json
+  # Any other setting, as NAME: value (NAME in upper case, without the ANYPLAY_CLOUD_ prefix).
+  extra: {}
+
+# Where NATS is. Required.
+natsUrl: ""
+
+# Secrets, by reference. Create them before installing the chart.
+secrets:
+  # A Secret with the keys below. The database URL is required, the others are optional.
+  existingSecret: ""
+  keys:
+    # postgres://user:password@host/db, with ?sslmode=verify-full&sslrootcert=... for TLS.
+    databaseUrl: database-url
+    smtpUsername: smtp-username
+    smtpPassword: smtp-password
+    # At least 16 characters. Switches on the admin routes.
+    adminToken: admin-token
+
+# The one Ed25519 key all nodes sign with: a Secret that holds the key as a file. It is mounted
+# read-only and the cloud reads it from there (signing_key_file). Required.
+signingKey:
+  existingSecret: ""
+  key: signing.key
+
+# Extra environment variables for the container, in the Kubernetes format.
+extraEnv: []
+
+ports:
+  http: 8080
+  metrics: 9090
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+# Rolling updates keep every node until its replacement is ready.
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+# A node drains for config.drainSeconds, then closes its connections within 10 seconds. The grace
+# period must be longer than both. Unset means drainSeconds + 25.
+terminationGracePeriodSeconds: null
+
+probes:
+  startup:
+    periodSeconds: 2
+    failureThreshold: 60
+  liveness:
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readiness:
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 2
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+
+# Replicas land on different nodes, so that a node that dies takes at most one of them. The
+# chart adds the label selector and matchLabelKeys itself.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: DoNotSchedule
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# The Kubernetes "restricted" Pod Security profile. The image runs as user 10001.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+ingress:
+  enabled: false
+  className: ""
+  # Event connections are WebSockets that live for hours, and many controllers cut idle
+  # connections after a minute. Raise that timeout here, for ingress-nginx for example:
+  #   nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  #   nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  annotations: {}
+  hosts: []
+  #  - host: cloud.example.com
+  #    path: /
+  #    pathType: Prefix
+  tls: []
+  #  - secretName: cloud-tls
+  #    hosts: [cloud.example.com]
+
+# Deny everything, then allow what the cloud needs. Needs a network plugin that enforces
+# policies.
+networkPolicy:
+  enabled: true
+  # Who may reach the API port. Empty means everyone, because an ingress controller's address is
+  # not known here. Narrow it to your controller, for example
+  #  - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}
+  apiFrom: []
+  # Who may read /metrics. Only the namespace "monitoring" by default.
+  metricsFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+  # Where the cloud may connect. The pods of its own namespace by default; point these at the
+  # pods of PostgreSQL and NATS.
+  postgres:
+    port: 5432
+    to:
+      - podSelector: {}
+  nats:
+    port: 4222
+    to:
+      - podSelector: {}
+  # Only rendered with config.mail = smtp. The port follows config.smtpPort or config.smtpTls.
+  smtp:
+    to:
+      - ipBlock:
+          cidr: 0.0.0.0/0
+          except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
+  # DNS, on port 53 of any pod in the cluster.
+  dns:
+    to:
+      - namespaceSelector: {}
+
+# Needs the Prometheus Operator CRDs.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}

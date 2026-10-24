@@ -1,0 +1,236 @@
+name: kubernetes
+
+# Stage 5 of docs/ARCHITECTURE.md: the Helm chart in deploy/helm runs the cloud as a cluster.
+# Here it is linted, rendered against the Kubernetes schemas and installed into a kind cluster
+# with two nodes, a plain PostgreSQL and the official NATS chart. The cloud's namespace enforces
+# the "restricted" Pod Security profile, so a pod that breaks it is not admitted.
+
+on:
+  pull_request:
+    paths:
+      - "deploy/helm/**"
+      - "deploy/Dockerfile"
+      - ".github/workflows/kubernetes.yml"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kubernetes-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HELM_VERSION: v4.3.1
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  KUBERNETES_SCHEMA_VERSION: 1.33.0
+  KIND_VERSION: v0.33.0
+  # The official NATS chart, https://github.com/nats-io/k8s (appVersion 2.15.1).
+  NATS_CHART_VERSION: 2.15.1
+  CURL_IMAGE: curlimages/curl:8.21.0
+
+# The cloud depends on the network's API crate by relative path, so both repositories are
+# checked out side by side, like in ci.yml. The chart lives in cloud/deploy/helm.
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Install kubeconform
+        run: |
+          curl -fsSL -o kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf kubeconform.tar.gz kubeconform
+          sudo install kubeconform /usr/local/bin/kubeconform
+      - name: helm lint
+        run: |
+          helm lint deploy/helm/anyplay-cloud --strict -f deploy/helm/ci/values-kind.yaml
+      - name: A chart without its required values is refused
+        run: |
+          if helm template x deploy/helm/anyplay-cloud 2> refused.txt; then
+            echo "the chart rendered without secrets.existingSecret"
+            exit 1
+          fi
+          grep -q "secrets.existingSecret" refused.txt
+      - name: kubeconform on helm template
+        run: |
+          chart=deploy/helm/anyplay-cloud
+          values=deploy/helm/ci/values-kind.yaml
+          catalog='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          check() {
+            kubeconform -strict -summary -kubernetes-version "$KUBERNETES_SCHEMA_VERSION" \
+              -schema-location default -schema-location "$catalog"
+          }
+          echo "== the CI values"
+          helm template anyplay "$chart" -f "$values" | check
+          echo "== everything switched on"
+          helm template anyplay "$chart" -f "$values" \
+            --set config.mail=smtp --set config.smtpHost=smtp.example.com \
+            --set 'config.relays={https://relay.example.com}' \
+            --set ingress.enabled=true --set ingress.className=nginx \
+            --set 'ingress.hosts[0].host=cloud.example.com' \
+            --set autoscaling.enabled=true --set serviceMonitor.enabled=true | check
+      - name: kubeconform on the manifests
+        run: |
+          kubeconform -strict -summary -kubernetes-version "$KUBERNETES_SCHEMA_VERSION" \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            deploy/helm/ci/postgres.yaml deploy/helm/examples/cnpg-cluster.yaml
+
+  kind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: lint
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: cloud
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: anyplay-gg/network
+          path: network
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Build the cloud image
+        run: docker build -f cloud/deploy/Dockerfile --target cloud -t anyplay-cloud:ci .
+
+      - name: Create a kind cluster
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: ${{ env.KIND_VERSION }}
+          cluster_name: anyplay
+          wait: 180s
+
+      - name: Load the image into the cluster
+        run: kind load docker-image anyplay-cloud:ci --name anyplay
+
+      - name: Namespaces
+        # "anyplay" holds the cloud and refuses any pod that breaks the restricted profile.
+        # "deps" holds PostgreSQL, NATS and the client that makes the requests.
+        run: |
+          kubectl create namespace deps
+          kubectl create namespace anyplay
+          kubectl label namespace anyplay \
+            pod-security.kubernetes.io/enforce=restricted \
+            pod-security.kubernetes.io/enforce-version=latest
+
+      - name: Install NATS (official chart)
+        run: |
+          helm repo add nats https://nats-io.github.io/k8s/helm/charts/
+          helm repo update nats
+          helm install nats nats/nats --version "$NATS_CHART_VERSION" --namespace deps \
+            --set natsBox.enabled=false --set config.jetstream.enabled=false \
+            --wait --timeout 5m
+
+      - name: Install PostgreSQL (plain, for the test only)
+        run: |
+          kubectl apply -n deps -f cloud/deploy/helm/ci/postgres.yaml
+          kubectl rollout status -n deps deployment/postgres --timeout=180s
+
+      - name: Key ceremony, and the Secrets
+        # The signing key is made with the image's own `keygen`, as docs/kubernetes.md describes.
+        # Only its public half is printed.
+        run: |
+          mkdir keys
+          chmod 777 keys
+          docker run --rm --user 10001:10001 -v "$PWD/keys:/data" anyplay-cloud:ci keygen
+          kubectl create secret generic anyplay-cloud-signing -n anyplay \
+            --from-file=signing.key=keys/signing.key
+          kubectl create secret generic anyplay-cloud -n anyplay \
+            --from-literal=database-url='postgres://postgres:test@postgres.deps.svc.cluster.local:5432/postgres'
+          rm -rf keys
+
+      - name: Install the chart with two nodes
+        run: |
+          helm install anyplay-cloud cloud/deploy/helm/anyplay-cloud --namespace anyplay \
+            -f cloud/deploy/helm/ci/values-kind.yaml \
+            --set replicas=2 --set config.mail=log \
+            --wait --timeout 5m
+          kubectl rollout status -n anyplay deployment/anyplay-cloud --timeout=120s
+
+      - name: A client in the other namespace
+        run: |
+          kubectl run client -n deps --image="$CURL_IMAGE" --restart=Never --command -- sleep 3600
+          kubectl wait -n deps --for=condition=Ready pod/client --timeout=120s
+
+      - name: Smoke test
+        run: |
+          set -eu
+          api=http://anyplay-cloud.anyplay.svc.cluster.local
+          metrics=http://anyplay-cloud-metrics.anyplay.svc.cluster.local:9090
+          call() { kubectl exec -n deps client -- curl -fsS --max-time 5 "$@"; }
+
+          echo "== both pods are ready"
+          ready=$(kubectl get pods -n anyplay -l app.kubernetes.io/name=anyplay-cloud \
+            -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}')
+          echo "$ready"
+          [ "$(echo "$ready" | grep -c '^true$')" -eq 2 ]
+          kubectl get pods -n anyplay -o wide
+
+          echo "== /v1/info and /readyz through the Service"
+          call "$api/v1/info" | tee info.json
+          grep -q 'AnyPlay kind' info.json
+          call "$api/readyz"
+          call "$api/healthz"
+
+          echo "== /metrics on the metrics port"
+          call "$metrics/metrics" > metrics.txt
+          grep -q '^anyplay_cloud_info' metrics.txt
+          echo "== and nowhere else"
+          code=$(kubectl exec -n deps client -- curl -s -o /dev/null -w '%{http_code}' "$api/metrics")
+          echo "GET $api/metrics -> $code"
+          [ "$code" != 200 ]
+
+          echo "== the pods log JSON"
+          pod=$(kubectl get pods -n anyplay -l app.kubernetes.io/name=anyplay-cloud -o name | head -1)
+          kubectl logs -n anyplay "$pod" | head -3
+          kubectl logs -n anyplay "$pod" | head -1 | grep -q '^{'
+
+          echo "== the pod runs under the restricted profile with a read-only root"
+          kubectl get "$pod" -n anyplay -o jsonpath='{.spec.containers[0].securityContext}{"\n"}'
+
+      - name: Delete one pod, the Service keeps answering
+        run: |
+          set -eu
+          api=http://anyplay-cloud.anyplay.svc.cluster.local
+          victim=$(kubectl get pods -n anyplay -l app.kubernetes.io/name=anyplay-cloud -o name | head -1)
+          echo "deleting $victim"
+          # /v1/info keeps working while a node drains; /readyz does not, by design.
+          kubectl exec -n deps client -- sh -c '
+            fails=0; n=0; end=$(( $(date +%s) + 45 ))
+            while [ "$(date +%s)" -lt "$end" ]; do
+              n=$((n + 1))
+              curl -fsS -o /dev/null --max-time 2 "$0/v1/info" || fails=$((fails + 1))
+              sleep 0.2
+            done
+            echo "$n requests during the deletion, $fails failed"
+            [ "$fails" -eq 0 ]
+          ' "$api" &
+          probe=$!
+          sleep 3
+          kubectl delete -n anyplay "$victim" --wait=true
+          kubectl rollout status -n anyplay deployment/anyplay-cloud --timeout=120s
+          wait "$probe"
+          ready=$(kubectl get deployment -n anyplay anyplay-cloud -o jsonpath='{.status.readyReplicas}')
+          echo "ready replicas after the deletion: $ready"
+          [ "$ready" = 2 ]
+          kubectl exec -n deps client -- curl -fsS --max-time 5 "$api/readyz"
+
+      - name: What the cluster looks like
+        if: always()
+        run: |
+          kubectl get pods,svc,pdb,networkpolicy -A -o wide || true
+          kubectl describe pods -n anyplay || true
+          kubectl logs -n anyplay -l app.kubernetes.io/name=anyplay-cloud --tail=100 --prefix || true
+          kubectl get events -A --sort-by=.lastTimestamp | tail -40 || true

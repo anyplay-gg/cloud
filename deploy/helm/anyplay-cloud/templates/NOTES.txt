@@ -1,0 +1,34 @@
+The AnyPlay cloud runs as {{ if .Values.autoscaling.enabled }}{{ .Values.autoscaling.minReplicas }} to {{ .Values.autoscaling.maxReplicas }}{{ else }}{{ .Values.replicas }}{{ end }} nodes: {{ include "anyplay-cloud.fullname" . }}.
+
+Check that every node is ready:
+
+  kubectl --namespace {{ .Release.Namespace }} rollout status deployment/{{ include "anyplay-cloud.fullname" . }}
+
+Ask the cloud who it is, through the Service:
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward service/{{ include "anyplay-cloud.fullname" . }} 8080:{{ .Values.service.port }}
+  curl http://127.0.0.1:8080/v1/info
+
+{{- if .Values.ingress.enabled }}
+
+The Ingress serves the API at:
+{{- range .Values.ingress.hosts }}
+  https://{{ .host }}{{ .path | default "/" }}
+{{- end }}
+{{- else }}
+
+No Ingress is created (ingress.enabled is false). Put a TLS proxy or an Ingress in front of
+service/{{ include "anyplay-cloud.fullname" . }}: the cloud speaks plain HTTP.
+{{- end }}
+
+Metrics are on the Service {{ include "anyplay-cloud.fullname" . }}-metrics, port {{ .Values.ports.metrics }}, inside the cluster only.
+{{- if .Values.networkPolicy.enabled }}
+The network policy lets only {{ .Values.networkPolicy.metricsFrom | toJson }} read them.
+{{- end }}
+
+Relays are not part of this chart. Give them the public half of the signing key, and list their
+URLs in config.relays. The guide is docs/kubernetes.md.
+{{- if eq .Values.config.mail "log" }}
+
+WARNING: config.mail is "log": sign-in codes are written to the log. Use smtp outside of tests.
+{{- end }}

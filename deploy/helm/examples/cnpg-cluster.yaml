@@ -1,0 +1,50 @@
+# PostgreSQL for the AnyPlay cloud with CloudNativePG (https://cloudnative-pg.io).
+#
+# Install the operator once per Kubernetes cluster, with the versions this was written against:
+#
+#   helm repo add cnpg https://cloudnative-pg.github.io/charts
+#   helm install cnpg cnpg/cloudnative-pg --version 0.29.1 \
+#     --namespace cnpg-system --create-namespace --wait
+#
+# (chart 0.29.1 = operator 1.30.1; it needs Kubernetes 1.29 or newer.) Then:
+#
+#   kubectl create namespace anyplay-data
+#   kubectl apply -n anyplay-data -f cnpg-cluster.yaml
+#
+# The operator makes the database "cloud", its owner "cloud" and a Secret "anyplay-db-app" with the
+# keys `uri` and `password`. Copy `uri` into the cloud's Secret as `database-url` (docs/kubernetes.md);
+# add ?sslmode=verify-full&sslrootcert=... once the cloud has the cluster's CA.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: anyplay-db
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:18
+  # One standby must have every commit before it is acknowledged, so a failover loses nothing.
+  postgresql:
+    synchronous:
+      method: any
+      number: 1
+    parameters:
+      max_connections: "200"
+  bootstrap:
+    initdb:
+      database: cloud
+      owner: cloud
+  storage:
+    size: 20Gi
+    # storageClass: fast-ssd
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      memory: 2Gi
+  # Instances on different nodes.
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
+  # Backups to object storage are not set up here. See
+  # https://cloudnative-pg.io/documentation/current/backup/ and do it before real players arrive.
