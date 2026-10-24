@@ -126,13 +126,13 @@ pub async fn start_email_challenge(
         live::insert_challenge(&mut conn, &challenge, &email, &code, expires_ms).await?;
     }
     // The same mail goes out whether or not the address has an account.
-    let sent = tokio::time::timeout(
+    let sent = crate::mail::within(
         Duration::from_secs(20),
         state.mailer.send_code(&email, &code),
     )
     .await;
-    if !matches!(sent, Ok(Ok(()))) {
-        tracing::error!("cannot send a sign-in code");
+    if let Err(e) = sent {
+        tracing::error!(class = %e.class, status = e.status, reply = e.detail.as_deref(), "cannot send a sign-in code");
         live::delete_challenge(&mut *state.db.acquire().await?, &challenge).await?;
         return Err(AppError::internal());
     }

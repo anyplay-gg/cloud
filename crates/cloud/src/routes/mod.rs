@@ -143,6 +143,7 @@ pub fn router(state: AppState) -> Router {
             .route(admin::BANS, post(admin::ban))
             .route(admin::BAN, delete(admin::unban))
             .route(admin::ACTIONS, post(admin::act))
+            .route(admin::MAIL_TEST, post(admin::mail_test))
             .route(admin::REPORTS, get(admin::reports));
     }
     router

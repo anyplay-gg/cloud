@@ -89,6 +89,12 @@ docker compose exec cloud anyplay-cloud admin ban <handle> --days 7 --reason "ch
 docker compose exec cloud anyplay-cloud admin unban <handle>
 ```
 
+To check that sign-in mail leaves the server, send one test mail through the running cloud. It prints `sent`, or `failed: <class> (SMTP <status>)` and exits with an error; the classes are listed in [docs/configuration.md](docs/configuration.md#sign-in-mails):
+
+```sh
+docker compose exec cloud anyplay-cloud admin mail-test someone@example.com
+```
+
 Every setting is described in [docs/configuration.md](docs/configuration.md). That page also says how to run the relay on a machine of its own with a Let's Encrypt certificate.
 
 ## Development
