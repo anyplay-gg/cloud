@@ -23,6 +23,7 @@ pub mod config;
 pub mod db;
 pub mod http;
 pub mod limits;
+pub mod links;
 pub mod live;
 pub mod mail;
 pub mod metrics;

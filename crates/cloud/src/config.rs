@@ -121,6 +121,15 @@ pub struct Config {
     /// The folder with the built web portal (a single-page app: `index.html` and its assets).
     /// With it the cloud serves the portal from its own origin. Needs `public_url`.
     pub portal_dir: Option<PathBuf>,
+    // Connections: linked accounts of other services (network spec/portal-api.md)
+    /// The Client ID of the cloud's Discord application. With the secret it turns on the Discord
+    /// connection. Needs `public_url`: Discord sends the browser back to it.
+    pub discord_client_id: Option<String>,
+    /// The Client Secret of that application.
+    pub discord_client_secret: Option<String>,
+    /// A Steam Web API key. Without it a Steam connection holds the SteamID64 only; with it also
+    /// the persona name and picture.
+    pub steam_api_key: Option<String>,
 }
 
 impl Default for Config {
@@ -163,6 +172,9 @@ impl Default for Config {
             terms_version: None,
             legacy_device_days: 30,
             portal_dir: None,
+            discord_client_id: None,
+            discord_client_secret: None,
+            steam_api_key: None,
         }
     }
 }
@@ -316,6 +328,15 @@ impl Config {
         if let Some(v) = get("PORTAL_DIR") {
             self.portal_dir = Some(v.into());
         }
+        if let Some(v) = get("DISCORD_CLIENT_ID") {
+            self.discord_client_id = Some(v.trim().to_owned());
+        }
+        if let Some(v) = get("DISCORD_CLIENT_SECRET") {
+            self.discord_client_secret = Some(v.trim().to_owned());
+        }
+        if let Some(v) = get("STEAM_API_KEY") {
+            self.steam_api_key = Some(v.trim().to_owned());
+        }
         Ok(())
     }
 
@@ -419,7 +440,49 @@ impl Config {
                 bail!("portal_dir {} has no index.html", dir.display());
             }
         }
+        let discord_id = self.discord_client_id.as_deref().filter(|v| !v.is_empty());
+        let discord_secret = self
+            .discord_client_secret
+            .as_deref()
+            .filter(|v| !v.is_empty());
+        if discord_id.is_some() != discord_secret.is_some() {
+            bail!("discord_client_id and discord_client_secret go together");
+        }
+        if let Some(id) = discord_id {
+            if self.web_origin().is_none() {
+                bail!(
+                    "the Discord connection needs public_url: Discord sends the browser back to it"
+                );
+            }
+            if id.len() > 32 || !id.bytes().all(|b| b.is_ascii_digit()) {
+                bail!("discord_client_id must be the numeric Client ID of the application");
+            }
+        }
+        if let Some(key) = &self.steam_api_key
+            && !key.is_empty()
+            && (key.len() > 64 || !key.bytes().all(|b| b.is_ascii_alphanumeric()))
+        {
+            bail!("steam_api_key must be the key as Steam shows it (letters and digits)");
+        }
         Ok(())
+    }
+
+    /// The Discord application, when the cloud has one: its Client ID and secret.
+    pub fn discord(&self) -> Option<(&str, &str)> {
+        let id = self
+            .discord_client_id
+            .as_deref()
+            .filter(|v| !v.is_empty())?;
+        let secret = self
+            .discord_client_secret
+            .as_deref()
+            .filter(|v| !v.is_empty())?;
+        Some((id, secret))
+    }
+
+    /// The Steam Web API key, if the cloud has one.
+    pub fn steam_key(&self) -> Option<&str> {
+        self.steam_api_key.as_deref().filter(|v| !v.is_empty())
     }
 
     /// The origin of the account web, without a trailing slash, when this cloud has one.
@@ -516,6 +579,37 @@ pub struct Tuning {
     pub fresh_for: Duration,
     /// How long after the player asks to delete the account it is deleted, and they can cancel.
     pub deletion_grace: Duration,
+    /// How long a started connection waits for the provider to send the browser back.
+    pub link_pending_ttl: Duration,
+    /// Where the providers of connections are. Tests point these at a fake server.
+    pub links: LinkEndpoints,
+}
+
+/// The addresses of the services behind the connections.
+#[derive(Clone, Debug)]
+pub struct LinkEndpoints {
+    /// Where the player agrees (`/oauth2/authorize`).
+    pub discord_web: String,
+    /// The API (`/oauth2/token`, `/users/@me`).
+    pub discord_api: String,
+    /// Where avatars are.
+    pub discord_cdn: String,
+    /// The OpenID endpoint of Steam (`/login`; the claimed ID lives under `/id/`).
+    pub steam_openid: String,
+    /// The Steam Web API.
+    pub steam_api: String,
+}
+
+impl Default for LinkEndpoints {
+    fn default() -> Self {
+        Self {
+            discord_web: "https://discord.com".into(),
+            discord_api: "https://discord.com/api".into(),
+            discord_cdn: "https://cdn.discordapp.com".into(),
+            steam_openid: "https://steamcommunity.com/openid".into(),
+            steam_api: "https://api.steampowered.com".into(),
+        }
+    }
 }
 
 impl Default for Tuning {
@@ -540,6 +634,8 @@ impl Default for Tuning {
             ceremony_ttl: Duration::from_secs(5 * 60),
             fresh_for: Duration::from_secs(15 * 60),
             deletion_grace: Duration::from_secs(30 * 24 * 60 * 60),
+            link_pending_ttl: Duration::from_secs(5 * 60),
+            links: LinkEndpoints::default(),
         }
     }
 }
@@ -758,5 +854,45 @@ mod tests {
         config.legacy_device_days = 400;
         assert!(config.validate().is_err());
         assert_eq!(Config::default().web_origin(), None);
+    }
+
+    #[test]
+    fn the_connection_settings_are_read_and_checked() {
+        let mut config = Config::default();
+        assert!(config.discord().is_none() && config.steam_key().is_none());
+        config
+            .apply_env(|name| match name {
+                "PUBLIC_URL" => Some("https://play.example.com".into()),
+                "DISCORD_CLIENT_ID" => Some(" 1234567890 ".into()),
+                "DISCORD_CLIENT_SECRET" => Some("shh".into()),
+                "STEAM_API_KEY" => Some("ABCDEF0123456789".into()),
+                _ => None,
+            })
+            .unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.discord(), Some(("1234567890", "shh")));
+        assert_eq!(config.steam_key(), Some("ABCDEF0123456789"));
+
+        // The ID and the secret go together, and Discord needs a public address to come back to.
+        let mut half = config.clone();
+        half.discord_client_secret = None;
+        assert!(half.validate().is_err());
+        let mut lonely = config.clone();
+        lonely.public_url = None;
+        assert!(lonely.validate().is_err());
+        let mut name = config.clone();
+        name.discord_client_id = Some("my-app".into());
+        assert!(name.validate().is_err(), "the Client ID is a number");
+        let mut key = config.clone();
+        key.steam_api_key = Some("not a key".into());
+        assert!(key.validate().is_err());
+        // An empty value counts as not set.
+        let empty = Config {
+            discord_client_id: Some(String::new()),
+            discord_client_secret: Some(String::new()),
+            ..Config::default()
+        };
+        empty.validate().unwrap();
+        assert!(empty.discord().is_none());
     }
 }

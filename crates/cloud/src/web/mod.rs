@@ -134,6 +134,7 @@ pub fn router(state: AppState) -> Router<AppState> {
             "/web/passkey/sign-in/finish",
             post(passkeys::sign_in_finish),
         )
+        .route("/web/links/{provider}/callback", get(api::links::callback))
         .route("/web/assets/{name}", get(assets::serve))
         .merge(api::router());
     if state.config.portal_dir.is_some() {
@@ -147,6 +148,10 @@ pub fn router(state: AppState) -> Router<AppState> {
 pub const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; \
                        img-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; \
                        frame-ancestors 'none'";
+
+/// The policy of the portal's own pages: [`CSP`], and pictures also from the servers of the
+/// services whose accounts a player can link, which show their avatar on the profile.
+pub const PORTAL_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self';                        img-src 'self' https://cdn.discordapp.com https://*.steamstatic.com;                        connect-src 'self'; form-action 'self'; base-uri 'none';                        frame-ancestors 'none'";
 
 /// Adds the security headers to every answer and turns away a request that another site made
 /// the browser send.
@@ -182,7 +187,9 @@ async fn guard(State(state): State<AppState>, request: Request, next: Next) -> R
             HeaderValue::from_static(value),
         );
     };
-    set(headers, "content-security-policy", CSP);
+    if !headers.contains_key("content-security-policy") {
+        set(headers, "content-security-policy", CSP);
+    }
     set(headers, "x-content-type-options", "nosniff");
     set(headers, "referrer-policy", "no-referrer");
     set(headers, "cross-origin-opener-policy", "same-origin");

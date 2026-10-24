@@ -148,6 +148,10 @@ fn html(status: StatusCode, body: String) -> Response {
     );
     // The shell is small and names the hashed files of this build: a browser asks again.
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(super::PORTAL_CSP),
+    );
     response
 }
 

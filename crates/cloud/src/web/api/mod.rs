@@ -10,6 +10,7 @@
 //! * [`flow`]: the session, and signing in or up as steps of the flow of [`super::flow`].
 //! * [`account`]: the account, its passkeys, devices and sessions, step-up, export, deletion.
 //! * [`social`]: friends, the player's own profile and trophies, and public profiles.
+//! * [`links`]: connections, the player's linked Discord and Steam accounts.
 
 use axum::Router;
 use axum::extract::{FromRequestParts, Request};
@@ -30,6 +31,7 @@ use crate::state::AppState;
 
 pub mod account;
 pub mod flow;
+pub mod links;
 pub mod social;
 
 /// The base path of every route here.
@@ -274,6 +276,13 @@ pub fn router() -> Router<AppState> {
             put(social::set_avatar).delete(social::remove_avatar),
         )
         .route("/me/trophies", get(social::my_trophies))
+        // Connections
+        .route("/me/links", get(links::list))
+        .route(
+            "/me/links/{provider}",
+            patch(links::set_visibility).delete(links::unlink),
+        )
+        .route("/me/links/{provider}/start", post(links::start))
         // Other players
         .route("/users/{name}", get(social::user))
         .route("/users/{name}/trophies", get(social::user_trophies))
