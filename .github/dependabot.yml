@@ -1,0 +1,45 @@
+# Keeps the pins in docs/supply-chain.md from rotting: one pull request a week per ecosystem,
+# everything of a kind grouped, and nothing newer than a week (a release that is pulled or found
+# malicious within days never reaches us; security updates ignore the wait).
+version: 2
+updates:
+  # Actions are pinned by full commit SHA with a `# vX.Y.Z` comment; Dependabot moves both.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+  # The workspace names ../network/crates/api by path (see launcher above): Dependabot may fail to
+  # resolve it. The fuzz crate has the same dependency.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      cargo-minor-and-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: "deps"
+  # Base images of deploy/Dockerfile: digest and tag move together.
+  - package-ecosystem: docker
+    directory: /deploy
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      images:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deploy"
