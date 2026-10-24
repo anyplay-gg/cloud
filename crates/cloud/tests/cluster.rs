@@ -542,31 +542,83 @@ async fn a_new_accounts_friend_requests_at_once_on_two_nodes_stay_within_its_all
         Arc::new(nodes.pop().unwrap()),
         Arc::new(nodes.pop().unwrap()),
     );
-    let nils = one.sign_up("Nils").await;
-    let mut handles = Vec::new();
-    for k in 0..20 {
-        handles.push(one.sign_up(&format!("Pal{k}")).await.handle);
+    // A race that a lock per node lost in 2 of 5 runs: ten rounds in one run.
+    for round in 0..10 {
+        let nils = one.sign_up(&format!("Nils{round}")).await;
+        let mut handles = Vec::new();
+        for k in 0..20 {
+            handles.push(one.sign_up(&format!("Pal{round}x{k}")).await.handle);
+        }
+        // Twenty requests at once, half through each node; a new account may send ten.
+        let mut sent = Vec::new();
+        for (k, handle) in handles.into_iter().enumerate() {
+            let node = if k % 2 == 0 { one.clone() } else { two.clone() };
+            let token = nils.token().to_owned();
+            sent.push(tokio::spawn(async move {
+                node.post("/v1/friends/requests", &token, json!({"handle": handle}))
+                    .await
+                    .status
+            }));
+        }
+        let mut statuses = Vec::new();
+        for request in sent {
+            statuses.push(request.await.unwrap());
+        }
+        let taken = statuses.iter().filter(|s| **s == 200).count();
+        let refused = statuses.iter().filter(|s| **s == 403).count();
+        assert_eq!(
+            (taken, refused),
+            (10, 10),
+            "round {round}, statuses {statuses:?}"
+        );
+        let outgoing = one.get("/v1/friends", nils.token()).await.ok(200).body["outgoing"]
+            .as_array()
+            .map(Vec::len);
+        assert_eq!(outgoing, Some(10), "round {round}");
     }
-    // Twenty requests at once, half through each node; a new account may send ten.
-    let mut sent = Vec::new();
-    for (k, handle) in handles.into_iter().enumerate() {
-        let node = if k % 2 == 0 { one.clone() } else { two.clone() };
-        let token = nils.token().to_owned();
-        sent.push(tokio::spawn(async move {
-            node.post("/v1/friends/requests", &token, json!({"handle": handle}))
-                .await
-                .status
-        }));
+}
+
+/// Two players add each other at the same moment through different nodes: one request is stored
+/// and the other turns it into a friendship, whichever comes first, and neither waits for the
+/// other's lock for good.
+#[tokio::test]
+async fn two_players_adding_each_other_at_once_on_two_nodes_become_friends() {
+    let (one, two) = cluster_or_skip!();
+    let (one, two) = (Arc::new(one), Arc::new(two));
+    for round in 0..10 {
+        let a = one.sign_up(&format!("Ada{round}")).await;
+        let b = one.sign_up(&format!("Ben{round}")).await;
+        let (to_b, to_a) = tokio::join!(
+            one.post(
+                "/v1/friends/requests",
+                a.token(),
+                json!({"handle": b.handle})
+            ),
+            two.post(
+                "/v1/friends/requests",
+                b.token(),
+                json!({"handle": a.handle})
+            ),
+        );
+        let mut states = vec![
+            to_b.ok(200).body["state"].as_str().map(str::to_owned),
+            to_a.ok(200).body["state"].as_str().map(str::to_owned),
+        ];
+        states.sort();
+        assert_eq!(
+            states,
+            [Some("friends".to_owned()), Some("requested".to_owned())],
+            "round {round}"
+        );
+        for (node, user, other) in [(&one, &a, &b), (&two, &b, &a)] {
+            let lists = node.get("/v1/friends", user.token()).await.ok(200).body;
+            assert_eq!(
+                lists["friends"][0]["account"]["handle"],
+                json!(other.handle),
+                "round {round}"
+            );
+            assert_eq!(lists["incoming"], json!([]), "round {round}");
+            assert_eq!(lists["outgoing"], json!([]), "round {round}");
+        }
     }
-    let mut statuses = Vec::new();
-    for request in sent {
-        statuses.push(request.await.unwrap());
-    }
-    let taken = statuses.iter().filter(|s| **s == 200).count();
-    let refused = statuses.iter().filter(|s| **s == 403).count();
-    assert_eq!((taken, refused), (10, 10), "statuses {statuses:?}");
-    let outgoing = one.get("/v1/friends", nils.token()).await.ok(200).body["outgoing"]
-        .as_array()
-        .map(Vec::len);
-    assert_eq!(outgoing, Some(10));
 }
