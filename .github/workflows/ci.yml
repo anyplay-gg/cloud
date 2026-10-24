@@ -41,7 +41,7 @@ jobs:
           workspaces: cloud
       - name: Format
         # Not `--all`: that would also check the network checkout's crates.
-        run: cargo fmt -p anyplay-ticket -p anyplay-cloud -p anyplay-relay -- --check
+        run: cargo fmt -p anyplay-ticket -p anyplay-cloud -p anyplay-relay -p anyplay-e2e -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test

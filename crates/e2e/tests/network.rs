@@ -84,7 +84,10 @@ impl Launcher {
         }
     }
 
-    async fn call<T: serde::de::DeserializeOwned>(&mut self, command: Command) -> Result<T, Failure> {
+    async fn call<T: serde::de::DeserializeOwned>(
+        &mut self,
+        command: Command,
+    ) -> Result<T, Failure> {
         let id = self.next;
         self.next += 1;
         let (tx, rx) = oneshot::channel();
@@ -130,7 +133,13 @@ impl Launcher {
     }
 
     /// Signs up a new account with the code the cloud mailed.
-    async fn sign_up(&mut self, cloud: &str, mail: &MemoryMailer, email: &str, handle: &str) -> AccountId {
+    async fn sign_up(
+        &mut self,
+        cloud: &str,
+        mail: &MemoryMailer,
+        email: &str,
+        handle: &str,
+    ) -> AccountId {
         self.ok(Command::Hello {
             launcher: "test".into(),
             cloud: cloud.into(),
@@ -217,8 +226,12 @@ async fn two_players_meet_and_play_through_the_tunnel() {
 
     let mut alice = Launcher::start().await;
     let mut bobby = Launcher::start().await;
-    let alice_id = alice.sign_up(&cloud_url, &mail, "alice@example.org", "Alice").await;
-    let bobby_id = bobby.sign_up(&cloud_url, &mail, "bobby@example.org", "Bobby").await;
+    let alice_id = alice
+        .sign_up(&cloud_url, &mail, "alice@example.org", "Alice")
+        .await;
+    let bobby_id = bobby
+        .sign_up(&cloud_url, &mail, "bobby@example.org", "Bobby")
+        .await;
 
     let answer = alice
         .ok(Command::AddFriend {
@@ -227,25 +240,45 @@ async fn two_players_meet_and_play_through_the_tunnel() {
         .await;
     assert_eq!(answer["result"], "requested");
     bobby
-        .friends("the request", |l| l.incoming.iter().any(|r| r.account.id == alice_id))
+        .friends("the request", |l| {
+            l.incoming.iter().any(|r| r.account.id == alice_id)
+        })
         .await;
     bobby.ok(Command::Accept { account: alice_id }).await;
     alice
-        .friends("the new friend", |l| l.friends.iter().any(|f| f.account.id == bobby_id))
+        .friends("the new friend", |l| {
+            l.friends.iter().any(|f| f.account.id == bobby_id)
+        })
         .await;
 
     // Alice plays and opens a session the way a game does.
     let game_a = alice.start_game(None).await;
     let reply = game_a
-        .web("anyplay", "POST", "/v1/sessions", br#"{"max_members":4,"visibility":"friends"}"#)
+        .web(
+            "anyplay",
+            "POST",
+            "/v1/sessions",
+            br#"{"max_members":4,"visibility":"friends"}"#,
+        )
         .await
         .unwrap();
-    assert_eq!(reply.status, 200, "{}", String::from_utf8_lossy(&reply.body));
+    assert_eq!(
+        reply.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&reply.body)
+    );
     let session = session_id(&reply).expect("session id");
-    assert_eq!(game_a.activate(&session).await.unwrap(), ActivateResult::Done);
+    assert_eq!(
+        game_a.activate(&session).await.unwrap(),
+        ActivateResult::Done
+    );
 
     // A request in a format the network does not know is refused, never answered with a guess.
-    let unknown = game_a.web("someGroup", "GET", "/v1/things", b"").await.unwrap();
+    let unknown = game_a
+        .web("someGroup", "GET", "/v1/things", b"")
+        .await
+        .unwrap();
     assert_eq!(unknown.status, 0);
 
     // Bobby sees Alice playing in a session he may join, and joins it from his launcher.
@@ -261,7 +294,11 @@ async fn two_players_meet_and_play_through_the_tunnel() {
             })
         })
         .await;
-    let seen = lists.friends.iter().find(|f| f.account.id == alice_id).unwrap();
+    let seen = lists
+        .friends
+        .iter()
+        .find(|f| f.account.id == alice_id)
+        .unwrap();
     let activity = seen.presence.activity.clone().unwrap();
     assert_eq!(activity.title_id, TITLE);
     assert_eq!(activity.session.unwrap().id, session);
@@ -295,15 +332,27 @@ async fn two_players_meet_and_play_through_the_tunnel() {
         .await
         .expect("join intent");
     assert_eq!(intent.intent_type, "joinSession");
-    assert_eq!(intent.properties, vec![("sessionId".to_owned(), session.clone())]);
-    assert_eq!(game_b.activate(&session).await.unwrap(), ActivateResult::Done);
+    assert_eq!(
+        intent.properties,
+        vec![("sessionId".to_owned(), session.clone())]
+    );
+    assert_eq!(
+        game_b.activate(&session).await.unwrap(),
+        ActivateResult::Done
+    );
 
     let connected = |m: Message| match m {
         Message::Peer(peer) if peer.peer_state == PeerState::Connected => Some(peer),
         _ => None,
     };
-    let alice_seen_by_b = game_b.wait_event(LIMIT, connected).await.expect("tunnel at B");
-    let bobby_seen_by_a = game_a.wait_event(LIMIT, connected).await.expect("tunnel at A");
+    let alice_seen_by_b = game_b
+        .wait_event(LIMIT, connected)
+        .await
+        .expect("tunnel at B");
+    let bobby_seen_by_a = game_a
+        .wait_event(LIMIT, connected)
+        .await
+        .expect("tunnel at A");
     assert_eq!(alice_seen_by_b.account_id, alice_id.0);
     assert_eq!(bobby_seen_by_a.account_id, bobby_id.0);
     assert_eq!(alice_seen_by_b.address, game_a.state().address);
@@ -341,7 +390,10 @@ async fn two_players_meet_and_play_through_the_tunnel() {
             Event::Session {
                 session: Some(shown),
             } if shown.members.len() == 2
-                && shown.members.iter().any(|m| m.link.is_some_and(|l| l != anyplay_control::Link::Connecting)) =>
+                && shown.members.iter().any(|m| {
+                    m.link
+                        .is_some_and(|l| l != anyplay_control::Link::Connecting)
+                }) =>
             {
                 Some(shown.clone())
             }
