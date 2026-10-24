@@ -1,2 +1,5 @@
 # The deploy files run inside Linux containers: keep them LF on every checkout.
 deploy/** text eol=lf
+# sqlx checks each migration by a hash of its bytes: keep them LF, or a cloud built on Windows
+# would refuse a database made by one built on Linux.
+crates/cloud/migrations/** text eol=lf
