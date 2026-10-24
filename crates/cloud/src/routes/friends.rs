@@ -109,6 +109,8 @@ pub async fn request(
     if db::request_exists(&state.db, me, them).await? {
         return Ok(requested);
     }
+    // A new request is writing to a stranger: new and muted accounts may not.
+    crate::moderation::may_write_to_strangers(&state, me).await?;
     if db::count_friends(&state.db, me).await? >= MAX_FRIENDS {
         return Err(AppError::limit("You have the most friends allowed."));
     }

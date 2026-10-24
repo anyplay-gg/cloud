@@ -323,6 +323,7 @@ async fn the_export_holds_everything_stored_about_the_account() {
 async fn reports_are_stored_and_validated() {
     let cloud = with_admin().await;
     let (a, b) = cloud.friends("Alec", "Sam").await;
+    let kim = cloud.sign_up("Kim").await;
     cloud
         .post(
             "/v1/reports",
@@ -338,7 +339,7 @@ async fn reports_are_stored_and_validated() {
             json!({"account": b.id, "reason": "cheating"}),
         )
         .await
-        .ok(204);
+        .is_error("limit", 409);
     cloud
         .post(
             "/v1/reports",
@@ -375,7 +376,7 @@ async fn reports_are_stored_and_validated() {
         .post(
             "/v1/reports",
             a.token(),
-            json!({"account": b.id, "reason": "other", "details": "ä".repeat(1000)}),
+            json!({"account": kim.id, "reason": "other", "details": "ä".repeat(1000)}),
         )
         .await
         .ok(204);
@@ -385,16 +386,19 @@ async fn reports_are_stored_and_validated() {
         .ok(200)
         .body;
     let reports = reports.as_array().unwrap();
-    assert_eq!(reports.len(), 3);
-    assert_eq!(reports[0]["reporter"]["handle"], "Alec");
-    assert_eq!(reports[0]["reported"]["handle"], "Sam");
-    // Reports vanish with their reporter.
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[1]["reporter"]["handle"], "Alec");
+    assert_eq!(reports[1]["reported"]["handle"], "Sam");
+    assert!(reports[1]["content"].as_str().unwrap().contains("Sam"));
+    // A report outlives its reporter, who is forgotten.
     cloud.delete("/v1/me", a.token()).await.ok(204);
     let reports = admin(&cloud, Method::GET, "/admin/v1/reports", None)
         .await
         .ok(200)
         .body;
-    assert!(reports.as_array().unwrap().is_empty());
+    let reports = reports.as_array().unwrap();
+    assert_eq!(reports.len(), 2);
+    assert!(reports.iter().all(|r| r.get("reporter").is_none()));
 }
 
 #[tokio::test]
@@ -418,13 +422,13 @@ async fn a_ban_takes_effect_at_once_and_follows_the_e_mail_address() {
     let reply = cloud.get("/v1/me", b.token()).await;
     reply.is_error("banned", 403);
     assert_eq!(reply.body.get("until"), None, "a permanent ban has no end");
-    assert_eq!(
+    assert!(matches!(
         eb.next().await,
         Event::Banned {
             until: None,
-            statement: None,
+            statement: Some(_)
         }
-    );
+    ));
     assert_eq!(eb.close_code().await, Some(close::BANNED));
     // His friends see him go.
     let Event::Presence { presence, .. } = ea.until(|e| matches!(e, Event::Presence { .. })).await
@@ -434,13 +438,13 @@ async fn a_ban_takes_effect_at_once_and_follows_the_e_mail_address() {
     assert!(!presence.online);
     // He cannot reconnect, refresh or sign in again.
     let mut again = Events::connect_raw(&cloud.base, b.token()).await.unwrap();
-    assert_eq!(
+    assert!(matches!(
         again.next_within(Duration::from_secs(2)).await,
         Some(Event::Banned {
             until: None,
-            statement: None,
+            statement: Some(_)
         })
-    );
+    ));
     assert_eq!(again.close_code().await, Some(close::BANNED));
     cloud
         .request(
@@ -477,7 +481,7 @@ async fn a_banned_person_cannot_start_over_with_the_same_address() {
         &cloud,
         Method::POST,
         "/admin/v1/bans",
-        Some(json!({"handle": "Sam", "days": 3})),
+        Some(json!({"handle": "Sam", "days": 3, "reason": "Spam."})),
     )
     .await
     .ok(200);
@@ -510,7 +514,7 @@ async fn a_ban_stays_when_the_account_is_gone() {
         &cloud,
         Method::POST,
         "/admin/v1/bans",
-        Some(json!({"handle": "Sam"})),
+        Some(json!({"handle": "Sam", "reason": "Cheating."})),
     )
     .await
     .ok(200);
@@ -563,7 +567,7 @@ async fn a_banned_member_leaves_sessions_at_once() {
         &cloud,
         Method::POST,
         "/admin/v1/bans",
-        Some(json!({"handle": "Sam"})),
+        Some(json!({"handle": "Sam", "reason": "Cheating."})),
     )
     .await
     .ok(200);
@@ -583,7 +587,7 @@ async fn the_admin_routes_need_the_token_and_exist_only_when_it_is_set() {
             Method::POST,
             "/admin/v1/bans",
             None,
-            Some(json!({"handle": "Sam"})),
+            Some(json!({"handle": "Sam", "reason": "Cheating."})),
         )
         .await
         .is_error("unauthorized", 401);
@@ -592,7 +596,7 @@ async fn the_admin_routes_need_the_token_and_exist_only_when_it_is_set() {
             Method::POST,
             "/admin/v1/bans",
             Some("wrong-token-wrong-token"),
-            Some(json!({"handle": "Sam"})),
+            Some(json!({"handle": "Sam", "reason": "Cheating."})),
         )
         .await
         .is_error("unauthorized", 401);
@@ -608,7 +612,7 @@ async fn the_admin_routes_need_the_token_and_exist_only_when_it_is_set() {
         &cloud,
         Method::POST,
         "/admin/v1/bans",
-        Some(json!({"handle": "Sam", "days": 0})),
+        Some(json!({"handle": "Sam", "days": 0, "reason": "x"})),
     )
     .await
     .is_error("bad_request", 400);
@@ -626,7 +630,11 @@ async fn a_client_that_does_not_answer_pings_is_dropped() {
     let a = cloud.sign_up("Alec").await;
     let b = cloud.sign_up("Sam").await;
     cloud
-        .post("/v1/friends/requests", a.token(), json!({"handle": "Sam"}))
+        .post(
+            "/v1/friends/requests",
+            a.token(),
+            json!({"handle": "Sam", "reason": "Cheating."}),
+        )
         .await
         .ok(200);
     cloud

@@ -24,6 +24,7 @@ pub mod messages;
 pub mod misc;
 pub mod parties;
 pub mod profiles;
+pub mod moderation;
 pub mod sessions;
 pub mod trophies;
 
@@ -110,10 +111,31 @@ pub fn router(state: AppState) -> Router {
             get(messages::messages).post(messages::send),
         )
         .route(path::CONVERSATION_READ, put(messages::mark_read));
+    // Moderation (docs/moderation.md)
+    router = router
+        .route(path::ME_ACTIONS, get(moderation::my_actions))
+        .route(path::ME_ACTION_APPEAL, post(moderation::my_appeal))
+        .route(path::MOD_REPORTS, get(moderation::reports))
+        .route(path::MOD_REPORT, get(moderation::report))
+        .route(path::MOD_REPORT_DISMISS, post(moderation::dismiss))
+        .route(
+            path::MOD_ACTIONS,
+            get(moderation::actions).post(moderation::act),
+        )
+        .route(path::MOD_ACTION_LIFT, post(moderation::lift))
+        .route(path::MOD_APPEALS, get(moderation::appeals))
+        .route(path::MOD_APPEAL_DECISION, post(moderation::decide_appeal))
+        .route(path::MOD_LOG, get(moderation::log))
+        .route(
+            path::MOD_MODERATORS,
+            get(moderation::moderators).post(moderation::grant),
+        )
+        .route(path::MOD_MODERATOR, delete(moderation::revoke));
     if state.config.admin_token.is_some() {
         router = router
             .route(admin::BANS, post(admin::ban))
             .route(admin::BAN, delete(admin::unban))
+            .route(admin::ACTIONS, post(admin::act))
             .route(admin::REPORTS, get(admin::reports));
     }
     router

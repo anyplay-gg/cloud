@@ -110,25 +110,25 @@ The endpoint ID is a stable key. A player who keeps the net service's data folde
 
 | | |
 |---|---|
-| What | A report about another account: reporter, reported account, a reason (`cheating`, `harassment`, `spam`, `name`, `other`), free text up to 1,000 characters, the time. |
-| Where | `reports` (`id`, `reporter`, `reported`, `reason`, `details`, `created`). Filed with `POST /v1/reports`; at most 20 per reporter per day. |
+| What | A report about another account: reporter, reported account, a reason (`cheating`, `harassment`, `spam`, `name`, `other`), free text up to 1,000 characters, a snapshot of what was reported, the time, and once decided the outcome, the time and the moderator. |
+| Where | `reports` (`id`, `reporter`, `reporter_handle`, `reported`, `reported_handle`, `reason`, `details`, `content`, `created`, `status`, `outcome`, `decided`, `decided_by`, `decided_by_handle`, `action_id`). Filed with `POST /v1/reports`; at most 20 per reporter per day (`report_limit_per_day`) and 5 per 10 minutes, one open report per pair. |
 | Why | Moderation of abuse; evidence for bans. |
 | Basis (proposed) | Art. 6(1)(f): the operator and other players have an interest in a safe service. The free text about a third party rests on the same basis. For notices under the DSA also Art. 6(1)(c) ([dsa.md](dsa.md)). |
-| Kept today | For ever, with one exception: both account references are `ON DELETE CASCADE`, so deleting **either** the reporter **or** the reported account deletes the report. A report has no status, no outcome, no handler and no decision time. |
-| Proposed | Keep a report for a stated period after it was decided (suggestion: 12 months; longer while a ban rests on it), then delete. Keep the evidence for a ban even when the reported person deletes their account (see 1.9). |
-| Who sees it | Moderators (`GET /admin/v1/reports`, `anyplay-cloud admin reports`), with both handles. The reporter sees their own reports in the export. The reported person does not see reports about them. |
+| Kept today | A decided report 6 months after the decision (`retention_reports_days`), an undecided one 1 year after it was filed (`retention_open_reports_days`). Deleting the **reported** account keeps the report with its handle and ID as evidence. Deleting the **reporter** blanks `reporter` and `reporter_handle` and keeps the rest. There is no foreign key from `reports` to `accounts`. |
+| Proposed | As built. The lawyer should confirm the periods; the earlier suggestion was 12 months. |
+| Who sees it | Moderators (`GET /v1/moderation/reports`, `anyplay-cloud admin reports`), with both handles. The reporter sees their own reports in the export. The reported person does not see reports about them. |
 
 ### 1.9 Bans
 
 | | |
 |---|---|
-| What | A ban on an account and its e-mail address: account ID, a **SHA-256 hash of the normalised e-mail address**, the end date or none, a reason (free text up to 500 characters, written by the moderator) and the time. |
-| Where | `bans` (`account_id`, `email_hash`, `until`, `reason`, `created`); index `bans_email`. Written by `db::upsert_ban`. |
+| What | A ban on an account and its e-mail address: account ID, a **keyed hash (HMAC-SHA-256) of the normalised e-mail address**, the end date or none, a reason (written by the moderator, up to 500 characters) and the time. The action behind it (`actions`: kind, rule, reason, moderator, time, lifting) and an appeal (`appeals`: the player's text and the decision) are separate rows. |
+| Where | `bans` (`account_id`, `email_hash`, `until`, `reason`, `created`, `action_id`, `salted`); index `bans_email`. `actions`, `appeals`. Written by `moderation::act`. |
 | Why | Enforce a ban, including against a new account with the same address. |
 | Basis (proposed) | Art. 6(1)(f). |
-| Kept today | **For ever.** The row survives account deletion on purpose (comment in `0001_init.sql`). An expired ban (`until` in the past) is never deleted; it just stops matching. Only `unban` deletes it. The hash is plain SHA-256 without a salt or key, so anyone holding the table can test a guessed address. The reason text is not shown to the banned person: the API returns only the end date (`AppError::banned`). |
-| Proposed | Delete a time-limited ban a fixed period after it ends (suggestion: 12 months). For permanent bans keep the hash, but as a keyed hash (HMAC with an operator secret) and with a stated review period (suggestion: 5 years). Show the banned person the reason ([dsa.md](dsa.md), Art. 17). |
-| Who sees it | Moderators set it. The banned person sees only "banned until". The operator with database access. |
+| Kept today | A time-limited ban, a mute and a warning 6 months after they end or were given (`retention_bans_days`), with their appeals. A ban for good stays until a moderator lifts it, and 6 months after. The row survives account deletion on purpose. The hash is keyed with a secret that is not in the database (`ban_secret` or `data_dir/ban.key`); hashes made before it (plain SHA-256) are replaced when their account still exists or when the address shows up, and match until then. The banned person reads the reason ([dsa.md](dsa.md), Art. 17). |
+| Proposed | A review period for bans for good (suggestion: 5 years) is not built; a moderator lifts them. |
+| Who sees it | Moderators and the operator. The banned person sees the statement of reasons (not the moderator's name). The operator with database access. |
 
 ## 2. Memory only
 
@@ -159,7 +159,7 @@ Written to standard output by `tracing`. The default filter is `info,sqlx=warn` 
 | Line | Fields | Level | Personal data |
 |---|---|---|---|
 | `sign-in code (mail = log)` | `to` (e-mail), `code` | info | **E-mail address and a live code.** Only with `mail = log`, which is the **default** in `config.rs`; `deploy/compose.yaml` defaults to `smtp`. For development only. |
-| `account banned` / `account unbanned` | `account` ID, end date | warn | Account ID. No actor: the admin token has no identity. |
+| `account banned` / `account unbanned` | `account` ID, end date | warn | Account ID. No actor. The record is the `audit_log` table, not this line. |
 | `a replaced refresh token was used again` | `device` ID | warn | Device ID. |
 | `request` (method, path, status, ms) | `path` can hold account, session or invitation IDs; the query string and the body are left out | **debug** (off by default) | IDs in the path. |
 | `no pong; dropping the connection` | `device` | debug | Device ID. |
@@ -246,14 +246,14 @@ Ordered by how much they matter. The IDs are used in the other documents.
 
 | ID | Gap | Where | Suggested change |
 |---|---|---|---|
-| G1 | **Bans and their e-mail hashes are kept for ever**, expired ones too, with free-text reasons. Plain SHA-256 can be reversed by guessing addresses. | `bans`, `db::upsert_ban` | Retention rule and sweep; keyed hash; show the reason to the person. |
-| G2 | **Reports are kept for ever and are deleted with either account.** No status or outcome. Deleting the reported account erases the evidence while the ban stays. A reporter who deletes their account erases the report. | `reports` (`ON DELETE CASCADE`) | `ON DELETE SET NULL` plus a snapshot of the handles; add status, decision and decided-at; retention sweep. |
+| G1 | **Closed** (moderation change). Bans are swept 6 months after they end; the e-mail hash is keyed; the reason is shown. Open: older hashes of deleted accounts stay plain until they match or expire; bans for good have no review period. | `bans`, `moderation::banhash` | |
+| G2 | **Closed** (moderation change). Reports have a status, outcome and handler, keep a snapshot, survive both accounts and are swept. | `reports` | |
 | G3 | **No inactivity deletion.** Accounts and devices live until the player acts. | `accounts`, `devices` | Inactivity expiry with a warning mail. |
 | G4 | **The default `mail = log` writes e-mail addresses and live codes to the log.** | `config.rs`, `mail.rs` (`LogMailer`) | Refuse to start in log mode when `signup = open` and the listen address is not loopback; or make `smtp` the default. |
 | G5 | **IP addresses reach three places that need a stated rule:** the rate limiter in memory (short, fine), the relay (logging unverified; it sees the IP and a ticket with the account ID), and the proxy if access logs are on. No log retention is set anywhere. | `limits.rs`, relay, `Caddyfile`, `compose.yaml` | Compose `logging:` limits; documented relay and proxy log settings; check `iroh-relay` output. |
 | G6 | **The export is incomplete.** It lacks presence and last-seen, the virtual address lease and the ban hash. It is JSON, which fits the "structured, commonly used and machine-readable" format of [Art. 20(1)](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679). | `routes/accounts.rs` (`export`) | Add presence, lease and device `last_used`; document what is left out and why. |
 | G7 | **Deletion is immediate and complete for live data, but leaves bans, and nothing covers backups.** There is no confirmation step and no record that a deletion happened, so a stolen access token (15 minutes) can delete an account. | `state.delete_account` | Confirm by e-mail code; document backup expiry; keep a non-identifying deletion counter. |
-| G8 | **No audit log of moderation.** The admin token is one shared secret. Ban and unban log only the account ID, and no actor, shown reason or decision time is recorded in a table. | `routes/admin.rs` | Moderation actions table; per-person admin credentials ([dsa.md](dsa.md)). |
+| G8 | **Closed** for moderation (moderation change). Every action, dismissal, lifting, appeal and role change is a line in `audit_log` with the actor. Moderators are accounts; the admin token acts as `operator`. | `moderation` | |
 | G9 | **No age or terms record.** `age_confirmed` is checked and dropped. No terms or privacy version is recorded at sign-up. The error text names no age. | `routes/auth.rs` (`signup`) | Store `terms_version` and `age_confirmed_at` (not a birth date). Name the minimum age in the text. |
 | G10 | **Backups, restore tests and processor contracts are undefined** in the repository. | `docs/configuration.md` | See [open-questions.md](open-questions.md). |
 | G11 | **A stable endpoint ID and handle in sessions** let members recognise each other across sessions. | `members` | Document it; consider a per-session endpoint pseudonym later. |

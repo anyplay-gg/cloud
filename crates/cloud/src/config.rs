@@ -85,9 +85,25 @@ pub struct Config {
     pub admin_token: Option<String>,
     /// How many days messages are kept before the sweeps delete them.
     pub message_retention_days: u64,
-    /// How many hours old an account must be before it may write to people who are not its
-    /// friends. 0 lets new accounts write at once.
-    pub stranger_min_age_hours: u64,
+    // Moderation (docs/moderation.md)
+    /// A secret for the keyed hash of banned e-mail addresses. Without it the cloud makes one in
+    /// `data_dir/ban.key`.
+    pub ban_secret: Option<String>,
+    /// Hours before a new account may send friend requests; 0 turns the rule off.
+    pub new_account_hours: u64,
+    /// Days after an action in which the player may appeal.
+    pub appeal_days: u64,
+    /// Reports one account may file per day.
+    pub report_limit_per_day: u32,
+    /// Days to keep an ended or lifted ban, an ended or lifted action, a warning and their
+    /// appeals, counted from the end.
+    pub retention_bans_days: u64,
+    /// Days to keep a decided report, counted from the decision.
+    pub retention_reports_days: u64,
+    /// Days after which a report nobody decided is deleted.
+    pub retention_open_reports_days: u64,
+    /// Days to keep a line of the audit log.
+    pub retention_audit_days: u64,
 }
 
 impl Default for Config {
@@ -117,7 +133,14 @@ impl Default for Config {
             trust_proxy: false,
             admin_token: None,
             message_retention_days: 30,
-            stranger_min_age_hours: 24,
+            ban_secret: None,
+            new_account_hours: 24,
+            appeal_days: 183,
+            report_limit_per_day: 20,
+            retention_bans_days: 183,
+            retention_reports_days: 183,
+            retention_open_reports_days: 365,
+            retention_audit_days: 1095,
         }
     }
 }
@@ -231,8 +254,29 @@ impl Config {
         if let Some(v) = get("MESSAGE_RETENTION_DAYS") {
             self.message_retention_days = parse("MESSAGE_RETENTION_DAYS", &v)?;
         }
-        if let Some(v) = get("STRANGER_MIN_AGE_HOURS") {
-            self.stranger_min_age_hours = parse("STRANGER_MIN_AGE_HOURS", &v)?;
+        if let Some(v) = get("BAN_SECRET") {
+            self.ban_secret = Some(v);
+        }
+        if let Some(v) = get("NEW_ACCOUNT_HOURS") {
+            self.new_account_hours = parse("NEW_ACCOUNT_HOURS", &v)?;
+        }
+        if let Some(v) = get("APPEAL_DAYS") {
+            self.appeal_days = parse("APPEAL_DAYS", &v)?;
+        }
+        if let Some(v) = get("REPORT_LIMIT_PER_DAY") {
+            self.report_limit_per_day = parse("REPORT_LIMIT_PER_DAY", &v)?;
+        }
+        if let Some(v) = get("RETENTION_BANS_DAYS") {
+            self.retention_bans_days = parse("RETENTION_BANS_DAYS", &v)?;
+        }
+        if let Some(v) = get("RETENTION_REPORTS_DAYS") {
+            self.retention_reports_days = parse("RETENTION_REPORTS_DAYS", &v)?;
+        }
+        if let Some(v) = get("RETENTION_OPEN_REPORTS_DAYS") {
+            self.retention_open_reports_days = parse("RETENTION_OPEN_REPORTS_DAYS", &v)?;
+        }
+        if let Some(v) = get("RETENTION_AUDIT_DAYS") {
+            self.retention_audit_days = parse("RETENTION_AUDIT_DAYS", &v)?;
         }
         Ok(())
     }
@@ -283,6 +327,35 @@ impl Config {
             && token.len() < 16
         {
             bail!("admin_token must have at least 16 characters");
+        }
+        if let Some(secret) = &self.ban_secret
+            && secret.len() < 16
+        {
+            bail!("ban_secret must have at least 16 characters");
+        }
+        if self.appeal_days == 0 {
+            bail!("appeal_days must be at least 1");
+        }
+        if self.report_limit_per_day == 0 {
+            bail!("report_limit_per_day must be at least 1");
+        }
+        for (name, days) in [
+            ("retention_bans_days", self.retention_bans_days),
+            ("retention_reports_days", self.retention_reports_days),
+            (
+                "retention_open_reports_days",
+                self.retention_open_reports_days,
+            ),
+            ("retention_audit_days", self.retention_audit_days),
+        ] {
+            if days == 0 {
+                bail!("{name} must be at least 1");
+            }
+        }
+        if self.retention_bans_days < self.appeal_days {
+            bail!(
+                "retention_bans_days must not be shorter than appeal_days: a warning would go before its appeal time ends"
+            );
         }
         if self.name.trim().is_empty() || self.name.len() > 64 {
             bail!("name must have 1 to 64 characters");

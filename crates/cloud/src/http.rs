@@ -88,7 +88,13 @@ impl FromRequestParts<AppState> for Auth {
                 ));
             }
         };
-        state.check_device(auth.device, auth.account).await?;
+        if let Err(error) = state.check_device(auth.device, auth.account).await {
+            return Err(if error.body.error == anyplay_api::ErrorCode::Banned {
+                crate::moderation::banned_error(state, auth.account, error.body.until).await
+            } else {
+                error
+            });
+        }
         count_request(state, auth.account)?;
         Ok(auth)
     }

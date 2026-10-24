@@ -134,24 +134,24 @@ async fn a_ban_on_one_node_holds_on_the_other() {
     )
     .await
     .ok(200);
-    assert_eq!(
+    assert!(matches!(
         on_two.next().await,
         Event::Banned {
             until: None,
-            statement: None,
+            statement: Some(_)
         }
-    );
+    ));
     assert_eq!(on_two.close_code().await, Some(close::BANNED));
     let banned = wait_for(|| async { two.get("/v1/me", sam.token()).await.status == 403 }).await;
     assert!(banned, "the second node knows the ban");
     let mut again = Events::connect_raw(&two.base, sam.token()).await.unwrap();
-    assert_eq!(
+    assert!(matches!(
         again.next_within(Duration::from_secs(2)).await,
         Some(Event::Banned {
             until: None,
-            statement: None,
+            statement: Some(_)
         })
-    );
+    ));
 }
 
 /// True as soon as `check` holds, within a few seconds: news between nodes takes a moment.

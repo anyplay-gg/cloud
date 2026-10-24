@@ -35,10 +35,10 @@ The documents cite the article and paragraph and link the text: [GDPR](https://e
 | 8 | Breach process: who decides, 72-hour notice to the authority, notice to players | GDPR Art. 33, 34 | **Open.** Question O7. |
 | 9 | Point of contact for authorities, and for players, published | DSA Art. 11, 12 | **Open** (no page, no address) |
 | 10 | Notice form for illegal content, receipt and decision | DSA Art. 16 | **Code.** Tasks T1, T2 in [dsa.md](dsa.md). |
-| 11 | Statement of reasons for bans | DSA Art. 17 | **Code.** Task T4. |
-| 12 | Appeal route | DSA Art. 20 (voluntary), Art. 17(3)(f) | **Code.** Task T5. |
-| 13 | Moderation audit log, per-person admin access | DSA Art. 9, 10; GDPR Art. 5(2) | **Code.** Task T6. |
-| 14 | Retention rules in force: bans, reports, devices, inactive accounts, logs | GDPR Art. 5(1)(e) | **Code.** Gaps G1 to G3, G5 in the [inventory](data-inventory.md). |
+| 11 | Statement of reasons for bans | DSA Art. 17 | **Built** for the app and the API (task T4, [moderation.md](../moderation.md)). **Code:** the mail. |
+| 12 | Appeal route | DSA Art. 20 (voluntary), Art. 17(3)(f) | **Built** (task T5). |
+| 13 | Moderation audit log, per-person admin access | DSA Art. 9, 10; GDPR Art. 5(2) | **Built** for moderation: audit log and moderator accounts (task T6). **Open:** the log of orders from authorities. |
+| 14 | Retention rules in force: bans, reports, devices, inactive accounts, logs | GDPR Art. 5(1)(e) | **Partly.** Bans, reports, actions, appeals and the audit log are swept (G1, G2 closed). **Code:** devices and inactive accounts (G3), log retention (G5). |
 | 15 | No e-mail addresses or codes in logs: `mail = smtp`, log rotation, relay and proxy log settings | GDPR Art. 5(1)(c), 32 | **Code and configuration.** Gaps G4, G5. |
 | 16 | Age and terms version recorded at sign-up | GDPR Art. 7(1) if consent, Art. 5(2); DSA Art. 14(2) | **Code.** Gap G9. |
 | 17 | Access and deletion work for all stored data, backups included | GDPR Art. 15, 17, 20 | **Partly.** Gaps G6, G7, G10. |

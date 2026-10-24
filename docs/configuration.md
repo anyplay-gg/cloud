@@ -32,8 +32,7 @@ Without a file, the defaults apply. The cloud runs that way for development: sig
 | `privacy_url`, `terms_url` | none | Links the launcher shows before sign-up. |
 | `trust_proxy` | `false` | Take a client's address for rate limits from the first hop of `X-Forwarded-For`. Turn it on only behind a proxy that sets the header; otherwise anyone can pick their own address. |
 | `message_retention_days` | `30` | How many days the cloud keeps messages. The sweeps delete older ones, on every node. At least 1. |
-| `stranger_min_age_hours` | `24` | How old an account must be before it may start a conversation with someone who is not its friend. `0` lets new accounts write at once. |
-| `admin_token` | none | A secret of at least 16 characters. It switches on the `/admin/v1/...` routes and the `admin` commands. Without it the routes do not exist. |
+| `admin_token` | none | A secret of at least 16 characters. It switches on the `/admin/v1/...` routes and the `admin` commands, and lets the operator call `/v1/moderation/...` with it. It is the bootstrap for naming the first moderators; whatever it does is logged as `operator`. Without it those routes do not exist. |
 
 The `admin` and `healthcheck` commands read the same settings to find the cloud (`listen`) and the token, so run them with the same environment.
 
@@ -41,15 +40,41 @@ The `admin` and `healthcheck` commands read the same settings to find the cloud 
 
 With `mail = "smtp"` the cloud never writes addresses or codes to its log above debug level. With `mail = "log"` it does, at info level, because that is the point of the mode.
 
-### Ban and report commands
+### Moderation settings
+
+The model, the commands and what players see are in [moderation.md](moderation.md). The settings:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `ban_secret` | none | A secret of at least 16 characters for the keyed hash of banned e-mail addresses. Without it the cloud makes a random key in `data_dir/ban.key`. All nodes of a cluster need the same one; back it up. |
+| `new_account_hours` | `24` | An account must be this old to send a friend request, and later to write to strangers. `0` turns the rule off. |
+| `appeal_days` | `183` | How long after an action the player may appeal (6 months, the DSA minimum for the internal complaint system). |
+| `report_limit_per_day` | `20` | Reports one account may file in 24 hours. |
+| `retention_bans_days` | `183` | Days a temporary ban, a mute, a warning, a lifted action and their appeals are kept after they end (after they were given, for a warning). Not shorter than `appeal_days`. A ban for good is kept until lifted. |
+| `retention_reports_days` | `183` | Days a decided report is kept after the decision. |
+| `retention_open_reports_days` | `365` | Days after which a report nobody decided is deleted. |
+| `retention_audit_days` | `1095` | Days a line of the audit log is kept. |
+
+The sweep that deletes expired data runs on every node about once an hour.
+
+### Moderation commands
 
 ```text
-anyplay-cloud admin ban <handle> [--days N] [--reason TEXT]
+anyplay-cloud admin reports [--status open|decided|all] [--limit N]
+anyplay-cloud admin dismiss <report-id> --reason TEXT
+anyplay-cloud admin warn <handle> --reason TEXT [--rule RULE] [--report ID]
+anyplay-cloud admin mute <handle> --days N --reason TEXT [--rule RULE] [--report ID]
+anyplay-cloud admin ban <handle> --reason TEXT [--days N] [--rule RULE]
 anyplay-cloud admin unban <handle>
-anyplay-cloud admin reports [--limit N]
+anyplay-cloud admin grant-moderator <handle>
+anyplay-cloud admin revoke-moderator <handle>
+anyplay-cloud admin moderators
+anyplay-cloud admin appeals
+anyplay-cloud admin decide-appeal <appeal-id> [--reverse] --reason TEXT
+anyplay-cloud admin log [--limit N]
 ```
 
-A ban signs the account's event connections out at once, takes it out of its sessions and stops the same e-mail address from signing up again, even after the account is deleted. Without `--days` it is for good.
+A ban signs the account's event connections out at once, takes it out of its sessions and stops the same e-mail address from signing up again, even after the account is deleted. Without `--days` it is for good. Every action needs a reason, which the player reads.
 
 ### Fixed values
 

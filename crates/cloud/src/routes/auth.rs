@@ -173,7 +173,7 @@ pub async fn code(
     match db::account_by_email(&state.db, &email).await? {
         Some(account) => {
             if let Some(until) = state.ban_of(account.id()) {
-                return Err(AppError::banned(until));
+                return Err(crate::moderation::banned_error(&state, account.id(), until).await);
             }
             let signed_in = start_device(&state, &account, &request.device).await?;
             Ok(Json(CodeAnswer::SignedIn {
@@ -207,10 +207,23 @@ fn signups_closed() -> AppError {
 
 /// A banned person cannot come back with the same address, even after deleting the account.
 async fn check_email_ban(state: &AppState, email: &str) -> Result<()> {
-    let bans = db::bans_by_email(&state.db, &sha256(email.as_bytes())).await?;
+    use crate::moderation::banhash::BanKey;
+    let keyed = state.ban_key.hash(email);
+    let bans = db::bans_by_email(&state.db, &keyed, &BanKey::legacy(email)).await?;
     let now = now();
     if let Some(ban) = bans.iter().find(|b| b.active(now)) {
-        return Err(AppError::banned(ban.until()));
+        if ban.salted == 0 {
+            // The address is known now, so the old plain hash can be replaced.
+            crate::moderation::store::resalt_ban(
+                &mut *state.db.acquire().await?,
+                ban.account_id as u64,
+                &keyed,
+            )
+            .await?;
+        }
+        return Err(
+            crate::moderation::banned_error(state, ban.account_id as u64, ban.until()).await,
+        );
     }
     Ok(())
 }
@@ -389,7 +402,7 @@ pub async fn refresh(
         .map_err(AppError::rate_limited)?;
     let account = device.account_id as u64;
     if let Some(until) = state.ban_of(account) {
-        return Err(AppError::banned(until));
+        return Err(crate::moderation::banned_error(&state, account, until).await);
     }
     let refresh = random_token(32);
     let rotated = db::rotate_refresh(

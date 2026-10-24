@@ -132,6 +132,8 @@ pub fn fast_tuning() -> Tuning {
             code_per_ip: 10_000,
             refresh_per_device: 10_000,
             account: 1_000_000,
+            report_per_account: 1_000_000,
+            appeal_per_account: 1_000_000,
             ..Rates::default()
         },
         ..Tuning::default()
@@ -190,6 +192,8 @@ impl TestCloud {
             // Many test clouds share one database server.
             database_connections: 4,
             nats_url,
+            // Tests make friends minutes after signing up; the rule has its own tests.
+            new_account_hours: 0,
             name: "Test cloud".into(),
             relays: vec![
                 "https://relay-a.example".into(),

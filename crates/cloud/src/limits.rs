@@ -32,6 +32,12 @@ pub struct Rates {
     /// `strangers_window`.
     pub strangers: u32,
     pub strangers_window: Duration,
+    /// Reports one account may file per `report_window`, besides the daily limit in the settings.
+    pub report_per_account: u32,
+    pub report_window: Duration,
+    /// Appeals one account may file per `appeal_window`.
+    pub appeal_per_account: u32,
+    pub appeal_window: Duration,
 }
 
 impl Default for Rates {
@@ -54,6 +60,10 @@ impl Default for Rates {
             messages_window: Duration::from_secs(60),
             strangers: 10,
             strangers_window: Duration::from_secs(60 * 60),
+            report_per_account: 5,
+            report_window: Duration::from_secs(10 * 60),
+            appeal_per_account: 10,
+            appeal_window: Duration::from_secs(60 * 60),
         }
     }
 }
