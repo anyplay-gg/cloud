@@ -81,7 +81,12 @@ The worst outages in public postmortems came from load spikes and reconnect stor
 
 ## Regions
 
-The first cluster runs in one region in the EU. When players in other regions need lower latency, the network grows in **cells**: each region runs its own nodes, NATS cluster and relays, and NATS gateways join the regions. Accounts, friends and moderation stay in one store with the primary in the EU and read replicas elsewhere, so friendships work across regions; presence and sessions stay in the region where they happen.
+The cloud is a control plane: game traffic never passes through it, so a region far from the cloud slows down a sign-in or a join by a fraction of a second, not a game. The first cluster runs in one region in the EU. Other regions come in two steps ([ADR 0006](adr/0006-one-store-many-regions.md)):
+
+1. **Regions without cells.** Each region runs its own relays, its own nodes for the players' connections and its own NATS cluster, joined by NATS gateways. All regions share one store: the primary in the EU, read replicas elsewhere for reads that may be a little late. Friendships, presence and sessions work across regions as they do inside one.
+2. **Cells**, when one primary is no longer enough: accounts split by ID, each cell with its own store, and a thin directory in front. The ADR names the numbers that start this step.
+
+When the EU region is down, writes fail fast everywhere, and games already running go on, because their tunnels and relay tickets need no cloud.
 
 ## Relays
 
