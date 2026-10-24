@@ -38,6 +38,9 @@ pub struct Rates {
     /// Appeals one account may file per `appeal_window`.
     pub appeal_per_account: u32,
     pub appeal_window: Duration,
+    /// Reads of public profiles on the web portal per address and `portal_public_window`.
+    pub portal_public: u32,
+    pub portal_public_window: Duration,
 }
 
 impl Default for Rates {
@@ -64,6 +67,8 @@ impl Default for Rates {
             report_window: Duration::from_secs(10 * 60),
             appeal_per_account: 10,
             appeal_window: Duration::from_secs(60 * 60),
+            portal_public: 120,
+            portal_public_window: Duration::from_secs(60),
         }
     }
 }

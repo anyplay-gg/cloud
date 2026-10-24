@@ -7,6 +7,8 @@
 //! [`TestCloud::cluster`] starts several nodes of one cloud.
 #![allow(dead_code)]
 
+pub mod portal;
+
 use std::sync::Arc;
 use std::time::Duration;
 

@@ -512,6 +512,7 @@ impl Inner {
         };
         self.invitations_gone(&gone);
         self.sweep_social(now).await?;
+        self.sweep_deletions().await;
         let mut dirty = offline;
         for account in leaving {
             dirty.extend(self.leave_everything(account).await?);
@@ -523,6 +524,26 @@ impl Inner {
 }
 
 impl Inner {
+    /// Deletes the accounts whose grace period after a deletion request has ended. A failure is
+    /// logged and tried again at the next sweep; two nodes deleting the same account is harmless.
+    async fn sweep_deletions(&self) {
+        let due = match db::deletions_due(&self.db, util::now(), 20).await {
+            Ok(due) => due,
+            Err(error) => {
+                tracing::error!(%error, "cannot read the accounts due for deletion");
+                return;
+            }
+        };
+        for account in due {
+            match self.delete_account(account).await {
+                Ok(()) => tracing::info!("deleted an account after its grace period"),
+                Err(error) => {
+                    tracing::error!(error = %error.body.message, "cannot delete an account");
+                }
+            }
+        }
+    }
+
     /// Deletes moderation data past its retention, at most once an hour per node. A failure is
     /// logged and tried again at the next sweep.
     async fn sweep_moderation(&self) {

@@ -11,6 +11,8 @@
 //! * [`native`]: the two API calls of that hand-off, and the link from the app to this site.
 //! * [`account`]: the account page.
 //! * [`passkeys`]: WebAuthn ceremonies (webauthn-rs) for adding a passkey and signing in with one.
+//! * [`api`]: the JSON API of the web portal, `/web/api/v1`.
+//! * [`portal`]: serves the built portal, a single-page app, from the same origin.
 
 use std::time::Duration;
 
@@ -29,11 +31,13 @@ use crate::error::AppError;
 use crate::state::AppState;
 
 pub mod account;
+pub mod api;
 pub mod ban;
 pub mod flow;
 pub mod native;
 pub mod pages;
 pub mod passkeys;
+pub mod portal;
 pub mod store;
 
 mod assets;
@@ -83,7 +87,7 @@ impl Web {
 }
 
 pub fn router(state: AppState) -> Router<AppState> {
-    Router::new()
+    let mut router = Router::new()
         .route("/web", get(|| async { redirect_plain("/web/account") }))
         .route("/web/authorize", get(flow::authorize))
         .route("/web/sign-in", get(flow::sign_in_page))
@@ -130,7 +134,11 @@ pub fn router(state: AppState) -> Router<AppState> {
             post(passkeys::sign_in_finish),
         )
         .route("/web/assets/{name}", get(assets::serve))
-        .layer(middleware::from_fn_with_state(state, guard))
+        .merge(api::router());
+    if state.config.portal_dir.is_some() {
+        router = router.merge(portal::router(&state));
+    }
+    router.layer(middleware::from_fn_with_state(state, guard))
 }
 
 /// The content security policy of every page: nothing from anywhere but this origin, no inline

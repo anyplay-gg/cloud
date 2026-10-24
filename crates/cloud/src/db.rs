@@ -243,6 +243,64 @@ pub async fn delete_account(pool: &Pool, id: u64) -> sqlx::Result<()> {
     tx.commit().await
 }
 
+/// When the account will be deleted, if the player asked for it (Unix seconds).
+pub async fn deletion_of(pool: &Pool, id: u64) -> sqlx::Result<Option<u64>> {
+    let row: Option<(Option<i64>,)> =
+        sqlx::query_as("SELECT deletion_at FROM accounts WHERE id = $1")
+            .bind(i(id))
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.and_then(|(at,)| at).map(u))
+}
+
+/// Schedules the deletion of an account. One that is scheduled already keeps its time.
+pub async fn schedule_deletion(pool: &Pool, id: u64, at: u64) -> sqlx::Result<()> {
+    sqlx::query("UPDATE accounts SET deletion_at = $2 WHERE id = $1 AND deletion_at IS NULL")
+        .bind(i(id))
+        .bind(i(at))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Cancels a scheduled deletion; true when there was one.
+pub async fn cancel_deletion(pool: &Pool, id: u64) -> sqlx::Result<bool> {
+    let result = sqlx::query(
+        "UPDATE accounts SET deletion_at = NULL WHERE id = $1 AND deletion_at IS NOT NULL",
+    )
+    .bind(i(id))
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// The accounts whose deletion is due at `now`, the longest overdue first.
+pub async fn deletions_due(pool: &Pool, now: u64, limit: i64) -> sqlx::Result<Vec<u64>> {
+    let rows: Vec<(i64,)> = sqlx::query_as(
+        "SELECT id FROM accounts WHERE deletion_at IS NOT NULL AND deletion_at <= $1 \
+         ORDER BY deletion_at, id LIMIT $2",
+    )
+    .bind(i(now))
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| u(id)).collect())
+}
+
+/// Gives the account a new address. False when another account has it.
+pub async fn set_email(pool: &Pool, id: u64, email: &str) -> sqlx::Result<bool> {
+    match sqlx::query("UPDATE accounts SET email = $2 WHERE id = $1")
+        .bind(i(id))
+        .bind(email)
+        .execute(pool)
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 // Devices
 
 pub async fn all_devices(pool: &Pool) -> sqlx::Result<Vec<(u64, u64)>> {

@@ -58,6 +58,23 @@ pub struct SessionData {
     /// once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff: Option<String>,
+    /// When the player last proved who they are again in the middle of a session (Unix
+    /// milliseconds). A session counts as fresh after that as well as after its sign-in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_ms: Option<i64>,
+    /// The challenge of a code sent to the account's own address, to prove the player is there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_up: Option<String>,
+    /// A new address waiting for its code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email_change: Option<EmailChange>,
+}
+
+/// A change of the account's e-mail address that waits for the code sent to the new address.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmailChange {
+    pub challenge: String,
+    pub email: String,
 }
 
 #[derive(Clone, Debug)]
@@ -71,15 +88,31 @@ pub struct Session {
     pub created_ms: i64,
 }
 
+/// A browser session as its owner sees it in a list.
+#[derive(Clone, Debug)]
+pub struct SessionInfo {
+    pub id_hash: Vec<u8>,
+    pub created_ms: i64,
+    pub used_ms: i64,
+}
+
 impl Session {
     /// True when `sent` is this session's CSRF token.
     pub fn csrf_ok(&self, sent: &str) -> bool {
         crate::util::ct_eq(self.csrf.as_bytes(), sent.as_bytes())
     }
 
-    /// True when the player signed in during the last `fresh_for`.
+    /// True when the player signed in or proved who they are again during the last `fresh_for`.
     pub fn fresh(&self, fresh_for: Duration) -> bool {
-        self.account.is_some() && now_ms() - self.created_ms <= fresh_for.as_millis() as i64
+        self.fresh_until(fresh_for)
+            .is_some_and(|until| until > now_ms())
+    }
+
+    /// When the session stops being fresh, in Unix milliseconds. `None` without an account.
+    pub fn fresh_until(&self, fresh_for: Duration) -> Option<i64> {
+        self.account?;
+        let last = self.data.verified_ms.unwrap_or(0).max(self.created_ms);
+        Some(last + fresh_for.as_millis() as i64)
     }
 }
 
@@ -99,8 +132,8 @@ pub async fn create_session(
     let created_ms = now_ms();
     let id_hash = hash(&token);
     sqlx::query(
-        "INSERT INTO web_sessions (id_hash, account_id, csrf, data, created_ms, expires_ms) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO web_sessions (id_hash, account_id, csrf, data, created_ms, expires_ms, used_ms) \
+         VALUES ($1, $2, $3, $4, $5, $6, $5)",
     )
     .bind(&id_hash[..])
     .bind(account.map(|a| a as i64))
@@ -151,9 +184,10 @@ pub async fn load_session(
         destroy_session(pool, token).await?;
         return Ok(None);
     }
-    sqlx::query("UPDATE web_sessions SET expires_ms = $1 WHERE id_hash = $2")
+    sqlx::query("UPDATE web_sessions SET expires_ms = $1, used_ms = $3 WHERE id_hash = $2")
         .bind(end)
         .bind(&id_hash[..])
+        .bind(now)
         .execute(pool)
         .await?;
     Ok(Some(Session {
@@ -198,6 +232,36 @@ pub async fn end_sessions_of(pool: &Pool, account: u64) -> sqlx::Result<()> {
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// The live browser sessions of an account, the oldest first.
+pub async fn sessions_of(pool: &Pool, account: u64) -> sqlx::Result<Vec<SessionInfo>> {
+    let rows: Vec<(Vec<u8>, i64, Option<i64>)> = sqlx::query_as(
+        "SELECT id_hash, created_ms, used_ms FROM web_sessions \
+         WHERE account_id = $1 AND expires_ms > $2 ORDER BY created_ms, id_hash",
+    )
+    .bind(account as i64)
+    .bind(now_ms())
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id_hash, created_ms, used_ms)| SessionInfo {
+            id_hash,
+            created_ms,
+            used_ms: used_ms.unwrap_or(created_ms),
+        })
+        .collect())
+}
+
+/// Ends one browser session of an account; true when it had it.
+pub async fn end_session_of(pool: &Pool, account: u64, id_hash: &[u8]) -> sqlx::Result<bool> {
+    let result = sqlx::query("DELETE FROM web_sessions WHERE id_hash = $1 AND account_id = $2")
+        .bind(id_hash)
+        .bind(account as i64)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 // One-time flows
@@ -304,6 +368,22 @@ pub async fn insert_passkey(
     .bind(created as i64)
     .execute(pool)
     .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Renames a passkey; true when the account had it.
+pub async fn rename_passkey(
+    pool: &Pool,
+    account: u64,
+    id: &[u8],
+    name: &str,
+) -> sqlx::Result<bool> {
+    let result = sqlx::query("UPDATE passkeys SET name = $1 WHERE id = $2 AND account_id = $3")
+        .bind(name)
+        .bind(id)
+        .bind(account as i64)
+        .execute(pool)
+        .await?;
     Ok(result.rows_affected() == 1)
 }
 

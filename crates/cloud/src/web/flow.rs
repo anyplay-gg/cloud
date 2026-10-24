@@ -5,6 +5,12 @@
 //! player signs in by e-mail code or by passkey, creates an account when the address is new,
 //! accepts the terms when they changed, and the cloud sends the browser to the loopback address
 //! with a one-time code. The app trades the code and its verifier for tokens ([`super::native`]).
+//!
+//! The steps are functions that change the visit's session and say where the player goes next
+//! ([`Landing`]). The HTML handlers below and the JSON API of the portal
+//! ([`super::api`]) both call them, so there is one state machine.
+
+use std::net::IpAddr;
 
 use anyplay_api::ErrorCode;
 use axum::extract::{Query, State};
@@ -14,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use super::pages::{self, Field, TermsView};
 use super::store::{self, Authorize, Login, SessionData};
 use super::{
-    Visit, WebError, WebForm, WebResult, check_csrf, existing, fresh_visit, limit_ip, page,
+    Visit, WebError, WebForm, WebResult, check_csrf, existing, fresh_visit, limit_ip_api, page,
     redirect, redirect_plain, sign_in_session, view, without_cookie,
 };
 use crate::db::{self, AccountRow};
@@ -33,6 +39,43 @@ pub struct Grant {
     pub account: u64,
     /// The PKCE challenge the app must answer with its verifier.
     pub challenge: String,
+}
+
+/// Where a step of the flow leaves the player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Landing {
+    /// Back to the start of signing in.
+    SignIn,
+    /// Back to the start of creating an account.
+    Create,
+    /// A code is out; the player types it.
+    Code,
+    /// The address is verified; the player chooses a handle.
+    Details,
+    /// The player has to accept the terms.
+    Terms,
+    /// The sign-in is done and the app on the player's PC waits for its code.
+    Handoff,
+    /// The sign-in is done; the browser has its own session.
+    Account,
+    /// The account is banned: the statement shows.
+    Banned,
+}
+
+impl Landing {
+    /// The page of the HTML account web.
+    pub fn path(self) -> &'static str {
+        match self {
+            Landing::SignIn => "/web/sign-in",
+            Landing::Create => "/web/create",
+            Landing::Code => "/web/code",
+            Landing::Details => "/web/details",
+            Landing::Terms => "/web/terms",
+            Landing::Handoff => "/web/next",
+            Landing::Account => "/web/account",
+            Landing::Banned => "/web/banned",
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -56,7 +99,7 @@ fn invalid_request() -> WebError {
 
 /// The page the app opens in the system browser. Everything about the request is checked here;
 /// what passes is kept in a session of its own, so no later page takes a redirect address from
-/// the URL.
+/// the URL. The player goes on in the portal when the cloud serves one, else on the HTML pages.
 pub async fn authorize(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -65,7 +108,7 @@ pub async fn authorize(
     let Ok(Query(q)) = query else {
         return Err(invalid_request());
     };
-    limit_ip(&state, "authorize", ip, state.tuning.rates.code_per_ip)?;
+    limit_ip_api(&state, "authorize", ip, state.tuning.rates.code_per_ip)?;
     let redirect_uri = q
         .redirect_uri
         .as_deref()
@@ -107,13 +150,15 @@ pub async fn authorize(
         ..SessionData::default()
     };
     let visit = fresh_visit(&state, data).await?;
+    let portal = state.config.portal_dir.is_some();
     Ok(redirect(
         &state,
         &visit,
-        if create {
-            "/web/create"
-        } else {
-            "/web/sign-in"
+        match (portal, create) {
+            (true, true) => "/create",
+            (true, false) => "/sign-in",
+            (false, true) => Landing::Create.path(),
+            (false, false) => Landing::SignIn.path(),
         },
     ))
 }
@@ -121,6 +166,254 @@ pub async fn authorize(
 fn device_of(session: &store::Session) -> Option<&str> {
     session.data.authorize.as_ref().map(|a| a.device.as_str())
 }
+
+// The steps
+
+/// Sends a code to `email` and waits for it in the session.
+pub async fn begin_code(
+    state: &AppState,
+    ip: IpAddr,
+    visit: &mut Visit,
+    email: &str,
+    create: bool,
+) -> Result<Landing, AppError> {
+    let (challenge, email) = auth::start_email_challenge(state, ip, email).await?;
+    visit.session.data.login = Some(Login::Code {
+        challenge,
+        email,
+        create,
+    });
+    store::save_data(&state.db, &visit.session).await?;
+    Ok(Landing::Code)
+}
+
+/// Checks the code the player typed. A wrong code leaves the session as it is; an expired one
+/// starts over. A right one signs the player in, or starts the sign-up when the address is new.
+pub async fn verify_code(
+    state: &AppState,
+    ip: IpAddr,
+    visit: &mut Visit,
+    code: &str,
+) -> Result<Landing, AppError> {
+    let Some(Login::Code { challenge, .. }) = visit.session.data.login.clone() else {
+        return Ok(Landing::SignIn);
+    };
+    limit_ip_api(state, "code", ip, state.tuning.rates.code_per_ip)?;
+    match auth::check_challenge(state, &challenge, code.trim()).await {
+        Ok(email) => {
+            visit.session.data.login = None;
+            if let Err(error) = auth::check_email_ban(state, &email).await {
+                return ban_by_address(state, visit, &email, error).await;
+            }
+            match db::account_by_email(&state.db, &email).await? {
+                Some(account) => finish_login(state, visit, &account).await,
+                None => {
+                    if state.config.signup == anyplay_api::Signup::Closed {
+                        return Err(auth::signups_closed());
+                    }
+                    let (signup, _) = auth::new_signup(state, &email).await?;
+                    visit.session.data.login = Some(Login::NewAccount { signup, email });
+                    store::save_data(&state.db, &visit.session).await?;
+                    Ok(Landing::Details)
+                }
+            }
+        }
+        Err(error) if error.body.error == ErrorCode::CodeExpired => {
+            visit.session.data.login = None;
+            store::save_data(&state.db, &visit.session).await?;
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Sends a new code to the address the player gave.
+pub async fn resend_code(
+    state: &AppState,
+    ip: IpAddr,
+    visit: &mut Visit,
+) -> Result<Landing, AppError> {
+    let Some(Login::Code { email, create, .. }) = visit.session.data.login.clone() else {
+        return Ok(Landing::SignIn);
+    };
+    let (challenge, email) = auth::start_email_challenge(state, ip, &email).await?;
+    visit.session.data.login = Some(Login::Code {
+        challenge,
+        email,
+        create,
+    });
+    visit.session.data.notice = Some("We sent a new code.".to_owned());
+    store::save_data(&state.db, &visit.session).await?;
+    Ok(Landing::Code)
+}
+
+/// Why the details of a new account were not taken. `field` names what to mark.
+pub struct DetailsError {
+    pub field: Option<Field>,
+    pub error: Box<AppError>,
+}
+
+impl DetailsError {
+    fn of(error: AppError) -> Self {
+        Self {
+            field: None,
+            error: Box::new(error),
+        }
+    }
+
+    fn at(field: Field, error: AppError) -> Self {
+        Self {
+            field: Some(field),
+            error: Box::new(error),
+        }
+    }
+}
+
+/// Makes the account for a verified address with the handle the player chose.
+pub async fn create_from_details(
+    state: &AppState,
+    visit: &mut Visit,
+    handle: &str,
+    age_confirmed: bool,
+    terms_accepted: bool,
+) -> Result<Landing, DetailsError> {
+    let Some(Login::NewAccount { signup, email }) = visit.session.data.login.clone() else {
+        return Ok(Landing::Create);
+    };
+    let terms_version = state.config.terms();
+    let handle = handle.trim();
+    if !age_confirmed {
+        return Err(DetailsError::at(
+            Field::Age,
+            AppError::bad_request(
+                "Confirm that you are old enough to agree to the terms on your own.",
+            ),
+        ));
+    }
+    if terms_version.is_some() && !terms_accepted {
+        return Err(DetailsError::at(
+            Field::Terms,
+            AppError::bad_request("Accept the terms to continue."),
+        ));
+    }
+    match auth::create_account(state, &signup, handle, true, terms_version).await {
+        Ok(account) => {
+            visit.session.data.login = None;
+            finish_login(state, visit, &account)
+                .await
+                .map_err(DetailsError::of)
+        }
+        Err(error) => match error.body.error {
+            ErrorCode::HandleInvalid | ErrorCode::HandleTaken | ErrorCode::BadRequest => {
+                Err(DetailsError::at(Field::Handle, error))
+            }
+            ErrorCode::Banned => ban_by_address(state, visit, &email, error)
+                .await
+                .map_err(DetailsError::of),
+            ErrorCode::CodeExpired => {
+                visit.session.data.login = None;
+                store::save_data(&state.db, &visit.session)
+                    .await
+                    .map_err(|e| DetailsError::of(e.into()))?;
+                Err(DetailsError::of(error))
+            }
+            _ => Err(DetailsError::of(error)),
+        },
+    }
+}
+
+/// Records that the player accepted the terms they were asked about at sign-in.
+pub async fn accept_terms(
+    state: &AppState,
+    visit: &mut Visit,
+    accept: bool,
+) -> Result<Landing, AppError> {
+    let (Some(Login::Terms { account }), Some(version)) =
+        (visit.session.data.login.clone(), state.config.terms())
+    else {
+        return Ok(Landing::SignIn);
+    };
+    if !accept {
+        return Err(AppError::bad_request("Accept the terms to continue."));
+    }
+    store::accept_terms(&state.db, account, version, now()).await?;
+    visit.session.data.login = None;
+    complete_login(state, visit, account).await
+}
+
+/// An address with an active ban. When the account still exists the player can see the statement
+/// and appeal; the answer is [`Landing::Banned`]. When it is gone, only the statement shows: the
+/// error carries it.
+async fn ban_by_address(
+    state: &AppState,
+    visit: &mut Visit,
+    email: &str,
+    error: AppError,
+) -> Result<Landing, AppError> {
+    if error.body.error != ErrorCode::Banned {
+        return Err(error);
+    }
+    if let Some(account) = db::account_by_email(&state.db, email).await? {
+        return super::ban::send_to(state, visit, account.id()).await;
+    }
+    Err(error)
+}
+
+/// A player proved who they are (code or passkey). Checks what stands between them and the
+/// account: a ban, and terms they have not accepted.
+pub async fn finish_login(
+    state: &AppState,
+    visit: &mut Visit,
+    account: &AccountRow,
+) -> Result<Landing, AppError> {
+    if state.ban_of(account.id()).is_some() {
+        return super::ban::send_to(state, visit, account.id()).await;
+    }
+    if let Some(version) = state.config.terms()
+        && store::terms_of(&state.db, account.id()).await?.as_deref() != Some(version)
+    {
+        visit.session.data.login = Some(Login::Terms {
+            account: account.id(),
+        });
+        store::save_data(&state.db, &visit.session).await?;
+        return Ok(Landing::Terms);
+    }
+    complete_login(state, visit, account.id()).await
+}
+
+/// The last step of a sign-in. For the app on the player's PC it makes the one-time code and
+/// keeps the address to send the browser to; for the account page it starts a browser session.
+pub async fn complete_login(
+    state: &AppState,
+    visit: &mut Visit,
+    account: u64,
+) -> Result<Landing, AppError> {
+    if let Some(authorize) = visit.session.data.authorize.take() {
+        let grant = Grant {
+            account,
+            challenge: authorize.challenge.clone(),
+        };
+        let code = store::flow_put(
+            &state.db,
+            AUTH_CODE,
+            &serde_json::to_string(&grant).unwrap_or_default(),
+            state.tuning.link_ttl,
+        )
+        .await?;
+        visit.session.data.login = None;
+        visit.session.data.handoff = Some(format!(
+            "{}?code={code}&state={}",
+            authorize.redirect_uri, authorize.state
+        ));
+        store::save_data(&state.db, &visit.session).await?;
+        return Ok(Landing::Handoff);
+    }
+    store::end_session(&state.db, &visit.session).await?;
+    *visit = sign_in_session(state, account, SessionData::default()).await?;
+    Ok(Landing::Account)
+}
+
+// The pages
 
 pub async fn sign_in_page(State(state): State<AppState>, headers: HeaderMap) -> WebResult {
     let mut visit = super::visit(&state, &headers).await?;
@@ -170,16 +463,8 @@ pub async fn email(
 ) -> WebResult {
     let mut visit = posted(&state, &headers, &form.csrf).await?;
     let create = form.intent == "create";
-    match auth::start_email_challenge(&state, ip, &form.email).await {
-        Ok((challenge, email)) => {
-            visit.session.data.login = Some(Login::Code {
-                challenge,
-                email,
-                create,
-            });
-            store::save_data(&state.db, &visit.session).await?;
-            Ok(redirect(&state, &visit, "/web/code"))
-        }
+    match begin_code(&state, ip, &mut visit, &form.email, create).await {
+        Ok(landing) => Ok(redirect(&state, &visit, landing.path())),
         Err(error) if error.body.error == ErrorCode::BadRequest => {
             let v = view(&state, &mut visit.session).await?;
             let device = device_of(&visit.session);
@@ -217,37 +502,12 @@ pub async fn code(
     WebForm(form): WebForm<CodeForm>,
 ) -> WebResult {
     let mut visit = posted(&state, &headers, &form.csrf).await?;
-    let Some(Login::Code {
-        challenge,
-        email,
-        create,
-    }) = visit.session.data.login.clone()
-    else {
-        return Ok(redirect(&state, &visit, "/web/sign-in"));
+    let (email, create) = match &visit.session.data.login {
+        Some(Login::Code { email, create, .. }) => (email.clone(), *create),
+        _ => return Ok(redirect(&state, &visit, "/web/sign-in")),
     };
-    limit_ip(&state, "code", ip, state.tuning.rates.code_per_ip)?;
-    match auth::check_challenge(&state, &challenge, form.code.trim()).await {
-        Ok(email) => {
-            visit.session.data.login = None;
-            if let Err(error) = auth::check_email_ban(&state, &email).await {
-                return banned_by_address(&state, visit, &email, error).await;
-            }
-            match db::account_by_email(&state.db, &email).await? {
-                Some(account) => {
-                    let (visit, to) = finish_login(&state, visit, &account).await?;
-                    Ok(redirect(&state, &visit, to))
-                }
-                None => {
-                    if state.config.signup == anyplay_api::Signup::Closed {
-                        return Err(auth::signups_closed().into());
-                    }
-                    let (signup, _) = auth::new_signup(&state, &email).await?;
-                    visit.session.data.login = Some(Login::NewAccount { signup, email });
-                    store::save_data(&state.db, &visit.session).await?;
-                    Ok(redirect(&state, &visit, "/web/details"))
-                }
-            }
-        }
+    match verify_code(&state, ip, &mut visit, &form.code).await {
+        Ok(landing) => Ok(redirect(&state, &visit, landing.path())),
         Err(error) if error.body.error == ErrorCode::CodeWrong => {
             let v = view(&state, &mut visit.session).await?;
             let html = pages::code(
@@ -259,8 +519,6 @@ pub async fn code(
             Ok(page(&state, &visit, StatusCode::BAD_REQUEST, html))
         }
         Err(error) if error.body.error == ErrorCode::CodeExpired => {
-            visit.session.data.login = None;
-            store::save_data(&state.db, &visit.session).await?;
             let v = view(&state, &mut visit.session).await?;
             let html = pages::sign_in(
                 &v.ctx(),
@@ -268,6 +526,9 @@ pub async fn code(
                 Some("That code has expired. Get a new one."),
             );
             Ok(page(&state, &visit, StatusCode::BAD_REQUEST, html))
+        }
+        Err(error) if error.body.error == ErrorCode::Banned => {
+            banned_without_account(&state, &mut visit, &error).await
         }
         Err(error) => Err(error.into()),
     }
@@ -285,19 +546,8 @@ pub async fn resend(
     WebForm(form): WebForm<CsrfForm>,
 ) -> WebResult {
     let mut visit = posted(&state, &headers, &form.csrf).await?;
-    let Some(Login::Code { email, create, .. }) = visit.session.data.login.clone() else {
-        return Ok(redirect(&state, &visit, "/web/sign-in"));
-    };
-    let (challenge, email) = auth::start_email_challenge(&state, ip, &email).await?;
-    visit.session.data.login = Some(Login::Code {
-        challenge,
-        email,
-        create,
-    });
-    store::save_data(&state.db, &visit.session).await?;
-    visit.session.data.notice = Some("We sent a new code.".to_owned());
-    store::save_data(&state.db, &visit.session).await?;
-    Ok(redirect(&state, &visit, "/web/code"))
+    let landing = resend_code(&state, ip, &mut visit).await?;
+    Ok(redirect(&state, &visit, landing.path()))
 }
 
 pub async fn details_page(State(state): State<AppState>, headers: HeaderMap) -> WebResult {
@@ -325,65 +575,48 @@ pub async fn details(
     WebForm(form): WebForm<DetailsForm>,
 ) -> WebResult {
     let mut visit = posted(&state, &headers, &form.csrf).await?;
-    let Some(Login::NewAccount { signup, email }) = visit.session.data.login.clone() else {
+    let Some(Login::NewAccount { email, .. }) = visit.session.data.login.clone() else {
         return Ok(redirect(&state, &visit, "/web/create"));
     };
-    let terms_version = state.config.terms();
     let handle = form.handle.trim().to_owned();
-    let problem = if form.age.as_deref() != Some("yes") {
-        Some((
-            Field::Age,
-            "Confirm that you are old enough to agree to the terms on your own.".to_owned(),
-        ))
-    } else if terms_version.is_some() && form.terms.as_deref() != Some("yes") {
-        Some((Field::Terms, "Accept the terms to continue.".to_owned()))
-    } else {
-        None
-    };
-    let result = match problem {
-        Some(message) => Err(message),
-        None => match auth::create_account(&state, &signup, &handle, true, terms_version).await {
-            Ok(account) => Ok(account),
-            Err(error) => match error.body.error {
-                ErrorCode::HandleInvalid | ErrorCode::HandleTaken | ErrorCode::BadRequest => {
-                    Err((Field::Handle, error.body.message))
-                }
-                ErrorCode::Banned => {
-                    return banned_by_address(&state, visit, &email, error).await;
-                }
-                ErrorCode::CodeExpired => {
-                    visit.session.data.login = None;
-                    store::save_data(&state.db, &visit.session).await?;
-                    let v = view(&state, &mut visit.session).await?;
-                    let html = pages::create(
-                        &v.ctx(),
-                        device_of(&visit.session),
-                        Some("Your sign-up expired. Start again with a new code."),
-                    );
-                    return Ok(page(&state, &visit, StatusCode::BAD_REQUEST, html));
-                }
-                _ => return Err(error.into()),
-            },
-        },
-    };
+    let result = create_from_details(
+        &state,
+        &mut visit,
+        &handle,
+        form.age.as_deref() == Some("yes"),
+        form.terms.as_deref() == Some("yes"),
+    )
+    .await;
     match result {
-        Ok(account) => {
-            visit.session.data.login = None;
-            let (visit, to) = finish_login(&state, visit, &account).await?;
-            Ok(redirect(&state, &visit, to))
-        }
-        Err((field, message)) => {
+        Ok(landing) => Ok(redirect(&state, &visit, landing.path())),
+        Err(DetailsError {
+            field: Some(field),
+            error,
+        }) => {
             let v = view(&state, &mut visit.session).await?;
-            let terms = terms_version.map(|version| TermsView { version });
+            let terms = state.config.terms().map(|version| TermsView { version });
             let html = pages::details(
                 &v.ctx(),
                 &email,
                 terms.as_ref(),
                 &handle,
-                Some((field, &message)),
+                Some((field, &error.body.message)),
             );
             Ok(page(&state, &visit, StatusCode::BAD_REQUEST, html))
         }
+        Err(DetailsError { field: None, error }) => match error.body.error {
+            ErrorCode::Banned => banned_without_account(&state, &mut visit, &error).await,
+            ErrorCode::CodeExpired => {
+                let v = view(&state, &mut visit.session).await?;
+                let html = pages::create(
+                    &v.ctx(),
+                    device_of(&visit.session),
+                    Some("Your sign-up expired. Start again with a new code."),
+                );
+                Ok(page(&state, &visit, StatusCode::BAD_REQUEST, html))
+            }
+            _ => Err((*error).into()),
+        },
     }
 }
 
@@ -411,101 +644,29 @@ pub async fn terms(
     WebForm(form): WebForm<TermsForm>,
 ) -> WebResult {
     let mut visit = posted(&state, &headers, &form.csrf).await?;
-    let (Some(Login::Terms { account }), Some(version)) =
-        (visit.session.data.login.clone(), state.config.terms())
-    else {
-        return Ok(redirect(&state, &visit, "/web/sign-in"));
-    };
-    if form.accept.as_deref() != Some("yes") {
-        let v = view(&state, &mut visit.session).await?;
-        let html = pages::terms(
-            &v.ctx(),
-            &TermsView { version },
-            Some("Accept the terms to continue."),
-        );
-        return Ok(page(&state, &visit, StatusCode::BAD_REQUEST, html));
+    match accept_terms(&state, &mut visit, form.accept.as_deref() == Some("yes")).await {
+        Ok(landing) => Ok(redirect(&state, &visit, landing.path())),
+        Err(error) if error.body.error == ErrorCode::BadRequest => {
+            let Some(version) = state.config.terms() else {
+                return Err(error.into());
+            };
+            let v = view(&state, &mut visit.session).await?;
+            let html = pages::terms(&v.ctx(), &TermsView { version }, Some(&error.body.message));
+            Ok(page(&state, &visit, StatusCode::BAD_REQUEST, html))
+        }
+        Err(error) => Err(error.into()),
     }
-    store::accept_terms(&state.db, account, version, now()).await?;
-    visit.session.data.login = None;
-    let (visit, to) = complete_login(&state, visit, account).await?;
-    Ok(redirect(&state, &visit, to))
 }
 
-/// An address with an active ban: the statement shows. When the account still exists the player
-/// can appeal; when it is gone, only the statement shows.
-async fn banned_by_address(
+/// An address with an active ban and no account: only the statement shows.
+async fn banned_without_account(
     state: &AppState,
-    visit: Visit,
-    email: &str,
-    error: AppError,
+    visit: &mut Visit,
+    error: &AppError,
 ) -> WebResult {
-    if error.body.error != ErrorCode::Banned {
-        return Err(error.into());
-    }
-    if let Some(account) = db::account_by_email(&state.db, email).await? {
-        let (visit, to) = super::ban::send_to(state, visit, account.id()).await?;
-        return Ok(redirect(state, &visit, to));
-    }
-    let mut visit = visit;
     let v = view(state, &mut visit.session).await?;
-    let html = super::ban::without_account(&v.ctx(), &error);
-    Ok(page(state, &visit, StatusCode::FORBIDDEN, html))
-}
-
-/// A player proved who they are (code or passkey). Checks what stands between them and the
-/// account: a ban, and terms they have not accepted. Returns the session to continue with and
-/// the page to go to.
-pub async fn finish_login(
-    state: &AppState,
-    mut visit: Visit,
-    account: &AccountRow,
-) -> Result<(Visit, &'static str), AppError> {
-    if state.ban_of(account.id()).is_some() {
-        return super::ban::send_to(state, visit, account.id()).await;
-    }
-    if let Some(version) = state.config.terms()
-        && store::terms_of(&state.db, account.id()).await?.as_deref() != Some(version)
-    {
-        visit.session.data.login = Some(Login::Terms {
-            account: account.id(),
-        });
-        store::save_data(&state.db, &visit.session).await?;
-        return Ok((visit, "/web/terms"));
-    }
-    complete_login(state, visit, account.id()).await
-}
-
-/// The last step of a sign-in. For the app on the player's PC it makes the one-time code and
-/// keeps the address to send the browser to; for the account page it starts a browser session.
-pub async fn complete_login(
-    state: &AppState,
-    visit: Visit,
-    account: u64,
-) -> Result<(Visit, &'static str), AppError> {
-    let Visit { mut session, token } = visit;
-    if let Some(authorize) = session.data.authorize.take() {
-        let grant = Grant {
-            account,
-            challenge: authorize.challenge.clone(),
-        };
-        let code = store::flow_put(
-            &state.db,
-            AUTH_CODE,
-            &serde_json::to_string(&grant).unwrap_or_default(),
-            state.tuning.link_ttl,
-        )
-        .await?;
-        session.data.login = None;
-        session.data.handoff = Some(format!(
-            "{}?code={code}&state={}",
-            authorize.redirect_uri, authorize.state
-        ));
-        store::save_data(&state.db, &session).await?;
-        return Ok((Visit { session, token }, "/web/next"));
-    }
-    store::end_session(&state.db, &session).await?;
-    let visit = sign_in_session(state, account, SessionData::default()).await?;
-    Ok((visit, "/web/account"))
+    let html = super::ban::without_account(&v.ctx(), error);
+    Ok(page(state, visit, StatusCode::FORBIDDEN, html))
 }
 
 /// Hands the browser back to the app: shows the page that goes to the loopback address.
