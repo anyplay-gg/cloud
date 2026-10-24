@@ -98,6 +98,7 @@ Game traffic goes directly between players where the network allows it and throu
 
 - All nodes sign with one key, read from a secret file. A key ID in each token will allow rotation without signing everybody out.
 - Containers run as non-root with a read-only root file system, under Kubernetes' restricted pod security profile, with network policies that deny by default.
+- EU data protection and platform law (GDPR, Digital Services Act): draft documents for legal review, built from what the code stores, are in [docs/compliance](compliance/README.md).
 - Planned: passkeys as the main way to sign in, with e-mail codes for verification and recovery, and refresh tokens bound to a key on the device (DPoP, RFC 9449).
 
 ## Testing
