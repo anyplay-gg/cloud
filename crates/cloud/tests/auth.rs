@@ -2,7 +2,9 @@ mod common;
 
 use std::time::Duration;
 
-use anyplay_api::{Account, ApiError, CodeAnswer, Event, Info, Me, Signup, Tokens, close};
+use anyplay_api::{
+    Account, ApiError, CodeAnswer, Event, Info, MAX_BODY, Me, Signup, Tokens, close,
+};
 use common::{Events, TestCloud};
 use reqwest::Method;
 use serde_json::json;
@@ -355,19 +357,28 @@ async fn garbage_tokens_and_bodies_get_error_bodies() {
     assert!(!error.message.is_empty());
 }
 
+/// A body over 64 KiB is refused, whether its length is announced or only shows while it is
+/// read. The requests are written by hand and stop where the cloud stops reading: a client that
+/// keeps sending can see the connection reset before it reads the answer, as Windows does.
 #[tokio::test]
 async fn bodies_over_64_kib_are_refused() {
     let cloud = TestCloud::start().await;
-    let big = "a".repeat(70 * 1024);
+    let head = format!(
+        "POST /v1/auth/email HTTP/1.1\r\nhost: {}\r\ncontent-type: application/json\r\n",
+        cloud.base
+    );
+
+    let announced = format!("{head}content-length: {}\r\n\r\n", MAX_BODY + 1);
     cloud
-        .request(
-            Method::POST,
-            "/v1/auth/email",
-            None,
-            Some(json!({"email": big})),
-        )
+        .raw(announced.as_bytes())
         .await
         .is_error("too_large", 413);
+
+    let over = MAX_BODY + 1;
+    let mut unannounced =
+        format!("{head}transfer-encoding: chunked\r\n\r\n{over:x}\r\n").into_bytes();
+    unannounced.resize(unannounced.len() + over, b'a');
+    cloud.raw(&unannounced).await.is_error("too_large", 413);
 }
 
 #[tokio::test]
