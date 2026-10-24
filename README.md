@@ -1,20 +1,55 @@
 # AnyPlay Cloud
 
-The central services of the AnyPlay network: accounts, friends, presence, sessions, invitations and relay tickets, plus a relay that only admits players who hold one. The design and the words we use are in [anyplay-gg/network](https://github.com/anyplay-gg/network); the API this cloud speaks is its [cloud API](https://github.com/anyplay-gg/network/blob/main/spec/cloud-api.md).
+The services behind the [AnyPlay network](https://github.com/anyplay-gg/network): accounts, friends, presence, sessions, invitations and moderation, plus relays that carry game traffic when two players cannot reach each other directly. One program runs a whole cloud on a home server with `docker compose up`. The same program is being built to run as a cluster that carries a network of millions of players.
 
-**Status: version 0.** Everything in the cloud API works and is tested. Matchmaking queues, leaderboards and save backups are not built yet. The API is still a draft and changes without notice until the first public cloud runs.
+**Status: version 0.** Everything in the [cloud API](https://github.com/anyplay-gg/network/blob/main/spec/cloud-api.md) works and is tested end to end. No public cloud runs yet, and the API may still change until one does. The road from one process to a cluster is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## What is in this repository
+## What it does
+
+| Service | What players get | State |
+|---|---|---|
+| Accounts | Sign-in without a password: a code by e-mail, then a refresh token per device that changes on every use. Export and deletion of all data. | works |
+| Friends and blocks | Requests by handle, mutual requests become friends at once, blocks stay private. | works |
+| Presence | Who is online, what they play, and whether their game is open to join. | works |
+| Sessions | Create, join and leave, with capacity, a leader, opaque game properties and a version guard: only the same game version and AnyPS5 build play together. | works |
+| Invitations | Invite friends into a session; the invitation ends with the session. | works |
+| Relays | Signed tickets that let one endpoint use one relay for 24 hours. Relays check them offline and never call the cloud. | works |
+| Moderation | Reports, bans per account and e-mail address, rate limits on every route, and an admin command line. | works |
+| Matchmaking, leaderboards, save backups, chat | | planned |
+
+## How it is built
+
+```text
+ net service (one per player)                              relays
+   │  HTTPS: requests          WebSocket: events             │ iroh-relay + ticket check,
+   ▼                                  ▲                      │ end-to-end encrypted traffic
+ ┌────────────────────────────────────┴───┐                  │
+ │ anyplay-cloud  (Rust: tokio, axum)     │── signs tickets ─┘
+ │  auth · friends · presence · sessions  │
+ │  invitations · moderation · news       │
+ └───────────────┬────────────────────────┘
+                 │  sqlx
+       SQLite (one process) · PostgreSQL (cluster, planned)
+```
+
+- **Requests and events.** The net service calls a small JSON API over HTTPS and holds one WebSocket that pushes events: a friend's presence, an invitation, a change in a session. Events are short, and the client reads the full state after each reconnect, so a lost event never leaves it wrong.
+- **Tokens.** The cloud signs its own tokens with Ed25519 ([`crates/ticket`](crates/ticket)): access tokens that live 15 minutes, and relay tickets bound to one endpoint. A refresh token used twice signs the device out, because only a thief would do that.
+- **Relays.** [iroh](https://www.iroh.computer/) relays carry encrypted QUIC traffic between players and cannot read it. `anyplay-relay` admits an endpoint only with a ticket the cloud signed for it.
+- **One program, two shapes.** Self-hosters run one process with a SQLite file. AnyPlay's own cloud will run the same program on many nodes with PostgreSQL and NATS, and the same tests run on both ([ADR 0002](docs/adr/0002-one-program-two-shapes.md)).
+
+## Repository
 
 | Path | What it is |
 |---|---|
-| `crates/cloud` | `anyplay-cloud`, the server. Durable data is in one SQLite file ([why](docs/adr/0001-sqlite.md)); presence, sessions and invitations live in memory. |
-| `crates/relay` | `anyplay-relay`, an [iroh](https://www.iroh.computer/) relay that admits an endpoint only with a ticket the cloud signed for it. |
-| `crates/ticket` | `anyplay-ticket`, the signed token format that the cloud and the relay share. |
-| `deploy/` | Dockerfile, `compose.yaml`, Caddyfile and an example `.env`. |
-| `fuzz/` | [Fuzz targets](fuzz/README.md) for the token check, run every night. |
+| `crates/cloud` | `anyplay-cloud`, the server |
+| `crates/relay` | `anyplay-relay`, an iroh relay that admits only endpoints with a ticket |
+| `crates/ticket` | `anyplay-ticket`, the token format the cloud and the relay share |
+| `crates/e2e` | a whole network in one process: the cloud, a relay that checks tickets, two net services and two fake games that exchange packets through a tunnel |
+| `deploy/` | Dockerfile, `compose.yaml`, Caddyfile and an example `.env` |
+| `fuzz/` | [fuzz targets](fuzz/README.md) for the token check, run every night |
+| `docs/` | [architecture](docs/ARCHITECTURE.md), [settings](docs/configuration.md) and [decisions](docs/adr) |
 
-## Hosting your own
+## Host your own
 
 You need a machine with Docker, two host names that point at it (one for the cloud, one for the relay), an SMTP account that can send mail, and these ports open: 80, 443 and 8443 over TCP, and 7842 over UDP.
 
@@ -57,15 +92,13 @@ cargo run -p anyplay-cloud       # http://127.0.0.1:8080, sign-in codes in the l
 cargo test --workspace
 ```
 
-Without settings the cloud runs in development mode: codes go to the log, nothing is encrypted and anyone can sign up. `anyplay-cloud keygen` prints the public key a relay needs.
+Without settings the cloud runs in development mode: codes go to the log, nothing is encrypted and anyone can sign up. `anyplay-cloud keygen` prints the public key a relay needs. The cloud finds the API crate at `../network/crates/api`, so clone both repositories side by side.
 
-The cloud finds the API crate at `../network/crates/api`, so clone both repositories side by side.
-
-`crates/e2e` runs a whole network in one process: the cloud, a relay that checks tickets, two net services driven as a launcher drives them, and two fake games that exchange packets through the tunnel.
+Every pull request runs formatting, Clippy with warnings as errors and all tests on Windows and Linux, builds the three images and starts them with the compose file. Both fuzz targets of the token check run for 15 minutes each every night.
 
 ## What the cloud never does
 
-It never sees game files, never contacts Sony's servers and never stands in for a publisher's servers. The [clean line](https://github.com/anyplay-gg/network/blob/main/docs/adr/0003-the-clean-line.md) explains why.
+It never sees game files, never contacts Sony's servers and never stands in for a publisher's servers. The [clean line](https://github.com/anyplay-gg/network/blob/main/docs/adr/0003-the-clean-line.md) explains why. A game whose online part needs its publisher's servers stays offline.
 
 ## License
 

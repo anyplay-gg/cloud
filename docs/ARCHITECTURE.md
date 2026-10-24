@@ -1,0 +1,124 @@
+# Architecture
+
+How the cloud grows from one process on a home server to a cluster that carries a whole player network, and why it is built that way. The decisions are in [docs/adr](adr); the words are those of the network's [CONTEXT.md](https://github.com/anyplay-gg/network/blob/main/CONTEXT.md).
+
+The patterns here come from what large player networks have said in public: talks, engineering blogs, postmortems and documentation. None of it comes from anyone's internal or leaked material, and the cloud never stands in for anyone's servers ([the clean line](https://github.com/anyplay-gg/network/blob/main/docs/adr/0003-the-clean-line.md)).
+
+## One program, two shapes
+
+```text
+ single node                               cluster
+
+ ┌──────────────────────────┐              players: HTTPS API + one WebSocket each
+ │ anyplay-cloud            │                              │
+ │  every role              │              ┌───────────────▼───────────────┐
+ │  SQLite file             │              │   load balancer, TLS (L7)     │
+ │  news in process         │              └──┬───────────┬────────────┬───┘
+ └──────────────────────────┘                 │           │            │
+   docker compose up                      ┌───▼───┐   ┌───▼───┐    ┌───▼───┐
+   for self-hosters, development          │node 1 │   │node 2 │ …  │node N │  anyplay-cloud
+   and every test                         └─┬───┬─┘   └─┬───┬─┘    └─┬───┬─┘  holds only sockets
+                                            │   └──────┼───┴─news───┘   │    and caches
+                                            │          │  NATS core     │
+                                          ┌─▼──────────▼────────────────▼─┐
+                                          │ PostgreSQL: primary, replicas │  every shared fact
+                                          │ (CloudNativePG)               │
+                                          └───────────────────────────────┘
+
+ relays: anyplay-relay (iroh-relay + ticket check), two or more per region, never call the cloud
+```
+
+Both shapes run the same code. Two adapters differ, and nothing else ([ADR 0002](adr/0002-one-program-two-shapes.md)):
+
+| Adapter | Single node | Cluster |
+|---|---|---|
+| **Store**: durable and shared state | SQLite in WAL mode | PostgreSQL ([ADR 0003](adr/0003-postgres-for-a-cluster.md)) |
+| **News**: who must be told about a change | channels inside the process | NATS core subjects ([ADR 0004](adr/0004-nats-carries-news-not-state.md)) |
+
+The behaviour tests run against both stores, so a self-hosted cloud and AnyPlay's cloud behave the same way.
+
+## Where state lives
+
+A node holds nothing that another node needs. Any node can answer any request, and a node can die at any time ([ADR 0005](adr/0005-shared-state-lives-in-the-store.md)).
+
+| State | Lives in | Why |
+|---|---|---|
+| Accounts, devices, refresh tokens, friends, requests, blocks, reports, bans | store | durable |
+| Sign-in challenges and sign-up permissions | store | a code requested through one node is entered through another |
+| Presence: which devices hold an event connection, through which node, and the activity | store | friends on other nodes read it; a dead node's devices count as gone |
+| Sessions, members, invitations | store | joins from many nodes must see one capacity and one member list |
+| Virtual address leases | store | unique across the network |
+| Event connections (the sockets) | the node that holds them | they cannot move |
+| Who is signed in, who is banned | a cache in each node, filled from the store | checked on every request; changes arrive as news |
+| Rate-limit counters | each node | cheap and approximate; a shared limiter can come later |
+
+## How news travels
+
+Every change is a transaction in the store. After it commits, the node that made it publishes a short note to each account that has to hear about it, on the subject `anyplay.account.<id>`. A node subscribes to that subject while it holds a connection of the account, and passes the note to the connection. In a single node the note goes straight to the connection.
+
+Notes are delivered at most once, and that is enough, because nothing depends on a single note:
+
+- Events that carry an object (a session, a presence) carry its **revision**. A client keeps the highest revision it has seen and drops an older copy, however late it arrives.
+- Events that carry no object (`friends`) make the client read the current state.
+- A new event connection starts with `welcome`, and the client reads its lists after it.
+
+The pattern is the one Riot's messaging service and Roblox's notification stream describe: small notes, versions, and the client reads the truth. Fan-out is on write and goes only to accounts that are online, which the store knows; with at most 500 friends, one presence change sends at most 500 notes.
+
+## Concurrency across nodes
+
+- **One session, one writer at a time.** Every change to a session starts by touching its row (`UPDATE sessions SET revision = revision + 1 … RETURNING …`). That holds a row lock in Postgres and the write lock in SQLite until the transaction ends, so blocks, visibility, the version guard and capacity are checked against a state nobody else is changing. The same statement yields the new revision.
+- **Sweeps without a leader.** Presence grace, expired invitations, challenges and leases, and the connections of dead nodes are swept by every node. Each step is one conditional statement, so it takes effect once, and the node whose statement changed rows sends the news.
+- **Dead nodes.** Each node writes a heartbeat. The connections of a node whose heartbeat is older than its timeout count as closed, and the usual grace period follows.
+
+## Deploys and failures
+
+The worst outages in public postmortems came from load spikes and reconnect storms, not from data size: Fortnite's at 3.4 million players in 2018 and the 73 hours Roblox was down in 2021. Discord kept a stampede of five million sessions in check by failing fast instead of queueing. So:
+
+- A node told to stop (`SIGTERM`) leaves the load balancer first (`/readyz` fails), then closes its event connections over a drain window with close code 1012. Clients reconnect at a random moment inside that window, not all at once.
+- `/healthz` answers while the process runs; `/readyz` while the store is reachable and the node is not draining; `/metrics` exposes Prometheus metrics.
+- When the store is unreachable, requests fail fast with `503` and `Retry-After` instead of queueing.
+- Losing NATS loses notes, not state; clients that reconnect read the truth.
+
+## Regions
+
+The first cluster runs in one region in the EU. When players in other regions need lower latency, the network grows in **cells**: each region runs its own nodes, NATS cluster and relays, and NATS gateways join the regions. Accounts, friends and moderation stay in one store with the primary in the EU and read replicas elsewhere, so friendships work across regions; presence and sessions stay in the region where they happen.
+
+## Relays
+
+Game traffic goes directly between players where the network allows it and through a relay otherwise ([network ADR 0002](https://github.com/anyplay-gg/network/blob/main/docs/adr/0002-tunnels-on-iroh.md)). A relay admits only an endpoint that holds a ticket the cloud signed for it ([network ADR 0007](https://github.com/anyplay-gg/network/blob/main/docs/adr/0007-relays-check-signed-tickets.md)), and it cannot read the traffic it carries.
+
+- Relays cost bandwidth, not CPU. They run on servers with cheap traffic, at least two per region, outside the cluster.
+- Rate limits per connection are on, and quotas follow the account behind the ticket, not the endpoint ID, which anyone can make new.
+- A player who hides their IP address goes through relays with every peer. The cloud never publishes a player's direct addresses.
+- The share of tunnels that go direct is measured from the first day; it decides how many relays a region needs.
+
+## Security
+
+- All nodes sign with one key, read from a secret file. A key ID in each token will allow rotation without signing everybody out.
+- Containers run as non-root with a read-only root file system, under Kubernetes' restricted pod security profile, with network policies that deny by default.
+- Planned: passkeys as the main way to sign in, with e-mail codes for verification and recovery, and refresh tokens bound to a key on the device (DPoP, RFC 9449).
+
+## Testing
+
+- Behaviour tests through the HTTP API and the event stream, on SQLite and on Postgres.
+- A cluster test: two nodes, one NATS and one Postgres; players on different nodes see each other's presence, sessions and invitations.
+- The network's end-to-end test: cloud, relay, two net services and two fake games in one process.
+- A load harness that plays many players at once, with login waves, presence churn and reconnect storms, not only steady load.
+- Nightly fuzzing of the token check ([fuzz/](../fuzz/README.md)).
+
+## Stages
+
+| Stage | What | State |
+|---|---|---|
+| 1 | Everything shared moves into the store; the store runs on SQLite and Postgres; tests on both | next |
+| 2 | News over NATS; the cluster test | |
+| 3 | Revisions on sessions and presence; clients spread their reconnects | |
+| 4 | Operations: health, readiness, metrics, drain, JSON logs | |
+| 5 | Kubernetes: a Helm chart, tried on a kind cluster in CI | |
+| 6 | Load harness and published numbers | |
+| 7 | Regions and cells | |
+
+### Known limits
+
+- Virtual addresses come from `198.18.0.0/15`, one per online account, which caps a cloud at about 131,000 players online at once. Addresses only have to differ inside a session, so the cloud API will move to per-session addresses before that limit is near.
+- Rate limits count per node, so a cluster of N nodes allows up to N times the limit to a client that spreads its requests. A load balancer that picks the node by the client's address keeps that close to the limit; a shared limiter removes it.

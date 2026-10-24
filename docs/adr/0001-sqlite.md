@@ -5,3 +5,7 @@ The cloud keeps its durable data in one SQLite file in WAL mode: accounts, devic
 ## Considered options
 
 - Postgres: handles many writers and several cloud processes, but every operator would run, secure and back up a second service for data that fits in one file. We can move to it when a cloud outgrows one process.
+
+## Later
+
+[ADR 0003](0003-postgres-for-a-cluster.md) keeps SQLite for a single process and adds Postgres for a cluster. [ADR 0005](0005-shared-state-lives-in-the-store.md) moves presence, sessions, invitations, challenges and leases from memory into the store, so the line above between durable data and memory no longer holds.
