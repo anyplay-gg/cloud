@@ -15,7 +15,7 @@ use axum::response::Response;
 
 use crate::error::AppError;
 use crate::http::{Auth, AuthFailure, count_request, verify_access};
-use crate::hub::Push;
+use crate::news::Push;
 use crate::state::AppState;
 
 /// Clients only answer pings; anything bigger is a mistake.

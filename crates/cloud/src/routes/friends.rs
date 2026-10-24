@@ -11,6 +11,7 @@ use axum::http::StatusCode;
 use crate::db::{self, Related};
 use crate::error::{AppError, Result};
 use crate::http::{ApiJson, Auth, parse_id};
+use crate::live;
 use crate::state::AppState;
 use crate::util::now;
 
@@ -27,10 +28,9 @@ fn account(row: &Related) -> Account {
 }
 
 /// Tells accounts that their friend lists changed.
-async fn notify(state: &AppState, accounts: &[u64]) {
-    let hub = state.hub.lock().await;
+fn notify(state: &AppState, accounts: &[u64]) {
     for account in accounts {
-        hub.push(*account, Event::Friends);
+        state.news.push(*account, &Event::Friends);
     }
 }
 
@@ -39,14 +39,15 @@ pub async fn list(State(state): State<AppState>, auth: Auth) -> Result<Json<Frie
     let incoming = db::incoming_requests(&state.db, auth.account).await?;
     let outgoing = db::outgoing_requests(&state.db, auth.account).await?;
     let blocked = db::blocked_by(&state.db, auth.account).await?;
-    let hub = state.hub.lock().await;
+    let mut presence =
+        live::presence_of_friends(&mut *state.db.acquire().await?, auth.account).await?;
     Ok(Json(FriendLists {
         friends: friends
             .iter()
             .map(|f| Friend {
                 account: account(f),
                 since: f.since(),
-                presence: hub.presence_of(f.id()),
+                presence: presence.remove(&f.id()).unwrap_or_default(),
             })
             .collect(),
         incoming: incoming
@@ -102,7 +103,7 @@ pub async fn request(
     if db::request_exists(&state.db, them, me).await? {
         check_friend_limits(&state, me, them).await?;
         db::make_friends(&state.db, me, them, now()).await?;
-        notify(&state, &[me, them]).await;
+        notify(&state, &[me, them]);
         return Ok(friends);
     }
     if db::request_exists(&state.db, me, them).await? {
@@ -118,7 +119,7 @@ pub async fn request(
         return Err(AppError::limit("This account has too many open requests."));
     }
     db::insert_request(&state.db, me, them, now()).await?;
-    notify(&state, &[me, them]).await;
+    notify(&state, &[me, them]);
     Ok(requested)
 }
 
@@ -143,7 +144,7 @@ pub async fn accept(
     }
     check_friend_limits(&state, auth.account, them).await?;
     db::make_friends(&state.db, auth.account, them, now()).await?;
-    notify(&state, &[auth.account, them]).await;
+    notify(&state, &[auth.account, them]);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -160,7 +161,7 @@ pub async fn cancel(
     if !removed {
         return Err(AppError::not_found());
     }
-    notify(&state, &[auth.account, them]).await;
+    notify(&state, &[auth.account, them]);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -174,10 +175,10 @@ pub async fn unfriend(
     if !db::remove_friendship(&state.db, auth.account, them).await? {
         return Err(AppError::not_found());
     }
-    notify(&state, &[auth.account, them]).await;
-    // Neither sees the other's presence from now on.
-    let mut hub = state.hub.lock().await;
-    hub.remove_invitations_between(auth.account, them);
+    notify(&state, &[auth.account, them]);
+    // Neither sees the other's presence from now on, and invitations between them end.
+    let gone = live::take_between(&mut *state.db.acquire().await?, auth.account, them).await?;
+    state.invitations_gone(&gone);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -202,14 +203,12 @@ pub async fn block(
         ));
     }
     let had_relation = db::block(&state.db, auth.account, them, now()).await?;
-    {
-        let mut hub = state.hub.lock().await;
-        hub.remove_invitations_between(auth.account, them);
-        hub.push(auth.account, Event::Friends);
-        // The blocked account learns only what it would see anyway: a friend or request is gone.
-        if had_relation {
-            hub.push(them, Event::Friends);
-        }
+    let gone = live::take_between(&mut *state.db.acquire().await?, auth.account, them).await?;
+    state.invitations_gone(&gone);
+    state.news.push(auth.account, &Event::Friends);
+    // The blocked account learns only what it would see anyway: a friend or request is gone.
+    if had_relation {
+        state.news.push(them, &Event::Friends);
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -222,7 +221,7 @@ pub async fn unblock(
     let them = parse_id(&id)?;
     let _social = state.social.lock().await;
     if db::unblock(&state.db, auth.account, them).await? {
-        notify(&state, &[auth.account]).await;
+        notify(&state, &[auth.account]);
     }
     Ok(StatusCode::NO_CONTENT)
 }

@@ -102,7 +102,7 @@ pub async fn ban(
         now(),
     )
     .await?;
-    state.apply_ban(account.id(), until).await;
+    state.apply_ban(account.id(), until).await?;
     tracing::warn!(account = account.id(), ?until, "account banned");
     Ok(Json(BanAnswer {
         account: Account {

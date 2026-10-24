@@ -8,12 +8,12 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::db;
 use crate::error::{AppError, Result};
 use crate::http::{Auth, parse_id};
 use crate::routes::auth::me_of;
 use crate::state::AppState;
 use crate::util::now;
+use crate::{db, live};
 
 pub async fn me(State(state): State<AppState>, auth: Auth) -> Result<Json<Me>> {
     let account = db::account(&state.db, auth.account)
@@ -45,15 +45,14 @@ pub async fn export(State(state): State<AppState>, auth: Auth) -> Result<Json<Va
     let reports = db::reports_by(&state.db, auth.account).await?;
     let ban = db::ban_of(&state.db, auth.account).await?;
     let sessions = {
-        let hub = state.hub.lock().await;
-        let ids = hub
-            .accounts
-            .get(&auth.account)
-            .map(|a| a.sessions.clone())
-            .unwrap_or_default();
-        ids.iter()
-            .filter_map(|id| hub.session_view(id))
-            .collect::<Vec<_>>()
+        let mut conn = state.db.acquire().await?;
+        let mut views = Vec::new();
+        for id in live::sessions_of(&mut conn, auth.account).await? {
+            if let Some(session) = live::session(&mut conn, &id).await? {
+                views.push(session.view());
+            }
+        }
+        views
     };
     Ok(Json(json!({
         "exported": now(),

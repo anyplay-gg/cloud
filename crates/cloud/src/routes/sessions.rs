@@ -1,7 +1,7 @@
-//! Sessions and invitations. Sessions live in memory (see `hub`).
+//! Sessions and invitations. They live in the store (see `live`): every change starts by
+//! locking the session's row, so changes from any node take turns.
 
 use std::collections::HashSet;
-use std::time::Instant;
 
 use anyplay_api::{
     CreateSession, ErrorCode, Event, Expected, Invite, Invited, JoinSession, MAX_MEMBERS,
@@ -16,14 +16,14 @@ use base64::engine::general_purpose::STANDARD;
 use crate::db;
 use crate::error::{AppError, Result};
 use crate::http::{ApiJson, Auth, parse_id};
-use crate::hub::{InvitationMem, MemberMem, Memory, SessionMem};
+use crate::live::{self, InvitationRow, MemberRow, SessionRow, SessionState};
 use crate::state::AppState;
-use crate::util::{self, is_endpoint, is_http_url, is_label, now, random_uuid};
+use crate::util::{self, is_endpoint, is_http_url, is_label, now, now_ms, random_uuid};
 
-const MAX_SESSIONS_PER_ACCOUNT: usize = 4;
+const MAX_SESSIONS_PER_ACCOUNT: i64 = 4;
 /// Invitations one session may have open, and one account may hold.
-const MAX_INVITATIONS_PER_SESSION: usize = 128;
-const MAX_INVITATIONS_PER_ACCOUNT: usize = 50;
+const MAX_INVITATIONS_PER_SESSION: i64 = 128;
+const MAX_INVITATIONS_PER_ACCOUNT: i64 = 50;
 /// Accounts one invite request may name.
 const MAX_INVITE_BATCH: usize = 64;
 
@@ -72,20 +72,24 @@ async fn handle_of(state: &AppState, account: u64) -> Result<String> {
         .handle)
 }
 
-fn session_count(hub: &Memory, account: u64) -> usize {
-    hub.accounts.get(&account).map_or(0, |a| a.sessions.len())
+async fn address_of(state: &AppState, account: u64) -> Result<String> {
+    Ok(state
+        .address_of(account)
+        .await?
+        .ok_or_else(AppError::internal)?
+        .to_string())
 }
 
-fn address_of(hub: &mut Memory, state: &AppState, account: u64) -> Result<std::net::Ipv4Addr> {
-    hub.lease(account, state.tuning.lease_ttl)
-        .ok_or_else(AppError::internal)
+/// Starts the grace periods of a member without an event connection, so it leaves in time.
+async fn arm_grace(state: &AppState, account: u64) -> Result<()> {
+    Ok(live::arm_grace(&mut *state.db.acquire().await?, account, now_ms()).await?)
 }
 
-fn member_accounts(hub: &Memory, id: &str) -> Vec<u64> {
-    hub.sessions
-        .get(id)
-        .map(|s| s.members.iter().map(|m| m.account).collect())
-        .unwrap_or_default()
+async fn friends_of(state: &AppState, account: u64) -> Result<HashSet<u64>> {
+    Ok(db::friend_ids(&state.db, account)
+        .await?
+        .into_iter()
+        .collect())
 }
 
 pub async fn create(
@@ -106,74 +110,65 @@ pub async fn create(
     check_endpoint(&request.endpoint, &request.relay)?;
     check_properties(&request.properties)?;
     let handle = handle_of(&state, auth.account).await?;
+    let address = address_of(&state, auth.account).await?;
 
-    let mut hub = state.hub.lock().await;
-    if session_count(&hub, auth.account) >= MAX_SESSIONS_PER_ACCOUNT {
+    let created = now() as i64;
+    let row = SessionRow {
+        id: random_uuid(),
+        title_id: request.title_id,
+        title: request.title,
+        version: request.version,
+        build: request.build,
+        leader: auth.account as i64,
+        max_members: i64::from(request.max_members),
+        visibility: live::visibility_text(request.visibility).to_owned(),
+        properties: request.properties,
+        created,
+    };
+    let member = MemberRow {
+        account_id: auth.account as i64,
+        handle,
+        endpoint: request.endpoint,
+        relay: request.relay,
+        address,
+        joined: created,
+    };
+    let mut tx = state.db.begin().await?;
+    // A write first, so that SQLite takes its write lock before the count reads.
+    live::insert_session(&mut tx, &row).await?;
+    if live::count_sessions_of(&mut tx, auth.account).await? >= MAX_SESSIONS_PER_ACCOUNT {
         return Err(AppError::limit("You are in the most sessions allowed."));
     }
-    let address = address_of(&mut hub, &state, auth.account)?;
-    let id = random_uuid();
-    hub.sessions.insert(
-        id.clone(),
-        SessionMem {
-            id: id.clone(),
-            title_id: request.title_id,
-            title: request.title,
-            version: request.version,
-            build: request.build,
-            leader: auth.account,
-            max_members: request.max_members,
-            visibility: request.visibility,
-            properties: request.properties,
-            members: vec![MemberMem {
-                account: auth.account,
-                handle,
-                endpoint: request.endpoint,
-                relay: request.relay,
-                address,
-                joined: now(),
-            }],
-            created: now(),
-        },
-    );
-    hub.accounts
-        .entry(auth.account)
-        .or_default()
-        .sessions
-        .push(id.clone());
-    state.arm_grace(&mut hub, auth.account);
-    let view = hub.session_view(&id).ok_or_else(AppError::internal)?;
-    drop(hub);
+    live::add_member(&mut tx, &row.id, &member).await?;
+    tx.commit().await?;
+
+    arm_grace(&state, auth.account).await?;
+    let view = SessionState {
+        row,
+        members: vec![member],
+    }
+    .view();
     state.refresh_presence([auth.account]).await;
     Ok(Json(view))
 }
 
 /// Whether the account may know about the session without being in it.
-async fn can_see(state: &AppState, hub: &Memory, account: u64, id: &str) -> Result<bool> {
-    let Some(session) = hub.sessions.get(id) else {
-        return Ok(false);
-    };
-    if session.members.iter().any(|m| m.account == account) {
+async fn can_see(state: &AppState, session: &SessionState, account: u64) -> Result<bool> {
+    if session.is_member(account) {
         return Ok(true);
     }
-    if hub
-        .invitations
-        .values()
-        .any(|i| i.to == account && i.session == id)
-    {
+    let mut conn = state.db.acquire().await?;
+    if live::is_invited(&mut conn, account, &session.row.id, None).await? {
         return Ok(true);
     }
-    if session.visibility != Visibility::Friends {
+    if session.visibility() != Visibility::Friends {
         return Ok(false);
     }
-    let members: Vec<u64> = session.members.iter().map(|m| m.account).collect();
+    let members = session.member_ids();
     if db::blocked_between_any(&state.db, account, &members).await? {
         return Ok(false);
     }
-    let friends: HashSet<u64> = db::friend_ids(&state.db, account)
-        .await?
-        .into_iter()
-        .collect();
+    let friends = friends_of(state, account).await?;
     Ok(members.iter().any(|m| friends.contains(m)))
 }
 
@@ -182,13 +177,13 @@ pub async fn get(
     auth: Auth,
     Path(id): Path<String>,
 ) -> Result<Json<Session>> {
-    let hub = state.hub.lock().await;
-    if !can_see(&state, &hub, auth.account, &id).await? {
+    let session = live::session(&mut *state.db.acquire().await?, &id)
+        .await?
+        .ok_or_else(AppError::not_found)?;
+    if !can_see(&state, &session, auth.account).await? {
         return Err(AppError::not_found());
     }
-    hub.session_view(&id)
-        .map(Json)
-        .ok_or_else(AppError::not_found)
+    Ok(Json(session.view()))
 }
 
 pub async fn join(
@@ -204,117 +199,93 @@ pub async fn join(
     }
     check_endpoint(&request.endpoint, &request.relay)?;
     let handle = handle_of(&state, auth.account).await?;
+    let friends = friends_of(&state, auth.account).await?;
+    let address = address_of(&state, auth.account).await?;
 
-    let mut hub = state.hub.lock().await;
-    let session = hub.sessions.get(&id).ok_or_else(AppError::not_found)?;
-    let guard = || {
+    let mut tx = state.db.begin().await?;
+    let mut session = live::lock_session(&mut tx, &id)
+        .await?
+        .ok_or_else(AppError::not_found)?;
+    let guard = |session: &SessionState| {
         AppError::version_mismatch(Expected {
-            version: session.version.clone(),
-            build: session.build.clone(),
+            version: session.row.version.clone(),
+            build: session.row.build.clone(),
         })
     };
-    let matches = session.version == request.version && session.build == request.build;
+    let matches = session.row.version == request.version && session.row.build == request.build;
 
     // A member joining again only moves its endpoint and relay.
-    if session.members.iter().any(|m| m.account == auth.account) {
+    if session.is_member(auth.account) {
         if !matches {
-            return Err(guard());
+            return Err(guard(&session));
         }
-        if let Some(session) = hub.sessions.get_mut(&id)
-            && let Some(member) = session
-                .members
-                .iter_mut()
-                .find(|m| m.account == auth.account)
+        live::move_member(
+            &mut tx,
+            &id,
+            auth.account,
+            &request.endpoint,
+            request.relay.as_deref(),
+        )
+        .await?;
+        tx.commit().await?;
+        if let Some(member) = session
+            .members
+            .iter_mut()
+            .find(|m| m.account_id as u64 == auth.account)
         {
             member.endpoint = request.endpoint;
             member.relay = request.relay;
         }
-        hub.announce_session(&id);
-        return hub
-            .session_view(&id)
-            .map(Json)
-            .ok_or_else(AppError::not_found);
+        state.announce(&session);
+        return Ok(Json(session.view()));
     }
 
     // 1. Blocks, in either direction, between the joiner and any member.
-    let members = member_accounts(&hub, &id);
+    let members = session.member_ids();
     if db::blocked_between_any(&state.db, auth.account, &members).await? {
         return Err(AppError::forbidden("You cannot join this session."));
     }
     // 2. Visibility.
-    let session = hub.sessions.get(&id).ok_or_else(AppError::not_found)?;
-    let invited = hub.invitations.values().any(|i| {
-        i.to == auth.account
-            && i.session == id
-            && request
-                .invitation
-                .as_ref()
-                .is_none_or(|wanted| *wanted == i.id)
-    });
-    let allowed = match session.visibility {
+    let invited =
+        live::is_invited(&mut tx, auth.account, &id, request.invitation.as_deref()).await?;
+    let allowed = match session.visibility() {
         Visibility::Closed => false,
         Visibility::Invite => invited,
-        Visibility::Friends => {
-            invited || {
-                let friends: HashSet<u64> = db::friend_ids(&state.db, auth.account)
-                    .await?
-                    .into_iter()
-                    .collect();
-                members.iter().any(|m| friends.contains(m))
-            }
-        }
+        Visibility::Friends => invited || members.iter().any(|m| friends.contains(m)),
     };
     if !allowed {
         return Err(AppError::not_found());
     }
     // 3. The version guard. 4. Capacity.
-    let session = hub.sessions.get(&id).ok_or_else(AppError::not_found)?;
-    if !(session.version == request.version && session.build == request.build) {
-        return Err(AppError::version_mismatch(Expected {
-            version: session.version.clone(),
-            build: session.build.clone(),
-        }));
+    if !matches {
+        return Err(guard(&session));
     }
-    if session.members.len() >= usize::from(session.max_members) {
+    if session.members.len() >= session.max_members() {
         return Err(AppError::new(ErrorCode::Full, "The session is full."));
     }
-    if session_count(&hub, auth.account) >= MAX_SESSIONS_PER_ACCOUNT {
+    if live::count_sessions_of(&mut tx, auth.account).await? >= MAX_SESSIONS_PER_ACCOUNT {
         return Err(AppError::limit("You are in the most sessions allowed."));
     }
 
-    let address = address_of(&mut hub, &state, auth.account)?;
-    if let Some(session) = hub.sessions.get_mut(&id) {
-        session.members.push(MemberMem {
-            account: auth.account,
-            handle,
-            endpoint: request.endpoint,
-            relay: request.relay,
-            address,
-            joined: now(),
-        });
-    }
-    hub.accounts
-        .entry(auth.account)
-        .or_default()
-        .sessions
-        .push(id.clone());
+    let member = MemberRow {
+        account_id: auth.account as i64,
+        handle,
+        endpoint: request.endpoint,
+        relay: request.relay,
+        address,
+        joined: now() as i64,
+    };
+    live::add_member(&mut tx, &id, &member).await?;
     // The invitation is used up.
-    let used: Vec<String> = hub
-        .invitations
-        .values()
-        .filter(|i| i.to == auth.account && i.session == id)
-        .map(|i| i.id.clone())
-        .collect();
-    for invitation in used {
-        hub.remove_invitation(&invitation);
-    }
-    state.arm_grace(&mut hub, auth.account);
-    hub.announce_session(&id);
-    let dirty = member_accounts(&hub, &id);
-    let view = hub.session_view(&id).ok_or_else(AppError::internal)?;
-    drop(hub);
-    state.refresh_presence(dirty).await;
-    Ok(Json(view))
+    let used = live::take_used(&mut tx, auth.account, &id).await?;
+    tx.commit().await?;
+
+    session.members.push(member);
+    state.invitations_gone(&used);
+    arm_grace(&state, auth.account).await?;
+    state.announce(&session);
+    state.refresh_presence(session.member_ids()).await;
+    Ok(Json(session.view()))
 }
 
 pub async fn leave(
@@ -322,13 +293,9 @@ pub async fn leave(
     auth: Auth,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    let mut dirty = Vec::new();
-    {
-        let mut hub = state.hub.lock().await;
-        if !hub.is_member(&id, auth.account) {
-            return Err(AppError::not_found());
-        }
-        hub.remove_member(&id, auth.account, &mut dirty);
+    let dirty = state.remove_member(&id, auth.account).await?;
+    if dirty.is_empty() {
+        return Err(AppError::not_found());
     }
     state.refresh_presence(dirty).await;
     Ok(StatusCode::NO_CONTENT)
@@ -346,12 +313,14 @@ pub async fn update(
     if let Some(max) = request.max_members {
         check_max_members(max)?;
     }
-    let mut hub = state.hub.lock().await;
-    let session = hub.sessions.get(&id).ok_or_else(AppError::not_found)?;
-    if !session.members.iter().any(|m| m.account == auth.account) {
+    let mut tx = state.db.begin().await?;
+    let mut session = live::lock_session(&mut tx, &id)
+        .await?
+        .ok_or_else(AppError::not_found)?;
+    if !session.is_member(auth.account) {
         return Err(AppError::not_found());
     }
-    if session.leader != auth.account {
+    if session.leader() != auth.account {
         return Err(AppError::forbidden(
             "Only the leader can change the session.",
         ));
@@ -364,31 +333,29 @@ pub async fn update(
         ));
     }
     if let Some(leader) = request.leader
-        && !session.members.iter().any(|m| m.account == leader.0)
+        && !session.is_member(leader.0)
     {
         return Err(AppError::bad_request("The new leader must be a member."));
     }
-    if let Some(session) = hub.sessions.get_mut(&id) {
-        if let Some(properties) = request.properties {
-            session.properties = properties;
-        }
-        if let Some(visibility) = request.visibility {
-            session.visibility = visibility;
-        }
-        if let Some(max) = request.max_members {
-            session.max_members = max;
-        }
-        if let Some(leader) = request.leader {
-            session.leader = leader.0;
-        }
+    if let Some(properties) = request.properties {
+        session.row.properties = properties;
     }
-    hub.announce_session(&id);
-    let dirty = member_accounts(&hub, &id);
-    let view = hub.session_view(&id).ok_or_else(AppError::internal)?;
-    drop(hub);
+    if let Some(visibility) = request.visibility {
+        session.row.visibility = live::visibility_text(visibility).to_owned();
+    }
+    if let Some(max) = request.max_members {
+        session.row.max_members = i64::from(max);
+    }
+    if let Some(leader) = request.leader {
+        session.row.leader = leader.0 as i64;
+    }
+    live::update_session(&mut tx, &session.row).await?;
+    tx.commit().await?;
+
+    state.announce(&session);
     // Visibility and capacity decide what friends see of the session.
-    state.refresh_presence(dirty).await;
-    Ok(Json(view))
+    state.refresh_presence(session.member_ids()).await;
+    Ok(Json(session.view()))
 }
 
 pub async fn remove_member(
@@ -397,24 +364,24 @@ pub async fn remove_member(
     Path((id, account)): Path<(String, String)>,
 ) -> Result<StatusCode> {
     let target = parse_id(&account)?;
-    let mut dirty = Vec::new();
     {
-        let mut hub = state.hub.lock().await;
-        let session = hub.sessions.get(&id).ok_or_else(AppError::not_found)?;
-        if !session.members.iter().any(|m| m.account == auth.account) {
+        let session = live::session(&mut *state.db.acquire().await?, &id)
+            .await?
+            .ok_or_else(AppError::not_found)?;
+        if !session.is_member(auth.account) {
             return Err(AppError::not_found());
         }
-        if session.leader != auth.account {
+        if session.leader() != auth.account {
             return Err(AppError::forbidden("Only the leader can remove members."));
         }
         if target == auth.account {
             return Err(AppError::bad_request("Leave the session instead."));
         }
-        if !session.members.iter().any(|m| m.account == target) {
+        if !session.is_member(target) {
             return Err(AppError::not_found());
         }
-        hub.remove_member(&id, target, &mut dirty);
     }
+    let dirty = state.remove_member(&id, target).await?;
     state.refresh_presence(dirty).await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -429,60 +396,58 @@ pub async fn invite(
         return Err(AppError::bad_request("Invite at most 64 accounts at once."));
     }
     let handle = handle_of(&state, auth.account).await?;
-    let friends: HashSet<u64> = db::friend_ids(&state.db, auth.account)
-        .await?
-        .into_iter()
-        .collect();
+    let friends = friends_of(&state, auth.account).await?;
 
-    let mut hub = state.hub.lock().await;
-    let session = hub.sessions.get(&id).ok_or_else(AppError::not_found)?;
-    if !session.members.iter().any(|m| m.account == auth.account) {
+    let mut tx = state.db.begin().await?;
+    let session = live::lock_session(&mut tx, &id)
+        .await?
+        .ok_or_else(AppError::not_found)?;
+    if !session.is_member(auth.account) {
         return Err(AppError::not_found());
     }
-    if session.visibility == Visibility::Closed {
+    if session.visibility() == Visibility::Closed {
         return Err(AppError::forbidden("This session is closed."));
     }
-    let (title_id, title, version) = (
-        session.title_id.clone(),
-        session.title.clone(),
-        session.version.clone(),
-    );
+    let ttl = state.tuning.invitation_ttl;
     let mut sent = Vec::new();
+    let mut new = Vec::new();
     for to in request.to {
         let to_id = to.0;
-        if sent.contains(&to) || !friends.contains(&to_id) || hub.is_member(&id, to_id) {
+        if sent.contains(&to) || !friends.contains(&to_id) || session.is_member(to_id) {
             continue;
         }
-        if hub
-            .invitations
-            .values()
-            .any(|i| i.to == to_id && i.session == id)
-        {
+        if live::is_invited(&mut tx, to_id, &id, None).await? {
             sent.push(to);
             continue;
         }
-        let open_for_session = hub.invitations.values().filter(|i| i.session == id).count();
-        let held = hub.invitations.values().filter(|i| i.to == to_id).count();
+        let (open_for_session, held) = live::count_invitations(&mut tx, &id, to_id).await?;
         if open_for_session >= MAX_INVITATIONS_PER_SESSION || held >= MAX_INVITATIONS_PER_ACCOUNT {
             continue;
         }
-        let ttl = state.tuning.invitation_ttl;
-        let invitation = InvitationMem {
+        let invitation = InvitationRow {
             id: random_uuid(),
-            from: auth.account,
+            from_id: auth.account as i64,
             from_handle: handle.clone(),
-            to: to_id,
-            session: id.clone(),
-            title_id: title_id.clone(),
-            title: title.clone(),
-            version: version.clone(),
-            expires: util::now() + ttl.as_secs(),
-            deadline: Instant::now() + ttl,
+            to_id: to_id as i64,
+            session_id: id.clone(),
+            title_id: session.row.title_id.clone(),
+            title: session.row.title.clone(),
+            version: session.row.version.clone(),
+            expires: (util::now() + ttl.as_secs()) as i64,
         };
-        let view = hub.invitation_view(&invitation);
-        hub.invitations.insert(invitation.id.clone(), invitation);
-        hub.push(to_id, Event::Invitation { invitation: view });
+        live::insert_invitation(&mut tx, &invitation, now_ms() + ttl.as_millis() as i64).await?;
+        new.push(invitation);
         sent.push(to);
+    }
+    tx.commit().await?;
+
+    for invitation in new {
+        state.news.push(
+            invitation.to(),
+            &Event::Invitation {
+                invitation: invitation.view(),
+            },
+        );
     }
     Ok(Json(Invited { sent }))
 }
@@ -492,12 +457,10 @@ pub async fn decline(
     auth: Auth,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    let mut hub = state.hub.lock().await;
-    match hub.invitations.get(&id) {
-        Some(invitation) if invitation.to == auth.account => {
-            hub.remove_invitation(&id);
-            Ok(StatusCode::NO_CONTENT)
-        }
-        _ => Err(AppError::not_found()),
+    let gone = live::take_declined(&mut *state.db.acquire().await?, &id, auth.account).await?;
+    if gone.is_empty() {
+        return Err(AppError::not_found());
     }
+    state.invitations_gone(&gone);
+    Ok(StatusCode::NO_CONTENT)
 }

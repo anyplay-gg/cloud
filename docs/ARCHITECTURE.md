@@ -110,8 +110,8 @@ Game traffic goes directly between players where the network allows it and throu
 
 | Stage | What | State |
 |---|---|---|
-| 1 | Everything shared moves into the store; the store runs on SQLite and Postgres; tests on both | next |
-| 2 | News over NATS; the cluster test | |
+| 1 | Everything shared moves into the store; the store runs on SQLite and Postgres; tests on both | done |
+| 2 | News over NATS; the cluster test | next |
 | 3 | Revisions on sessions and presence; clients spread their reconnects | |
 | 4 | Operations: health, readiness, metrics, drain, JSON logs | |
 | 5 | Kubernetes: a Helm chart, tried on a kind cluster in CI | |

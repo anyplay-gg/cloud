@@ -1,13 +1,14 @@
 //! The AnyPlay cloud: accounts, friends, presence, sessions, invitations and relay tickets.
 //!
 //! It implements the API in `spec/cloud-api.md` of anyplay-gg/network, using the types of the
-//! `anyplay-api` crate for every request, answer and event. Durable data is in SQLite
-//! ([`db`]); everything else lives in memory ([`hub`]).
+//! `anyplay-api` crate for every request, answer and event. Everything that more than one node
+//! needs is in the store: durable data ([`db`]) and live state ([`live`]), in SQLite or
+//! PostgreSQL. A node keeps only its own event connections ([`news`]).
 
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use anyhow::{Context as _, Result};
 use anyplay_ticket::Signer;
@@ -17,9 +18,10 @@ pub mod cli;
 pub mod config;
 pub mod db;
 pub mod http;
-pub mod hub;
 pub mod limits;
+pub mod live;
 pub mod mail;
+pub mod news;
 pub mod routes;
 pub mod state;
 pub mod util;
@@ -89,11 +91,17 @@ pub async fn open(
         db: pool,
         mailer,
         limiter: limits::RateLimiter::default(),
-        pending: Mutex::new(state::Pending::default()),
         cache: RwLock::new(cache),
-        hub: tokio::sync::Mutex::new(hub::Memory::default()),
+        news: news::News::default(),
+        node: util::random_token(12),
         social: tokio::sync::Mutex::new(()),
     });
+    // The first heartbeat, so that other nodes count this one as alive from the start.
+    state
+        .sweep()
+        .await
+        .map_err(|e| anyhow::anyhow!(e.body.message))
+        .context("cannot write to the store")?;
     state::start_sweeper(&state);
     Ok(state)
 }
@@ -114,7 +122,7 @@ pub async fn serve(
     .with_graceful_shutdown(async move {
         shutdown.await;
         // Open event connections would keep a graceful shutdown waiting.
-        closing.close_all().await;
+        closing.close_all();
     })
     .await
 }
