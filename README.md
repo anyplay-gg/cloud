@@ -46,6 +46,7 @@ The services behind the [AnyPlay network](https://github.com/anyplay-gg/network)
 | `crates/relay` | `anyplay-relay`, an iroh relay that admits only endpoints with a ticket |
 | `crates/ticket` | `anyplay-ticket`, the token format the cloud and the relay share |
 | `crates/e2e` | a whole network in one process: the cloud, a relay that checks tickets, two net services and two fake games that exchange packets through a tunnel |
+| `crates/load` | `anyplay-load`, a load harness that plays thousands of players against the API and event WebSockets; [numbers and method](docs/LOAD.md) |
 | `deploy/` | Dockerfile, `compose.yaml`, Caddyfile and an example `.env` |
 | `deploy/helm/` | the [Helm chart](docs/kubernetes.md) that runs the cloud as a cluster on Kubernetes, with an example CloudNativePG database and the files for the kind test |
 | `fuzz/` | [fuzz targets](fuzz/README.md) for the token check, run every night |

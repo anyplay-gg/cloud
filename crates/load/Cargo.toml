@@ -1,0 +1,33 @@
+[package]
+name = "anyplay-load"
+description = "A load harness that plays many players against the AnyPlay cloud"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.95"
+publish.workspace = true
+
+[lib]
+name = "anyplay_load"
+
+[[bin]]
+name = "anyplay-load"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+anyplay-api.workspace = true
+anyplay-cloud = { path = "../cloud" }
+clap.workspace = true
+futures-util.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+tempfile.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true

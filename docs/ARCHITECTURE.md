@@ -123,7 +123,7 @@ Game traffic goes directly between players where the network allows it and throu
 | 3 | Revisions on sessions and presence; clients spread their reconnects | done |
 | 4 | Operations: health, readiness, metrics, drain, JSON logs | done |
 | 5 | Kubernetes: a Helm chart, tried on a kind cluster in CI ([guide](kubernetes.md)) | done |
-| 6 | Load harness and published numbers | |
+| 6 | Load harness and first numbers: [docs/LOAD.md](LOAD.md) (one laptop, up to 5,000 players; a real cluster is not measured yet) | first numbers |
 | 7 | Regions and cells | |
 
 ### Known limits
