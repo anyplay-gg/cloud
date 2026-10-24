@@ -791,13 +791,12 @@ async fn a_session_opened_while_the_activity_changes_reaches_friends() {
         // Both requests have told the friends by the time they answer.
         let mut last = None;
         while let Some(event) = eb.next_within(Duration::from_millis(200)).await {
-            if let Event::Presence { presence, .. } = event {
-                if last
+            if let Event::Presence { presence, .. } = event
+                && last
                     .as_ref()
                     .is_none_or(|l: &anyplay_api::Presence| presence.revision > l.revision)
-                {
-                    last = Some(presence);
-                }
+            {
+                last = Some(presence);
             }
         }
         let told = last
@@ -834,14 +833,13 @@ async fn an_activity_set_while_the_first_connection_opens_reaches_friends_online
         presence.ok(204);
         let mut last = None;
         while let Some(event) = eb.next_within(Duration::from_millis(200)).await {
-            if let Event::Presence { account, presence } = event {
-                if account.0 == a.id
-                    && last
-                        .as_ref()
-                        .is_none_or(|l: &anyplay_api::Presence| presence.revision > l.revision)
-                {
-                    last = Some(presence);
-                }
+            if let Event::Presence { account, presence } = event
+                && account.0 == a.id
+                && last
+                    .as_ref()
+                    .is_none_or(|l: &anyplay_api::Presence| presence.revision > l.revision)
+            {
+                last = Some(presence);
             }
         }
         if !last.as_ref().is_some_and(|p| p.online) {
