@@ -121,6 +121,11 @@ pub struct Config {
     /// The folder with the built web portal (a single-page app: `index.html` and its assets).
     /// With it the cloud serves the portal from its own origin. Needs `public_url`.
     pub portal_dir: Option<PathBuf>,
+    /// The account web is served by another service on the cloud's origin (for example
+    /// anyplay-gg/web behind Caddy, `deploy/compose.web.yaml`). The cloud then sends the browser
+    /// to `/sign-in`, `/create` and `/account` but serves none of those paths itself. Needs
+    /// `public_url`; not together with `portal_dir`.
+    pub portal_external: bool,
     // Connections: linked accounts of other services (network spec/portal-api.md)
     /// The Client ID of the cloud's Discord application. With the secret it turns on the Discord
     /// connection. Needs `public_url`: Discord sends the browser back to it.
@@ -172,6 +177,7 @@ impl Default for Config {
             terms_version: None,
             legacy_device_days: 30,
             portal_dir: None,
+            portal_external: false,
             discord_client_id: None,
             discord_client_secret: None,
             steam_api_key: None,
@@ -328,6 +334,9 @@ impl Config {
         if let Some(v) = get("PORTAL_DIR") {
             self.portal_dir = Some(v.into());
         }
+        if let Some(v) = get("PORTAL_EXTERNAL") {
+            self.portal_external = parse("PORTAL_EXTERNAL", &v)?;
+        }
         if let Some(v) = get("DISCORD_CLIENT_ID") {
             self.discord_client_id = Some(v.trim().to_owned());
         }
@@ -430,6 +439,16 @@ impl Config {
         if self.legacy_device_days > 365 {
             bail!("legacy_device_days must be at most 365");
         }
+        if self.portal_external {
+            if self.portal_dir.is_some() {
+                bail!("portal_dir and portal_external exclude each other");
+            }
+            if self.web_origin().is_none() {
+                bail!(
+                    "portal_external needs public_url: the account web is served from the origin of the cloud"
+                );
+            }
+        }
         if let Some(dir) = &self.portal_dir {
             if self.web_origin().is_none() {
                 bail!(
@@ -483,6 +502,12 @@ impl Config {
     /// The Steam Web API key, if the cloud has one.
     pub fn steam_key(&self) -> Option<&str> {
         self.steam_api_key.as_deref().filter(|v| !v.is_empty())
+    }
+
+    /// Whether the player signs in on the portal's paths (`/sign-in`, `/create`) and not on the
+    /// cloud's HTML pages: the cloud serves the portal, or another service does.
+    pub fn portal_landing(&self) -> bool {
+        self.portal_dir.is_some() || self.portal_external
     }
 
     /// The origin of the account web, without a trailing slash, when this cloud has one.
@@ -825,6 +850,34 @@ mod tests {
             "the portal is served from the origin of the account web"
         );
         assert_eq!(Config::default().portal_dir, None);
+    }
+
+    #[test]
+    fn an_external_portal_is_read_and_checked() {
+        let mut config = Config::default();
+        assert!(!config.portal_external);
+        config
+            .apply_env(|name| match name {
+                "PORTAL_EXTERNAL" => Some("true".into()),
+                "PUBLIC_URL" => Some("https://play.example.com".into()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(config.portal_external);
+        assert!(config.portal_landing());
+        config.validate().unwrap();
+        config.public_url = None;
+        assert!(config.validate().is_err(), "it needs public_url");
+        config.public_url = Some("https://play.example.com".into());
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<html></html>").unwrap();
+        config.portal_dir = Some(dir.path().into());
+        assert!(config.validate().is_err(), "not together with portal_dir");
+        assert!(
+            Config::default()
+                .apply_env(|n| (n == "PORTAL_EXTERNAL").then(|| "maybe".into()))
+                .is_err()
+        );
     }
 
     #[test]

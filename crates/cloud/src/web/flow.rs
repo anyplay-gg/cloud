@@ -108,7 +108,7 @@ fn invalid_request() -> WebError {
 
 /// The page the app opens in the system browser. Everything about the request is checked here;
 /// what passes is kept in a session of its own, so no later page takes a redirect address from
-/// the URL. The player goes on in the portal when the cloud serves one, else on the HTML pages.
+/// the URL. The player goes on in the portal when the cloud or another service serves one, else on the HTML pages.
 pub async fn authorize(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -159,7 +159,7 @@ pub async fn authorize(
         ..SessionData::default()
     };
     let visit = fresh_visit(&state, data).await?;
-    let portal = state.config.portal_dir.is_some();
+    let portal = state.config.portal_landing();
     Ok(redirect(
         &state,
         &visit,
