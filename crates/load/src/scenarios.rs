@@ -406,7 +406,7 @@ pub async fn presence_churn(ctx: &Arc<Ctx>, sampler: &Sampler) -> ScenarioReport
                         return;
                     }
                     let body = json!({"activity": {
-                        "title_id": "PPSA00001",
+                        "title_id": "GAME00001",
                         "title": "Load Game",
                         "version": format!("t{}", c.micros()),
                     }});
@@ -506,7 +506,7 @@ pub async fn session_churn(ctx: &Arc<Ctx>, sampler: &Sampler) -> ScenarioReport 
 async fn one_session(ctx: &Arc<Ctx>, leader: &Arc<Shared>, size: usize, hold: Duration) {
     let endpoint = |p: &Shared| format!("{:064x}", p.idx + 1);
     let create = json!(CreateSession {
-        title_id: "PPSA00001".into(),
+        title_id: "GAME00001".into(),
         title: "Load Game".into(),
         version: "1.00".into(),
         build: "load".into(),
