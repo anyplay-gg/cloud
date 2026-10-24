@@ -1438,8 +1438,11 @@ async fn the_app_opened_by_the_launcher_goes_on_in_the_portal_only_when_there_is
     let dir = built_portal();
     let with = cloud_with_portal(&dir).await;
     let without = TestCloud::start().await;
+    // Another service serves the account web: the same landing, and the cloud serves no portal.
+    let external = TestCloud::with(|c| c.portal_external = true, |_| {}).await;
     for (cloud, sign_in, create) in [
         (&with, "/sign-in", "/create"),
+        (&external, "/sign-in", "/create"),
         (&without, "/web/sign-in", "/web/create"),
     ] {
         let client = reqwest::Client::builder()
