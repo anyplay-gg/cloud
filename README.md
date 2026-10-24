@@ -51,7 +51,7 @@ The services behind the [AnyPlay network](https://github.com/anyplay-gg/network)
 | `deploy/` | Dockerfile, `compose.yaml`, Caddyfile and an example `.env` |
 | `deploy/helm/` | the [Helm chart](docs/kubernetes.md) that runs the cloud as a cluster on Kubernetes, with an example CloudNativePG database and the files for the kind test |
 | `fuzz/` | [fuzz targets](fuzz/README.md) for the token check, run every night |
-| `docs/` | [architecture](docs/ARCHITECTURE.md), [settings](docs/configuration.md), [decisions](docs/adr) and [EU compliance drafts](docs/compliance/README.md) |
+| `docs/` | [architecture](docs/ARCHITECTURE.md), [settings](docs/configuration.md), [decisions](docs/adr), [EU compliance drafts](docs/compliance/README.md) and [supply chain](docs/supply-chain.md) |
 
 ## Host your own
 

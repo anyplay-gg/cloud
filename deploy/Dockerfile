@@ -7,15 +7,21 @@
 #   docker build -f cloud/deploy/Dockerfile --target relay -t anyplay-relay .
 #
 # `compose.yaml` does this for you. Dockerfile.dockerignore keeps everything else out of the context.
+#
+# Every base image is pinned by the digest of its multi-platform index, with the tag it was taken
+# from in the comment above it; Dependabot (the `docker` ecosystem in .github/dependabot.yml) moves
+# both together. Nothing here pushes an image: CI only builds and scans them (docs/supply-chain.md).
 
-FROM rust:1-bookworm AS build
+# rust:1-bookworm
+FROM rust:1-bookworm@sha256:48b7f435b8fc6378ce43b44f15e3a47fd8919b2825f835c39bd4bd3da50af5b8 AS build
 WORKDIR /src
 COPY network ./network
 COPY cloud ./cloud
 WORKDIR /src/cloud
 RUN cargo build --release --locked -p anyplay-cloud -p anyplay-relay
 
-FROM debian:bookworm-slim AS runtime
+# debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
@@ -43,7 +49,8 @@ ENTRYPOINT ["anyplay-relay"]
 
 # Caddy as user 10001, so that the relay, which runs as the same user, can read the certificates
 # Caddy fetches. Caddy keeps its files in /data and /config.
-FROM caddy:2 AS caddy
+# caddy:2
+FROM caddy:2@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489 AS caddy
 RUN mkdir -p /data /config \
     && chown -R 10001:10001 /data /config
 USER 10001:10001

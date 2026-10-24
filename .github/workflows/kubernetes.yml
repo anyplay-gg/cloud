@@ -31,7 +31,8 @@ env:
   KIND_VERSION: v0.33.0
   # The official NATS chart, https://github.com/nats-io/k8s (appVersion 2.15.1).
   NATS_CHART_VERSION: 2.15.1
-  CURL_IMAGE: curlimages/curl:8.21.0
+  # curlimages/curl:8.21.0, pinned by the digest of its multi-platform index.
+  CURL_IMAGE: curlimages/curl:8.21.0@sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13
 
 # The cloud depends on the network's API crate by relative path, so both repositories are
 # checked out side by side, like in ci.yml. The chart lives in cloud/deploy/helm.
@@ -41,6 +42,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: ${{ env.HELM_VERSION }}
@@ -93,9 +96,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           path: cloud
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           repository: anyplay-gg/network
           path: network
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
