@@ -2,7 +2,7 @@
 
 How the cloud grows from one process on a home server to a cluster that carries a whole player network, and why it is built that way. The decisions are in [docs/adr](adr); the words are those of the network's [CONTEXT.md](https://github.com/anyplay-gg/network/blob/main/CONTEXT.md).
 
-The patterns here come from what large player networks have said in public: talks, engineering blogs, postmortems and documentation. None of it comes from anyone's internal or leaked material, and the cloud never stands in for anyone's servers ([the clean line](https://github.com/anyplay-gg/network/blob/main/docs/adr/0003-the-clean-line.md)).
+The patterns here come from what large player networks have said in public: talks, engineering blogs, postmortems and documentation. None of it comes from anyone's internal or leaked material, and the cloud never stands in for a publisher service that still runs ([the line is drawn at the law](https://github.com/anyplay-gg/network/blob/main/docs/adr/0021-the-line-is-drawn-at-the-law.md)).
 
 ## One program, two shapes
 
