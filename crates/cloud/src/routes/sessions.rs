@@ -166,9 +166,11 @@ async fn can_see(state: &AppState, session: &SessionState, account: u64) -> Resu
         return Ok(false);
     }
     let members = session.member_ids();
-    if db::blocked_between_any(&state.db, account, &members).await? {
+    if db::blocked_between_any(&mut conn, account, &members).await? {
         return Ok(false);
     }
+    // The connection goes back before the friends are read through the pool.
+    drop(conn);
     let friends = friends_of(state, account).await?;
     Ok(members.iter().any(|m| friends.contains(m)))
 }
@@ -243,7 +245,7 @@ pub async fn join(
 
     // 1. Blocks, in either direction, between the joiner and any member.
     let members = session.member_ids();
-    if db::blocked_between_any(&state.db, auth.account, &members).await? {
+    if db::blocked_between_any(&mut tx, auth.account, &members).await? {
         return Err(AppError::forbidden("You cannot join this session."));
     }
     // 2. Visibility.
