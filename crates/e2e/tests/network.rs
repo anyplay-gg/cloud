@@ -34,10 +34,13 @@ struct Launcher {
     events: mpsc::UnboundedReceiver<Event>,
     next: u64,
     _data: tempfile::TempDir,
+    /// Whose launcher this is, and where every event it shows is noted.
+    name: &'static str,
+    journal: Journal,
 }
 
 impl Launcher {
-    async fn start(relay_only: bool) -> Launcher {
+    async fn start(name: &'static str, relay_only: bool, journal: Journal) -> Launcher {
         let data = tempfile::tempdir().unwrap();
         let (service_end, launcher_end) = tokio::io::duplex(1 << 20);
         let (service_read, service_write) = tokio::io::split(service_end);
@@ -85,6 +88,8 @@ impl Launcher {
             events,
             next: 1,
             _data: data,
+            name,
+            journal,
         }
     }
 
@@ -119,13 +124,29 @@ impl Launcher {
         tokio::time::timeout(LIMIT, async {
             loop {
                 let event = self.events.recv().await.expect("events ended");
+                self.note(&event);
                 if let Some(found) = pick(&event) {
                     return found;
                 }
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("no {what} in time"))
+        .unwrap_or_else(|_| panic!("no {what} in time:\n{}", self.journal.lines()))
+    }
+
+    /// Notes an event in the journal, shortened: a friend list or session can be long.
+    fn note(&self, event: &Event) {
+        let mut shown = format!("{event:?}");
+        if shown.len() > 600 {
+            let mut end = 600;
+            while !shown.is_char_boundary(end) {
+                end -= 1;
+            }
+            shown.truncate(end);
+            shown.push_str(" ...");
+        }
+        self.journal
+            .note(format!("{}'s launcher: {shown}", self.name));
     }
 
     async fn friends(&mut self, what: &str, test: impl Fn(&FriendLists) -> bool) -> FriendLists {
@@ -197,14 +218,70 @@ impl Launcher {
     }
 }
 
-async fn relay(signer: &anyplay_ticket::Signer) -> (iroh_relay::server::Server, String) {
+async fn relay(signer: &anyplay_ticket::Signer) -> (iroh_relay::server::Server, String, Journal) {
+    let journal = Journal::default();
     let mut relay = iroh_relay::server::RelayConfig::new((Ipv4Addr::LOCALHOST, 0));
-    relay.access = Arc::new(anyplay_relay::TicketAccess::new(signer.verifier()));
+    relay.access = Arc::new(Recorded {
+        access: anyplay_relay::TicketAccess::new(signer.verifier()),
+        journal: journal.clone(),
+    });
     let mut config = iroh_relay::server::ServerConfig::default();
     config.relay = Some(relay);
     let server = iroh_relay::server::Server::spawn(config).await.unwrap();
     let url = format!("http://{}", server.http_addr().unwrap());
-    (server, url)
+    (server, url, journal)
+}
+
+/// What happened, with the time since the test began, for a failure message.
+#[derive(Clone, Debug)]
+struct Journal(Arc<Mutex<Vec<String>>>, std::time::Instant);
+
+impl Default for Journal {
+    fn default() -> Self {
+        Journal(Arc::default(), std::time::Instant::now())
+    }
+}
+
+impl Journal {
+    fn note(&self, what: String) {
+        let at = self.1.elapsed().as_millis();
+        self.0.lock().unwrap().push(format!("{at:>6} ms  {what}"));
+    }
+
+    fn lines(&self) -> String {
+        self.0.lock().unwrap().join("\n")
+    }
+}
+
+/// The relay's ticket check, noting every connection it admits or refuses and every one that ends.
+#[derive(Debug)]
+struct Recorded {
+    access: anyplay_relay::TicketAccess,
+    journal: Journal,
+}
+
+impl iroh_relay::server::AccessControl for Recorded {
+    async fn on_connect(
+        &self,
+        request: &iroh_relay::server::ClientRequest,
+    ) -> iroh_relay::server::Access {
+        let access = self.access.on_connect(request).await;
+        self.journal.note(format!(
+            "relay: {} connects: {access:?}",
+            request.endpoint_id().fmt_short()
+        ));
+        access
+    }
+
+    fn on_disconnect(
+        &self,
+        endpoint_id: iroh_base::EndpointId,
+        connection_id: iroh_relay::server::ConnectionId,
+    ) {
+        self.journal
+            .note(format!("relay: {} gone", endpoint_id.fmt_short()));
+        iroh_relay::server::AccessControl::on_disconnect(&self.access, endpoint_id, connection_id);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -241,7 +318,7 @@ async fn meet_and_play(alice_relay: AliceRelay) -> Link {
 
     let cloud_dir = tempfile::tempdir().unwrap();
     let (signer, _) = anyplay_cloud::load_signing_key(cloud_dir.path()).unwrap();
-    let (_relay, relay_url) = relay(&signer).await;
+    let (_relay, relay_url, journal) = relay(&signer).await;
     let mail = Arc::new(MemoryMailer::default());
     let config = Config {
         data_dir: cloud_dir.path().to_path_buf(),
@@ -258,8 +335,13 @@ async fn meet_and_play(alice_relay: AliceRelay) -> Link {
     let cloud_url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(serve(listener, state, std::future::pending()));
 
-    let mut alice = Launcher::start(alice_relay == AliceRelay::FromStart).await;
-    let mut bobby = Launcher::start(false).await;
+    let mut alice = Launcher::start(
+        "Alice",
+        alice_relay == AliceRelay::FromStart,
+        journal.clone(),
+    )
+    .await;
+    let mut bobby = Launcher::start("Bobby", false, journal.clone()).await;
     let alice_id = alice
         .sign_up(&cloud_url, &mail, "alice@example.org", "Alice")
         .await;
@@ -475,21 +557,37 @@ async fn meet_and_play(alice_relay: AliceRelay) -> Link {
     };
     if alice_relay == AliceRelay::TurnedOn {
         assert_eq!(alice_link, Link::Direct);
+        journal.note("Alice turns relay only on".into());
         alice.ok(Command::RelayOnly { on: true }).await;
-        return bobby
-            .wait("the tunnel to Alice on the relay", |event| match event {
-                Event::Session {
+        journal.note("Alice's net service answered".into());
+        // Every tunnel state Bobby's launcher shows for Alice goes into the journal, so that a
+        // failure tells how far the move to the relay got.
+        let moved = tokio::time::timeout(LIMIT, async {
+            loop {
+                let event = bobby.events.recv().await.expect("events ended");
+                if let Event::Session {
                     session: Some(shown),
-                } if shown
-                    .members
-                    .iter()
-                    .any(|m| m.account.id == alice_id && m.link == Some(Link::Relay)) =>
+                } = &event
                 {
-                    Some(Link::Relay)
+                    let link = shown
+                        .members
+                        .iter()
+                        .find(|m| m.account.id == alice_id)
+                        .map(|m| m.link);
+                    journal.note(format!("Bobby's launcher: tunnel to Alice {link:?}"));
+                    if link == Some(Some(Link::Relay)) {
+                        return Link::Relay;
+                    }
                 }
-                _ => None,
-            })
-            .await;
+            }
+        })
+        .await;
+        return moved.unwrap_or_else(|_| {
+            panic!(
+                "the tunnel to Alice did not move to the relay in time:\n{}",
+                journal.lines()
+            )
+        });
     }
 
     // Bobby's game ends: he leaves, and Alice's game hears that he is gone.

@@ -207,6 +207,7 @@ dependencies = [
  "anyplay-net",
  "anyplay-relay",
  "anyplay-ticket",
+ "iroh-base",
  "iroh-relay",
  "reqwest",
  "rustls",
