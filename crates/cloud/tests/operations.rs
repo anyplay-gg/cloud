@@ -418,7 +418,13 @@ async fn a_ban_takes_effect_at_once_and_follows_the_e_mail_address() {
     let reply = cloud.get("/v1/me", b.token()).await;
     reply.is_error("banned", 403);
     assert_eq!(reply.body.get("until"), None, "a permanent ban has no end");
-    assert_eq!(eb.next().await, Event::Banned { until: None });
+    assert_eq!(
+        eb.next().await,
+        Event::Banned {
+            until: None,
+            statement: None,
+        }
+    );
     assert_eq!(eb.close_code().await, Some(close::BANNED));
     // His friends see him go.
     let Event::Presence { presence, .. } = ea.until(|e| matches!(e, Event::Presence { .. })).await
@@ -430,7 +436,10 @@ async fn a_ban_takes_effect_at_once_and_follows_the_e_mail_address() {
     let mut again = Events::connect_raw(&cloud.base, b.token()).await.unwrap();
     assert_eq!(
         again.next_within(Duration::from_secs(2)).await,
-        Some(Event::Banned { until: None })
+        Some(Event::Banned {
+            until: None,
+            statement: None,
+        })
     );
     assert_eq!(again.close_code().await, Some(close::BANNED));
     cloud

@@ -57,6 +57,7 @@ pub async fn events(
             Err(error) if error.body.error == anyplay_api::ErrorCode::Banned => Verdict::Refuse {
                 event: Some(Box::new(Event::Banned {
                     until: error.body.until,
+                    statement: None,
                 })),
                 code: close::BANNED,
                 reason: "banned",

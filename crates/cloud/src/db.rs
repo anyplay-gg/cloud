@@ -595,14 +595,21 @@ pub async fn unblock(pool: &Pool, blocker: u64, blocked: u64) -> sqlx::Result<bo
 }
 
 /// True when `account` blocked any of `others` or any of them blocked `account`.
-pub async fn blocked_between_any(pool: &Pool, account: u64, others: &[u64]) -> sqlx::Result<bool> {
+/// True when `account` and any of `others` blocked one another. It asks on the caller's
+/// connection: a handler inside a transaction must not wait for a second connection while it holds
+/// one, or as many such handlers as the pool has connections stall each other.
+pub async fn blocked_between_any(
+    conn: &mut sqlx::AnyConnection,
+    account: u64,
+    others: &[u64],
+) -> sqlx::Result<bool> {
     for other in others {
         let row: Option<(i64,)> = sqlx::query_as(
             "SELECT 1 FROM blocks WHERE (blocker = $1 AND blocked = $2) OR (blocker = $2 AND blocked = $1)",
         )
         .bind(i(account))
         .bind(i(*other))
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await?;
         if row.is_some() {
             return Ok(true);
@@ -906,7 +913,7 @@ pub async fn set_privacy(
 
 /// True when either account blocked the other.
 pub async fn blocked_either(pool: &Pool, a: u64, b: u64) -> sqlx::Result<bool> {
-    blocked_between_any(pool, a, &[b]).await
+    blocked_between_any(&mut *pool.acquire().await?, a, &[b]).await
 }
 
 #[cfg(test)]
