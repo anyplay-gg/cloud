@@ -41,6 +41,7 @@ impl Launcher {
             bind: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
             relay_only: false,
             device_name: "Test PC".into(),
+            audio: anyplay_net::voice::Audio::system(),
         };
         tokio::spawn(anyplay_net::run(
             config,

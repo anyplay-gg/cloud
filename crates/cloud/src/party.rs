@@ -33,6 +33,25 @@ pub struct MemberRow {
     pub account_id: i64,
     pub handle: String,
     pub joined: i64,
+    /// The tunnel key of the member's net service; "" until it announces one.
+    pub endpoint: String,
+    pub relay: Option<String>,
+    /// 1 when the member takes part in the party's voice.
+    pub voice: i64,
+}
+
+impl MemberRow {
+    /// A member that has announced nothing.
+    pub fn new(account: u64, handle: String, joined: i64) -> Self {
+        Self {
+            account_id: account as i64,
+            handle,
+            joined,
+            endpoint: String::new(),
+            relay: None,
+            voice: 0,
+        }
+    }
 }
 
 /// A party and its members, longest-standing first.
@@ -61,6 +80,11 @@ impl PartyState {
         self.members.len() >= usize::from(MAX_PARTY_MEMBERS)
     }
 
+    /// The member row of `account`.
+    pub fn member(&self, account: u64) -> Option<&MemberRow> {
+        self.members.iter().find(|m| u(m.account_id) == account)
+    }
+
     pub fn view(&self) -> Party {
         Party {
             id: self.row.id.clone(),
@@ -74,6 +98,9 @@ impl PartyState {
                         handle: m.handle.clone(),
                     },
                     joined: u(m.joined),
+                    endpoint: m.endpoint.clone(),
+                    relay: m.relay.clone(),
+                    voice: m.voice != 0,
                 })
                 .collect(),
             max_members: MAX_PARTY_MEMBERS,
@@ -88,7 +115,7 @@ const PARTY_COLUMNS: &str = "id, leader, created, revision";
 
 async fn members_of(conn: &mut Conn, id: &str) -> sqlx::Result<Vec<MemberRow>> {
     sqlx::query_as(
-        "SELECT account_id, handle, joined FROM party_members WHERE party_id = $1 ORDER BY seq",
+        "SELECT account_id, handle, joined, endpoint, relay, voice FROM party_members WHERE party_id = $1 ORDER BY seq",
     )
     .bind(id)
     .fetch_all(conn)
@@ -177,6 +204,28 @@ pub async fn add_member(conn: &mut Conn, party: &str, member: &MemberRow) -> sql
     .execute(conn)
     .await?;
     Ok(result.rows_affected() == 1)
+}
+
+/// Stores what a member's net service announced. The caller holds the party's lock.
+pub async fn set_endpoint(
+    conn: &mut Conn,
+    party: &str,
+    account: u64,
+    endpoint: &str,
+    relay: Option<&str>,
+    voice: bool,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE party_members SET endpoint = $3, relay = $4, voice = $5          WHERE party_id = $1 AND account_id = $2",
+    )
+    .bind(party)
+    .bind(i(account))
+    .bind(endpoint)
+    .bind(relay)
+    .bind(i64::from(voice))
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 pub async fn delete_member(conn: &mut Conn, party: &str, account: u64) -> sqlx::Result<()> {

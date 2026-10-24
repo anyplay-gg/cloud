@@ -88,6 +88,7 @@ pub fn router(state: AppState) -> Router {
                 .patch(parties::update),
         )
         .route(path::PARTY_LEAVE, post(parties::leave))
+        .route(path::PARTY_ENDPOINT, put(parties::set_endpoint))
         .route(path::PARTY_SESSION, post(parties::move_to_session))
         .route(path::PARTY_MEMBER, delete(parties::kick))
         .route(

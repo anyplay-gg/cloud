@@ -814,3 +814,293 @@ async fn a_party_of_three_chats_and_moves_into_one_session() {
         .ok(200)
         .body;
 }
+
+async fn announce(
+    cloud: &TestCloud,
+    user: &User,
+    endpoint: &str,
+    relay: Option<&str>,
+    voice: bool,
+) -> Reply {
+    cloud
+        .put(
+            "/v1/party/endpoint",
+            user.token(),
+            Some(json!({"endpoint": endpoint, "relay": relay, "voice": voice})),
+        )
+        .await
+}
+
+fn member(party: &Party, user: &User) -> anyplay_api::PartyMember {
+    party
+        .members
+        .iter()
+        .find(|m| m.account.id.0 == user.id)
+        .expect("a member")
+        .clone()
+}
+
+#[tokio::test]
+async fn a_member_announces_its_endpoint_and_the_party_hears_of_it() {
+    let cloud = TestCloud::start().await;
+    let (lead, friends) = leader_and_friends(&cloud, 1).await;
+    let bea = &friends[0];
+    let joined = gather(&cloud, &lead, &[bea]).await;
+    // Nobody has announced anything yet.
+    for m in &joined.members {
+        assert_eq!(m.endpoint, "");
+        assert_eq!(m.relay, None);
+        assert!(!m.voice);
+    }
+    let mut el = cloud.events(lead.token()).await;
+
+    let answer = announce(
+        &cloud,
+        bea,
+        &endpoint(0xab),
+        Some("https://relay.example.com"),
+        true,
+    )
+    .await
+    .ok(200)
+    .json::<Party>();
+    assert_eq!(answer.revision, joined.revision + 1);
+    let mine = member(&answer, bea);
+    assert_eq!(mine.endpoint, endpoint(0xab));
+    assert_eq!(mine.relay.as_deref(), Some("https://relay.example.com"));
+    assert!(mine.voice);
+    assert_eq!(member(&answer, &lead).endpoint, "");
+
+    // The leader hears of it, and a fresh read shows it.
+    let told = party_event(&mut el).await;
+    assert_eq!(told.revision, answer.revision);
+    assert_eq!(member(&told, bea).endpoint, endpoint(0xab));
+    let read = party_of(&cloud, &lead).await.ok(200).json::<Party>();
+    assert_eq!(
+        member(&read, bea).relay.as_deref(),
+        Some("https://relay.example.com")
+    );
+    assert!(member(&read, bea).voice);
+
+    // A change raises the revision again, and the leader can announce too. A client from
+    // before relays leaves `relay` out.
+    let second = cloud
+        .put(
+            "/v1/party/endpoint",
+            lead.token(),
+            Some(json!({"endpoint": endpoint(0xcd), "voice": false})),
+        )
+        .await
+        .ok(200)
+        .json::<Party>();
+    assert_eq!(second.revision, answer.revision + 1);
+    assert_eq!(member(&second, &lead).relay, None);
+    let moved = announce(&cloud, bea, &endpoint(0xab), None, false)
+        .await
+        .ok(200)
+        .json::<Party>();
+    assert_eq!(moved.revision, second.revision + 1);
+    assert_eq!(member(&moved, bea).relay, None);
+    assert!(!member(&moved, bea).voice);
+}
+
+#[tokio::test]
+async fn announcing_the_same_endpoint_again_changes_nothing() {
+    let cloud = TestCloud::start().await;
+    let (lead, friends) = leader_and_friends(&cloud, 1).await;
+    let bea = &friends[0];
+    gather(&cloud, &lead, &[bea]).await;
+    let relay = Some("https://r.example.com");
+    let first = announce(&cloud, bea, &endpoint(0xab), relay, true)
+        .await
+        .ok(200)
+        .json::<Party>();
+    let mut el = cloud.events(lead.token()).await;
+
+    let again = announce(&cloud, bea, &endpoint(0xab), relay, true)
+        .await
+        .ok(200)
+        .json::<Party>();
+    assert_eq!(again.revision, first.revision);
+    assert_eq!(member(&again, bea).endpoint, endpoint(0xab));
+    // No party event follows (presence news of the earlier clients may).
+    while let Some(event) = el.next_within(Duration::from_millis(400)).await {
+        assert!(!matches!(event, Event::Party { .. }), "{event:?}");
+    }
+    // The stored revision did not move either: the next change takes the next number.
+    let read = party_of(&cloud, &lead).await.ok(200).json::<Party>();
+    assert_eq!(read.revision, first.revision);
+    let next = announce(&cloud, bea, &endpoint(0xab), relay, false)
+        .await
+        .ok(200)
+        .json::<Party>();
+    assert_eq!(next.revision, first.revision + 1);
+}
+
+#[tokio::test]
+async fn an_endpoint_is_checked_and_needs_a_party() {
+    let cloud = TestCloud::start().await;
+    let (lead, friends) = leader_and_friends(&cloud, 1).await;
+    let bea = &friends[0];
+    // Not in a party.
+    announce(&cloud, bea, &endpoint(0xab), None, true)
+        .await
+        .is_error("not_found", 404);
+    gather(&cloud, &lead, &[bea]).await;
+
+    for bad in [
+        String::new(),
+        "ab".repeat(31),
+        "ab".repeat(33),
+        "AB".repeat(32),
+        "zz".repeat(32),
+    ] {
+        announce(&cloud, bea, &bad, None, true)
+            .await
+            .is_error("bad_request", 400);
+    }
+    for bad in [
+        "http://relay.example.com",
+        "ftp://relay.example.com",
+        "relay.example.com",
+        "https://",
+        "https://relay example.com",
+    ] {
+        announce(&cloud, bea, &endpoint(0xab), Some(bad), true)
+            .await
+            .is_error("bad_request", 400);
+    }
+    // Nothing was stored.
+    let read = party_of(&cloud, &lead).await.ok(200).json::<Party>();
+    assert_eq!(member(&read, bea).endpoint, "");
+
+    // Another member's endpoint is taken; one's own is not.
+    announce(&cloud, &lead, &endpoint(0xab), None, true)
+        .await
+        .ok(200);
+    announce(&cloud, bea, &endpoint(0xab), None, true)
+        .await
+        .is_error("limit", 409);
+    announce(&cloud, bea, &endpoint(0xcd), None, true)
+        .await
+        .ok(200);
+    announce(&cloud, &lead, &endpoint(0xab), None, true)
+        .await
+        .ok(200);
+    // Another party may use the same key: it is not a member of this one.
+    let other = cloud.sign_up("Other").await;
+    let friend = cloud.sign_up("Friend").await;
+    befriend(&cloud, &other, &friend).await;
+    gather(&cloud, &other, &[&friend]).await;
+    announce(&cloud, &other, &endpoint(0xcd), None, true)
+        .await
+        .ok(200);
+}
+
+#[tokio::test]
+async fn leaving_removal_and_the_end_of_the_party_clear_the_endpoint() {
+    let cloud = TestCloud::start().await;
+    let (lead, friends) = leader_and_friends(&cloud, 2).await;
+    let (bea, cy) = (&friends[0], &friends[1]);
+    gather(&cloud, &lead, &[bea, cy]).await;
+    let relay = Some("https://r.example.com");
+    for (user, key) in [(&lead, 0xaa), (bea, 0xbb), (cy, 0xcc)] {
+        announce(&cloud, user, &endpoint(key), relay, true)
+            .await
+            .ok(200);
+    }
+
+    // Bea leaves and is invited back: she has announced nothing.
+    cloud
+        .post_empty("/v1/party/leave", bea.token())
+        .await
+        .ok(204);
+    let read = party_of(&cloud, &lead).await.ok(200).json::<Party>();
+    assert_eq!(read.members.len(), 2);
+    let mut eb = cloud.events(bea.token()).await;
+    invite(&cloud, &lead, &[bea]).await.ok(200);
+    let invitation = invitation_event(&mut eb).await;
+    let back = cloud
+        .post_empty(
+            &format!("/v1/party/invitations/{}/accept", invitation.id),
+            bea.token(),
+        )
+        .await
+        .ok(200)
+        .json::<Party>();
+    let mine = member(&back, bea);
+    assert_eq!(mine.endpoint, "");
+    assert_eq!(mine.relay, None);
+    assert!(!mine.voice);
+    // The others kept theirs.
+    assert_eq!(member(&back, cy).endpoint, endpoint(0xcc));
+    // Her old key is free again.
+    announce(&cloud, bea, &endpoint(0xbb), None, true)
+        .await
+        .ok(200);
+
+    // The leader removes Cy, who comes back with nothing.
+    cloud
+        .delete(&format!("/v1/party/members/{}", cy.id), lead.token())
+        .await
+        .ok(204);
+    let mut ec = cloud.events(cy.token()).await;
+    invite(&cloud, &lead, &[cy]).await.ok(200);
+    let invitation = invitation_event(&mut ec).await;
+    let back = cloud
+        .post_empty(
+            &format!("/v1/party/invitations/{}/accept", invitation.id),
+            cy.token(),
+        )
+        .await
+        .ok(200)
+        .json::<Party>();
+    assert_eq!(member(&back, cy).endpoint, "");
+    assert!(!member(&back, cy).voice);
+
+    // The party ends and a new one starts: nobody has announced anything.
+    for user in [&lead, bea, cy] {
+        cloud
+            .post_empty("/v1/party/leave", user.token())
+            .await
+            .ok(204);
+    }
+    party_of(&cloud, &lead).await.is_error("not_found", 404);
+    let fresh = gather(&cloud, &lead, &[bea]).await;
+    for m in &fresh.members {
+        assert_eq!(m.endpoint, "");
+        assert_eq!(m.relay, None);
+        assert!(!m.voice);
+    }
+}
+
+#[tokio::test]
+async fn an_invitation_carries_no_endpoint() {
+    let cloud = TestCloud::start().await;
+    let (lead, friends) = leader_and_friends(&cloud, 1).await;
+    let bea = &friends[0];
+    let mut eb = cloud.events(bea.token()).await;
+    invite(&cloud, &lead, &[bea]).await.ok(200);
+    announce(
+        &cloud,
+        &lead,
+        &endpoint(0xab),
+        Some("https://r.example.com"),
+        true,
+    )
+    .await
+    .ok(200);
+
+    let invitation = invitation_event(&mut eb).await;
+    assert_eq!(invitation.members, 1);
+    let listed = cloud
+        .get("/v1/party/invitations", bea.token())
+        .await
+        .ok(200)
+        .body;
+    let text = listed.to_string();
+    assert!(text.contains(&invitation.id), "{text}");
+    assert!(!text.contains("endpoint"), "{text}");
+    assert!(!text.contains("relay"), "{text}");
+    assert!(!text.contains(&endpoint(0xab)), "{text}");
+}

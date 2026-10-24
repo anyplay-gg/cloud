@@ -395,3 +395,97 @@ async fn a_party_on_two_nodes_forms_chats_and_moves_into_a_session() {
     };
     assert_eq!(party.leader.0, lead.id);
 }
+
+#[tokio::test]
+async fn a_party_endpoint_announced_on_one_node_reaches_a_member_on_the_other() {
+    let (one, two) = cluster_or_skip!();
+    let lead = one.sign_up("Lead").await;
+    let bea = one.sign_up("Bea").await;
+    befriend(&one, &lead, &bea).await;
+    let mut lead_events = one.events(lead.token()).await;
+    let mut bea_events = two.events(bea.token()).await;
+    one.post(
+        "/v1/party/invitations",
+        lead.token(),
+        json!({"to": [bea.id]}),
+    )
+    .await
+    .ok(200);
+    let Event::PartyInvitation { invitation } = bea_events
+        .until(|e| matches!(e, Event::PartyInvitation { .. }))
+        .await
+    else {
+        unreachable!()
+    };
+    two.post_empty(
+        &format!("/v1/party/invitations/{}/accept", invitation.id),
+        bea.token(),
+    )
+    .await
+    .ok(200);
+    bea_events
+        .until(|e| matches!(e, Event::Party { party } if party.members.len() == 2))
+        .await;
+
+    // Bea announces through the second node; the leader on the first hears of it.
+    let key = "ab".repeat(32);
+    let answer: anyplay_api::Party = two
+        .put(
+            "/v1/party/endpoint",
+            bea.token(),
+            Some(json!({"endpoint": key, "relay": "https://r.example.com", "voice": true})),
+        )
+        .await
+        .ok(200)
+        .json();
+    let Event::Party { party } = lead_events
+        .until(|e| {
+            matches!(e, Event::Party { party }
+                if party.members.iter().any(|m| m.endpoint == "ab".repeat(32)))
+        })
+        .await
+    else {
+        unreachable!()
+    };
+    assert_eq!(party.revision, answer.revision);
+    let theirs = party
+        .members
+        .iter()
+        .find(|m| m.account.id.0 == bea.id)
+        .expect("Bea");
+    assert_eq!(theirs.relay.as_deref(), Some("https://r.example.com"));
+    assert!(theirs.voice);
+
+    // The leader announces through the first node: Bea hears of it on the second, and a key
+    // Bea has taken is refused whichever node asks.
+    one.put(
+        "/v1/party/endpoint",
+        lead.token(),
+        Some(json!({"endpoint": "cd".repeat(32), "voice": true})),
+    )
+    .await
+    .ok(200);
+    bea_events
+        .until(|e| {
+            matches!(e, Event::Party { party }
+                if party.members.iter().any(|m| m.endpoint == "cd".repeat(32)))
+        })
+        .await;
+    one.put(
+        "/v1/party/endpoint",
+        lead.token(),
+        Some(json!({"endpoint": key, "voice": true})),
+    )
+    .await
+    .is_error("limit", 409);
+
+    // Leaving on the second node clears it for the leader on the first.
+    two.post_empty("/v1/party/leave", bea.token()).await.ok(204);
+    let Event::Party { party } = lead_events
+        .until(|e| matches!(e, Event::Party { party } if party.members.len() == 1))
+        .await
+    else {
+        unreachable!()
+    };
+    assert_eq!(party.members[0].endpoint, "cd".repeat(32));
+}
