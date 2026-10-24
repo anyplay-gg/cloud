@@ -343,6 +343,8 @@ async fn start_node(
         name: "Load test cloud".into(),
         relays: vec!["https://relay.example".into()],
         drain_seconds: opts.drain_seconds,
+        // The simulated players befriend each other seconds after they sign up.
+        new_account_hours: 0,
         ..Config::default()
     };
     let mut tuning = Tuning {

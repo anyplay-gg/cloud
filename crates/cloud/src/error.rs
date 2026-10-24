@@ -57,6 +57,24 @@ impl AppError {
         error
     }
 
+    /// The account may not do this yet (a new account) or for now (a mute).
+    pub fn restricted(
+        restriction: anyplay_api::Restriction,
+        until: Option<u64>,
+        message: impl Into<String>,
+    ) -> Self {
+        let mut error = Self::new(ErrorCode::Restricted, message);
+        error.body.restriction = Some(restriction);
+        error.body.until = until;
+        error
+    }
+
+    /// Adds the statement of reasons and the appeal token of a ban.
+    pub fn with_ban(mut self, notice: anyplay_api::BanNotice) -> Self {
+        self.body.ban = Some(Box::new(notice));
+        self
+    }
+
     pub fn version_mismatch(expected: Expected) -> Self {
         let mut error = Self::new(
             ErrorCode::VersionMismatch,

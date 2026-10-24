@@ -1,22 +1,16 @@
 //! Information, presence, relay tickets and reports.
 
-use anyplay_api::{
-    Info, MAX_REPORT_DETAILS, PresenceRequest, Relay, Relays, Report, ReportReason, TicketRequest,
-};
+use anyplay_api::{Info, PresenceRequest, Relay, Relays, Report, TicketRequest};
 use anyplay_ticket::Claims;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 
-use crate::db;
 use crate::error::{AppError, Result};
 use crate::http::{ApiJson, Auth};
 use crate::live;
 use crate::state::AppState;
 use crate::util::{is_endpoint, is_label, now};
-
-/// Reports one account may file per day.
-const MAX_REPORTS_PER_DAY: i64 = 20;
 
 pub async fn info(State(state): State<AppState>) -> Json<Info> {
     Json(Info {
@@ -96,46 +90,11 @@ pub async fn relay_tickets(
     }))
 }
 
-fn reason_name(reason: ReportReason) -> &'static str {
-    match reason {
-        ReportReason::Cheating => "cheating",
-        ReportReason::Harassment => "harassment",
-        ReportReason::Spam => "spam",
-        ReportReason::Name => "name",
-        ReportReason::Other => "other",
-    }
-}
-
 pub async fn report(
     State(state): State<AppState>,
     auth: Auth,
     ApiJson(request): ApiJson<Report>,
 ) -> Result<StatusCode> {
-    if request.account.0 == auth.account {
-        return Err(AppError::bad_request("You cannot report yourself."));
-    }
-    if request.details.chars().count() > MAX_REPORT_DETAILS {
-        return Err(AppError::bad_request(
-            "The details have at most 1,000 characters.",
-        ));
-    }
-    if db::account(&state.db, request.account.0).await?.is_none() {
-        return Err(AppError::not_found());
-    }
-    let day_ago = now().saturating_sub(24 * 60 * 60);
-    if db::count_reports_since(&state.db, auth.account, day_ago).await? >= MAX_REPORTS_PER_DAY {
-        return Err(AppError::limit(
-            "You have filed the most reports allowed today.",
-        ));
-    }
-    db::insert_report(
-        &state.db,
-        auth.account,
-        request.account.0,
-        reason_name(request.reason),
-        &request.details,
-        now(),
-    )
-    .await?;
+    crate::moderation::file_report(&state, auth.account, request).await?;
     Ok(StatusCode::NO_CONTENT)
 }

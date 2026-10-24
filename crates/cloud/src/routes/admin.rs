@@ -1,7 +1,10 @@
-//! Moderation routes for the operator. They exist only when `admin_token` is set, and they are
-//! the same routes the `anyplay-cloud admin` commands call.
+//! The operator's routes, behind the admin token. They exist only when `admin_token` is set, and
+//! they are the same routes the `anyplay-cloud admin` commands call. Everything they do goes
+//! through [`crate::moderation`] under the name `operator`, so it is audited and the player gets
+//! a statement of reasons. Moderators use the `/v1/moderation/...` routes instead; the operator
+//! can call those with the admin token too.
 
-use anyplay_api::{Account, AccountId, ErrorCode};
+use anyplay_api::{Account, AccountId, ActionKind, ActionRequest, ActionView, ReportView, Rule};
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -10,12 +13,14 @@ use serde::{Deserialize, Serialize};
 use crate::db;
 use crate::error::{AppError, Result};
 use crate::http::{ApiJson, ClientIp, bearer};
+use crate::moderation::{self, Actor};
 use crate::state::AppState;
-use crate::util::{ct_eq, now, sha256};
+use crate::util::ct_eq;
 
 pub const BANS: &str = "/admin/v1/bans";
 pub const BAN: &str = "/admin/v1/bans/{handle}";
 pub const REPORTS: &str = "/admin/v1/reports";
+pub const ACTIONS: &str = "/admin/v1/actions";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BanRequest {
@@ -23,8 +28,26 @@ pub struct BanRequest {
     /// For how many days; absent means for good.
     #[serde(default)]
     pub days: Option<u64>,
+    /// What the banned player reads. Required.
     #[serde(default)]
     pub reason: Option<String>,
+    /// The rule of the terms; `other` when absent.
+    #[serde(default)]
+    pub rule: Option<Rule>,
+}
+
+/// A warning, mute or ban of an account named by its handle.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ActionByHandle {
+    pub handle: String,
+    pub kind: ActionKind,
+    #[serde(default)]
+    pub rule: Option<Rule>,
+    pub reason: String,
+    #[serde(default)]
+    pub days: Option<u64>,
+    #[serde(default)]
+    pub report: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -33,19 +56,10 @@ pub struct BanAnswer {
     pub until: Option<u64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ReportView {
-    pub id: u64,
-    pub reporter: Account,
-    pub reported: Account,
-    pub reason: String,
-    pub details: String,
-    pub created: u64,
-}
-
 #[derive(Deserialize)]
 pub struct ReportQuery {
     limit: Option<i64>,
+    status: Option<String>,
 }
 
 /// Fails unless the request carries the admin token.
@@ -82,35 +96,50 @@ pub async fn ban(
     let account = db::account_by_handle(&state.db, &request.handle.to_ascii_lowercase())
         .await?
         .ok_or_else(AppError::not_found)?;
-    let until = match request.days {
-        Some(0) => return Err(AppError::bad_request("days must be at least 1.")),
-        Some(days) => Some(now().saturating_add(days.saturating_mul(24 * 60 * 60))),
-        None => None,
-    };
-    let reason: String = request
-        .reason
-        .unwrap_or_default()
-        .chars()
-        .take(500)
-        .collect();
-    db::upsert_ban(
-        &state.db,
-        account.id(),
-        &sha256(account.email.as_bytes()),
-        until,
-        &reason,
-        now(),
+    let view = moderation::act(
+        &state,
+        &Actor::operator(),
+        ActionRequest {
+            account: AccountId(account.id()),
+            kind: ActionKind::Ban,
+            rule: request.rule.unwrap_or(Rule::Other),
+            reason: request.reason.unwrap_or_default(),
+            days: request.days,
+            report: None,
+        },
     )
     .await?;
-    state.apply_ban(account.id(), until).await?;
-    tracing::warn!(account = account.id(), ?until, "account banned");
     Ok(Json(BanAnswer {
-        account: Account {
-            id: AccountId(account.id()),
-            handle: account.handle,
-        },
-        until,
+        account: view.account,
+        until: view.statement.until,
     }))
+}
+
+pub async fn act(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<ActionByHandle>,
+) -> Result<Json<ActionView>> {
+    authorize(&state, ip, &headers)?;
+    let account = db::account_by_handle(&state.db, &request.handle.to_ascii_lowercase())
+        .await?
+        .ok_or_else(AppError::not_found)?;
+    Ok(Json(
+        moderation::act(
+            &state,
+            &Actor::operator(),
+            ActionRequest {
+                account: AccountId(account.id()),
+                kind: request.kind,
+                rule: request.rule.unwrap_or(Rule::Other),
+                reason: request.reason,
+                days: request.days,
+                report: request.report,
+            },
+        )
+        .await?,
+    ))
 }
 
 pub async fn unban(
@@ -123,17 +152,18 @@ pub async fn unban(
     let account = db::account_by_handle(&state.db, &handle.to_ascii_lowercase())
         .await?
         .ok_or_else(AppError::not_found)?;
-    if !db::delete_ban(&state.db, account.id()).await? {
+    if state.ban_of(account.id()).is_none() && db::ban_of(&state.db, account.id()).await?.is_none()
+    {
         return Err(AppError::new(
-            ErrorCode::NotFound,
+            anyplay_api::ErrorCode::NotFound,
             "This account is not banned.",
         ));
     }
-    state.lift_ban(account.id());
-    tracing::warn!(account = account.id(), "account unbanned");
+    moderation::unban(&state, &Actor::operator(), account.id()).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// The newest reports of every status.
 pub async fn reports(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -141,24 +171,8 @@ pub async fn reports(
     Query(query): Query<ReportQuery>,
 ) -> Result<Json<Vec<ReportView>>> {
     authorize(&state, ip, &headers)?;
-    let limit = query.limit.unwrap_or(100).clamp(1, 1000);
-    let rows = db::latest_reports(&state.db, limit).await?;
+    let status = query.status.as_deref().unwrap_or("all");
     Ok(Json(
-        rows.into_iter()
-            .map(|r| ReportView {
-                id: r.id as u64,
-                reporter: Account {
-                    id: AccountId(r.reporter as u64),
-                    handle: r.reporter_handle,
-                },
-                reported: Account {
-                    id: AccountId(r.reported as u64),
-                    handle: r.reported_handle,
-                },
-                reason: r.reason,
-                details: r.details,
-                created: r.created as u64,
-            })
-            .collect(),
+        moderation::queue(&state, status, query.limit.unwrap_or(100)).await?,
     ))
 }

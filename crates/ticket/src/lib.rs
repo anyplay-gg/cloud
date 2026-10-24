@@ -28,6 +28,8 @@ pub enum Kind {
     Access,
     /// One endpoint may use a relay.
     Relay,
+    /// A banned person may read their statements and appeal. Issued with a ban error.
+    Appeal,
 }
 
 /// What a valid token says.
@@ -51,6 +53,17 @@ impl Claims {
             kind: Kind::Access,
             account,
             device: Some(device),
+            endpoint: None,
+            expires,
+        }
+    }
+
+    /// Claims for an appeal token: the account, and nothing else.
+    pub fn appeal(account: u64, expires: u64) -> Self {
+        Self {
+            kind: Kind::Appeal,
+            account,
+            device: None,
             endpoint: None,
             expires,
         }
@@ -249,6 +262,7 @@ impl Verifier {
         let well_formed = match payload.k {
             Kind::Access => payload.d.is_some() && payload.e.is_none(),
             Kind::Relay => payload.e.is_some() && payload.d.is_none(),
+            Kind::Appeal => payload.e.is_none() && payload.d.is_none(),
         };
         if !well_formed {
             return Err(TicketError::Malformed);
@@ -447,5 +461,35 @@ mod tests {
             "an existing key is never overwritten"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod appeal_tests {
+    use super::*;
+
+    #[test]
+    fn an_appeal_token_is_its_own_kind() {
+        let signer = Signer::generate();
+        let token = signer.issue(&Claims::appeal(7, 1_000));
+        let verifier = signer.verifier();
+        let claims = verifier.verify(&token, Kind::Appeal, 10).unwrap();
+        assert_eq!(
+            (claims.account, claims.device, claims.endpoint),
+            (7, None, None)
+        );
+        assert_eq!(
+            verifier.verify(&token, Kind::Access, 10),
+            Err(TicketError::Kind)
+        );
+        let access = signer.issue(&Claims::access(7, 1, 1_000));
+        assert_eq!(
+            verifier.verify(&access, Kind::Appeal, 10),
+            Err(TicketError::Kind)
+        );
+        assert_eq!(
+            verifier.verify(&token, Kind::Appeal, 1_000),
+            Err(TicketError::Expired)
+        );
     }
 }

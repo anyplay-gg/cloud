@@ -93,10 +93,10 @@ Each activity lists the items required by Art. 30(1)(b) to (g): purposes, catego
 | Purpose | Handle reports of abuse, remove people who break the rules, stop them returning. |
 | Legal basis | Art. 6(1)(f); for notices of illegal content also Art. 6(1)(c) where the operator must act ([dsa.md](dsa.md)). |
 | People | Reporters, reported people, banned people. |
-| Data | Report (both account IDs, reason, free text, time); ban (account ID, hash of the e-mail address, end date, reason, time). |
+| Data | Report (both account IDs and handles, reason, free text, snapshot, time, decision); action (account, rule, reason, moderator, time); appeal text and decision; ban (account ID, keyed hash of the e-mail address, end date); the audit log of every step. |
 | Recipients | Moderators. Authorities when the law requires it (DSA Art. 9, 10, 18; [dsa.md](dsa.md)). |
 | Transfers | None. |
-| Erasure | Today: for ever (a report is also deleted with either account). Proposed: reports 12 months after decision; time-limited bans 12 months after they end; permanent bans reviewed after 5 years. |
+| Erasure | Decided reports, temporary bans, mutes, warnings and appeals 6 months after the decision or end; undecided reports 1 year; the audit log 3 years; bans for good until lifted. Settings in [moderation.md](../moderation.md). |
 | Security | Admin routes exist only with a token of 16 or more characters and are rate limited. One shared token; no audit log (gap G8). |
 
 ### P7. Data subject requests and deletion

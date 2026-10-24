@@ -54,14 +54,19 @@ pub async fn events(
                 count_request(&state, auth.account)?;
                 Verdict::Open(auth)
             }
-            Err(error) if error.body.error == anyplay_api::ErrorCode::Banned => Verdict::Refuse {
-                event: Some(Box::new(Event::Banned {
-                    until: error.body.until,
-                    statement: None,
-                })),
-                code: close::BANNED,
-                reason: "banned",
-            },
+            Err(error) if error.body.error == anyplay_api::ErrorCode::Banned => {
+                let statement = crate::moderation::ban_statement(&state, auth.account)
+                    .await
+                    .unwrap_or(None);
+                Verdict::Refuse {
+                    event: Some(Box::new(Event::Banned {
+                        until: error.body.until,
+                        statement: statement.map(Box::new),
+                    })),
+                    code: close::BANNED,
+                    reason: "banned",
+                }
+            }
             Err(_) => Verdict::Refuse {
                 event: Some(Box::new(Event::SignedOut)),
                 code: close::SIGNED_OUT,

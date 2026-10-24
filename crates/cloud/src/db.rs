@@ -1,4 +1,5 @@
-//! The store: accounts, devices, friends, blocks, reports, bans and trophies, in a SQLite file for
+//! The store: accounts, devices, friends, blocks, bans and trophies (reports and actions are in
+//! [`crate::moderation`]), in a SQLite file for
 //! one process or in PostgreSQL for a cluster (`docs/adr/0003-postgres-for-a-cluster.md`).
 //!
 //! Every query is written once and runs through sqlx's `Any` driver. Parameters are `$1`, `$2`,
@@ -113,6 +114,10 @@ pub struct BanRow {
     pub until: Option<i64>,
     pub reason: String,
     pub created: i64,
+    /// The action that made the ban, and so its statement of reasons.
+    pub action_id: Option<i64>,
+    /// 1 when `email_hash` is the keyed hash, 0 for an older plain SHA-256.
+    pub salted: i64,
 }
 
 impl BanRow {
@@ -132,18 +137,6 @@ pub struct Related {
     pub id: i64,
     pub handle: String,
     pub since: i64,
-}
-
-#[derive(Clone, Debug, FromRow)]
-pub struct ReportRow {
-    pub id: i64,
-    pub reporter: i64,
-    pub reporter_handle: String,
-    pub reported: i64,
-    pub reported_handle: String,
-    pub reason: String,
-    pub details: String,
-    pub created: i64,
 }
 
 impl AccountRow {
@@ -237,14 +230,17 @@ pub async fn insert_account(
     }
 }
 
-/// Deletes an account and everything that hangs on it. Bans stay.
+/// Deletes an account and everything that hangs on it. Bans, the actions against the account
+/// and reports about it stay until their retention ends; reports it filed lose their link to it.
 pub async fn delete_account(pool: &Pool, id: u64) -> sqlx::Result<()> {
-    // Foreign keys cascade to devices, friends, requests, blocks and reports.
+    let mut tx = pool.begin().await?;
+    crate::moderation::store::forget_reporter(&mut tx, id).await?;
+    // Foreign keys cascade to devices, friends, requests and blocks.
     sqlx::query("DELETE FROM accounts WHERE id = $1")
         .bind(i(id))
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
-    Ok(())
+    tx.commit().await
 }
 
 // Devices
@@ -618,114 +614,35 @@ pub async fn blocked_between_any(
     Ok(false)
 }
 
-// Reports
+// Bans
 
-pub async fn insert_report(
-    pool: &Pool,
-    reporter: u64,
-    reported: u64,
-    reason: &str,
-    details: &str,
-    now: u64,
-) -> sqlx::Result<()> {
-    sqlx::query(
-        "INSERT INTO reports (reporter, reported, reason, details, created) VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(i(reporter))
-    .bind(i(reported))
-    .bind(reason)
-    .bind(details)
-    .bind(i(now))
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-pub async fn count_reports_since(pool: &Pool, reporter: u64, since: u64) -> sqlx::Result<i64> {
-    let (n,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM reports WHERE reporter = $1 AND created >= $2")
-            .bind(i(reporter))
-            .bind(i(since))
-            .fetch_one(pool)
-            .await?;
-    Ok(n)
-}
-
-pub async fn reports_by(pool: &Pool, reporter: u64) -> sqlx::Result<Vec<ReportRow>> {
-    sqlx::query_as(REPORT_SELECT_BY)
-        .bind(i(reporter))
-        .fetch_all(pool)
-        .await
-}
-
-const REPORT_SELECT_BY: &str = "SELECT r.id, r.reporter, ar.handle AS reporter_handle, \
-     r.reported, ad.handle AS reported_handle, r.reason, r.details, r.created \
-     FROM reports r JOIN accounts ar ON ar.id = r.reporter JOIN accounts ad ON ad.id = r.reported \
-     WHERE r.reporter = $1 ORDER BY r.created DESC";
-
-pub async fn latest_reports(pool: &Pool, limit: i64) -> sqlx::Result<Vec<ReportRow>> {
-    sqlx::query_as(
-        "SELECT r.id, r.reporter, ar.handle AS reporter_handle, \
-         r.reported, ad.handle AS reported_handle, r.reason, r.details, r.created \
-         FROM reports r JOIN accounts ar ON ar.id = r.reporter JOIN accounts ad ON ad.id = r.reported \
-         ORDER BY r.created DESC, r.id DESC LIMIT $1",
-    )
-    .bind(limit)
-    .fetch_all(pool)
+pub async fn ban_of(pool: &Pool, account: u64) -> sqlx::Result<Option<BanRow>> {
+    sqlx::query_as(concat!(
+        "SELECT account_id, until, reason, created, action_id, salted FROM bans ",
+        "WHERE account_id = $1"
+    ))
+    .bind(i(account))
+    .fetch_optional(pool)
     .await
 }
 
-// Bans
-
-pub async fn upsert_ban(
-    pool: &Pool,
-    account: u64,
-    email_hash: &[u8],
-    until: Option<u64>,
-    reason: &str,
-    now: u64,
-) -> sqlx::Result<()> {
-    sqlx::query(
-        "INSERT INTO bans (account_id, email_hash, until, reason, created) VALUES ($1, $2, $3, $4, $5) \
-         ON CONFLICT (account_id) DO UPDATE SET email_hash = excluded.email_hash, \
-         until = excluded.until, reason = excluded.reason, created = excluded.created",
-    )
-    .bind(i(account))
-    .bind(email_hash)
-    .bind(until.map(i))
-    .bind(reason)
-    .bind(i(now))
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-pub async fn delete_ban(pool: &Pool, account: u64) -> sqlx::Result<bool> {
-    let result = sqlx::query("DELETE FROM bans WHERE account_id = $1")
-        .bind(i(account))
-        .execute(pool)
-        .await?;
-    Ok(result.rows_affected() == 1)
-}
-
-pub async fn ban_of(pool: &Pool, account: u64) -> sqlx::Result<Option<BanRow>> {
-    sqlx::query_as("SELECT account_id, until, reason, created FROM bans WHERE account_id = $1")
-        .bind(i(account))
-        .fetch_optional(pool)
-        .await
-}
-
 pub async fn all_bans(pool: &Pool) -> sqlx::Result<Vec<BanRow>> {
-    sqlx::query_as("SELECT account_id, until, reason, created FROM bans")
+    sqlx::query_as("SELECT account_id, until, reason, created, action_id, salted FROM bans")
         .fetch_all(pool)
         .await
 }
 
-pub async fn bans_by_email(pool: &Pool, email_hash: &[u8]) -> sqlx::Result<Vec<BanRow>> {
-    sqlx::query_as("SELECT account_id, until, reason, created FROM bans WHERE email_hash = $1")
-        .bind(email_hash)
-        .fetch_all(pool)
-        .await
+/// The bans that match an address: by its keyed hash, or by the plain SHA-256 that bans made
+/// before the key used.
+pub async fn bans_by_email(pool: &Pool, keyed: &[u8], legacy: &[u8]) -> sqlx::Result<Vec<BanRow>> {
+    sqlx::query_as(concat!(
+        "SELECT account_id, until, reason, created, action_id, salted FROM bans ",
+        "WHERE (salted = 1 AND email_hash = $1) OR (salted = 0 AND email_hash = $2)"
+    ))
+    .bind(keyed)
+    .bind(legacy)
+    .fetch_all(pool)
+    .await
 }
 
 // Trophies and privacy

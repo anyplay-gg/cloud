@@ -43,7 +43,9 @@ pub async fn export(State(state): State<AppState>, auth: Auth) -> Result<Json<Va
     let incoming = db::incoming_requests(&state.db, auth.account).await?;
     let outgoing = db::outgoing_requests(&state.db, auth.account).await?;
     let blocked = db::blocked_by(&state.db, auth.account).await?;
-    let reports = db::reports_by(&state.db, auth.account).await?;
+    let reports =
+        crate::moderation::store::reports_by(&mut *state.db.acquire().await?, auth.account).await?;
+    let actions = crate::moderation::statements(&state, auth.account).await?;
     let ban = db::ban_of(&state.db, auth.account).await?;
     let trophies = db::trophies_of(&state.db, auth.account).await?;
     let privacy = db::privacy_of(&state.db, auth.account).await?;
@@ -84,7 +86,9 @@ pub async fn export(State(state): State<AppState>, auth: Auth) -> Result<Json<Va
         "reports_filed": reports.iter().map(|r| json!({
             "account": {"id": r.reported, "handle": r.reported_handle},
             "reason": r.reason, "details": r.details, "created": r.created,
+            "status": r.status, "outcome": r.outcome,
         })).collect::<Vec<_>>(),
+        "actions_against_you": actions,
         "ban": ban.map(|b| json!({"until": b.until(), "reason": b.reason, "created": b.created})),
         "sessions": sessions,
         "trophies": trophies.iter().map(|t| json!({

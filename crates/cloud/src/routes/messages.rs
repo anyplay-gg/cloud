@@ -20,7 +20,7 @@ use crate::chat::{self, ACCEPTED, ConversationRow, DECLINED, REQUEST};
 use crate::error::{AppError, Result};
 use crate::http::{ApiJson, Auth};
 use crate::live::Conn;
-use crate::social::may_write_to_strangers;
+use crate::moderation::{ensure_not_muted, may_write_to_strangers};
 use crate::state::AppState;
 use crate::util::{now, now_ms, random_uuid};
 use crate::{db, util};
@@ -84,6 +84,7 @@ pub async fn create(
     auth: Auth,
     ApiJson(request): ApiJson<CreateConversation>,
 ) -> Result<Json<Conversation>> {
+    ensure_not_muted(&state, auth.account).await?;
     let mut others: Vec<u64> = Vec::new();
     for account in &request.accounts {
         if account.0 == auth.account {
@@ -129,11 +130,7 @@ async fn open_direct(state: &AppState, me: u64, other: u64) -> Result<String> {
         )
     };
     if existing.is_none() && !friends {
-        if !may_write_to_strangers(state, me).await? {
-            return Err(AppError::forbidden(
-                "A new account cannot write to people who are not its friends yet.",
-            ));
-        }
+        may_write_to_strangers(state, me).await?;
         let rates = &state.tuning.rates;
         state
             .limiter
@@ -323,6 +320,7 @@ pub async fn send(
     Path(id): Path<String>,
     ApiJson(request): ApiJson<SendMessage>,
 ) -> Result<Json<Message>> {
+    ensure_not_muted(&state, auth.account).await?;
     if !is_message_text(&request.text) {
         return Err(AppError::bad_request(
             "A message has 1 to 2000 characters and is not only white space.",

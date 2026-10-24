@@ -7,7 +7,12 @@ use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
 
 use crate::config::Config;
-use crate::routes::admin::{BAN, BANS, BanAnswer, BanRequest, REPORTS, ReportView};
+use anyplay_api::{
+    ActionKind, ActionView, AppealDecision, AppealOutcome, AppealView, AuditEntry, Dismissal,
+    GrantModerator, Moderator, ReportView, Rule, path,
+};
+
+use crate::routes::admin::{ACTIONS, ActionByHandle, BAN, BANS, BanAnswer, BanRequest, REPORTS};
 
 #[derive(Parser, Debug)]
 #[command(version, about = "The central services of the AnyPlay network")]
@@ -44,19 +49,76 @@ pub enum Command {
 
 #[derive(Subcommand, Debug)]
 pub enum AdminAction {
-    /// Ban an account, and stop its e-mail address from signing up again.
+    /// Ban an account, and stop its e-mail address from signing up again. The player reads the
+    /// reason.
     Ban {
         handle: String,
         /// Ban for this many days. Without it the ban is for good.
         #[arg(long)]
         days: Option<u64>,
         #[arg(long)]
-        reason: Option<String>,
+        reason: String,
+        /// cheating, harassment, spam, name, illegal or other.
+        #[arg(long)]
+        rule: Option<String>,
     },
     /// Lift a ban.
     Unban { handle: String },
+    /// Warn an account. The player reads the reason.
+    Warn {
+        handle: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        rule: Option<String>,
+        /// The report this decides.
+        #[arg(long)]
+        report: Option<u64>,
+    },
+    /// Mute an account: no friend requests and no messages for some days.
+    Mute {
+        handle: String,
+        #[arg(long)]
+        days: u64,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        rule: Option<String>,
+        #[arg(long)]
+        report: Option<u64>,
+    },
     /// List the newest reports.
     Reports {
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+        /// open, decided or all.
+        #[arg(long, default_value = "open")]
+        status: String,
+    },
+    /// Decide a report without an action.
+    Dismiss {
+        id: u64,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Give an account the moderator role.
+    GrantModerator { handle: String },
+    /// Take the moderator role back.
+    RevokeModerator { handle: String },
+    /// List the moderators.
+    Moderators,
+    /// List the open appeals.
+    Appeals,
+    /// Decide an appeal: the action stands, or with --reverse it is lifted.
+    DecideAppeal {
+        id: u64,
+        #[arg(long)]
+        reverse: bool,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Show the newest lines of the audit log.
+    Log {
         #[arg(long, default_value_t = 50)]
         limit: u32,
     },
@@ -73,20 +135,22 @@ pub async fn admin(config: &Config, url: Option<String>, action: AdminAction) ->
     let client = reqwest::Client::builder()
         .user_agent(concat!("anyplay-cloud/", env!("CARGO_PKG_VERSION")))
         .build()?;
+    let get = |path: String| client.get(format!("{base}{path}")).bearer_auth(token);
+    let post = |path: String| client.post(format!("{base}{path}")).bearer_auth(token);
 
     match action {
         AdminAction::Ban {
             handle,
             days,
             reason,
+            rule: name,
         } => {
-            let response = client
-                .post(format!("{base}{BANS}"))
-                .bearer_auth(token)
+            let response = post(BANS.to_owned())
                 .json(&BanRequest {
                     handle,
                     days,
-                    reason,
+                    reason: Some(reason),
+                    rule: rule(name)?,
                 })
                 .send()
                 .await?;
@@ -107,10 +171,55 @@ pub async fn admin(config: &Config, url: Option<String>, action: AdminAction) ->
             check(response).await?;
             println!("Lifted the ban on {handle}.");
         }
-        AdminAction::Reports { limit } => {
-            let response = client
-                .get(format!("{base}{REPORTS}?limit={limit}"))
-                .bearer_auth(token)
+        AdminAction::Warn {
+            handle,
+            reason,
+            rule: name,
+            report,
+        } => {
+            let response = post(ACTIONS.to_owned())
+                .json(&ActionByHandle {
+                    handle,
+                    kind: ActionKind::Warning,
+                    rule: rule(name)?,
+                    reason,
+                    days: None,
+                    report,
+                })
+                .send()
+                .await?;
+            let view: ActionView = read(response).await?;
+            println!(
+                "Warned {} (action {}).",
+                view.account.handle, view.statement.id
+            );
+        }
+        AdminAction::Mute {
+            handle,
+            days,
+            reason,
+            rule: name,
+            report,
+        } => {
+            let response = post(ACTIONS.to_owned())
+                .json(&ActionByHandle {
+                    handle,
+                    kind: ActionKind::Mute,
+                    rule: rule(name)?,
+                    reason,
+                    days: Some(days),
+                    report,
+                })
+                .send()
+                .await?;
+            let view: ActionView = read(response).await?;
+            println!(
+                "Muted {} (action {}).",
+                view.account.handle, view.statement.id
+            );
+        }
+        AdminAction::Reports { limit, status } => {
+            let response = get(format!("{REPORTS}?limit={limit}&status={status}"))
                 .send()
                 .await?;
             let reports: Vec<ReportView> = read(response).await?;
@@ -119,8 +228,114 @@ pub async fn admin(config: &Config, url: Option<String>, action: AdminAction) ->
             }
             for r in reports {
                 println!(
-                    "#{} at {}: {} reported {} ({}) {}",
-                    r.id, r.created, r.reporter.handle, r.reported.handle, r.reason, r.details
+                    "#{} at {} [{:?}]: {} reported {} ({:?}) {}",
+                    r.id,
+                    r.created,
+                    r.status,
+                    r.reporter.map_or("(deleted)".into(), |a| a.handle),
+                    r.reported.handle,
+                    r.reason,
+                    r.details
+                );
+            }
+        }
+        AdminAction::Dismiss { id, reason } => {
+            let response = post(path::fill(path::MOD_REPORT_DISMISS, id))
+                .json(&Dismissal { reason })
+                .send()
+                .await?;
+            let _: ReportView = read(response).await?;
+            println!("Dismissed report {id}.");
+        }
+        AdminAction::GrantModerator { handle } => {
+            let response = post(path::MOD_MODERATORS.to_owned())
+                .json(&GrantModerator { handle })
+                .send()
+                .await?;
+            let moderator: Moderator = read(response).await?;
+            println!("{} is a moderator.", moderator.account.handle);
+        }
+        AdminAction::RevokeModerator { handle } => {
+            let response = get(path::MOD_MODERATORS.to_owned()).send().await?;
+            let moderators: Vec<Moderator> = read(response).await?;
+            let found = moderators
+                .iter()
+                .find(|m| m.account.handle.eq_ignore_ascii_case(&handle))
+                .context("this account is not a moderator")?;
+            let response = client
+                .delete(format!(
+                    "{base}{}",
+                    path::fill(path::MOD_MODERATOR, found.account.id)
+                ))
+                .bearer_auth(token)
+                .send()
+                .await?;
+            check(response).await?;
+            println!("{handle} is no longer a moderator.");
+        }
+        AdminAction::Moderators => {
+            let response = get(path::MOD_MODERATORS.to_owned()).send().await?;
+            let moderators: Vec<Moderator> = read(response).await?;
+            if moderators.is_empty() {
+                println!("No moderators.");
+            }
+            for m in moderators {
+                println!("{} (since Unix time {})", m.account.handle, m.since);
+            }
+        }
+        AdminAction::Appeals => {
+            let response = get(format!("{}?status=open", path::MOD_APPEALS))
+                .send()
+                .await?;
+            let appeals: Vec<AppealView> = read(response).await?;
+            if appeals.is_empty() {
+                println!("No open appeals.");
+            }
+            for a in appeals {
+                let s = &a.action.statement;
+                println!(
+                    "#{} at {}: {} against the {:?} {} ({}): {}",
+                    a.id,
+                    a.created,
+                    a.action.account.handle,
+                    s.kind,
+                    s.id,
+                    s.reason,
+                    s.appeal.text.clone().unwrap_or_default()
+                );
+            }
+        }
+        AdminAction::DecideAppeal {
+            id,
+            reverse,
+            reason,
+        } => {
+            let outcome = if reverse {
+                AppealOutcome::Reverse
+            } else {
+                AppealOutcome::Uphold
+            };
+            let response = post(path::fill(path::MOD_APPEAL_DECISION, id))
+                .json(&AppealDecision { outcome, reason })
+                .send()
+                .await?;
+            let _: AppealView = read(response).await?;
+            println!("Decided appeal {id}.");
+        }
+        AdminAction::Log { limit } => {
+            let response = get(format!("{}?limit={limit}", path::MOD_LOG))
+                .send()
+                .await?;
+            let entries: Vec<AuditEntry> = read(response).await?;
+            for e in entries {
+                println!(
+                    "#{} at {}: {} {:?} {} {}",
+                    e.id,
+                    e.time,
+                    e.actor.handle,
+                    e.action,
+                    e.target.map_or(String::new(), |t| t.handle),
+                    e.reason
                 );
             }
         }
@@ -157,4 +372,13 @@ pub async fn healthcheck(config: &Config, url: Option<String>) -> Result<()> {
         bail!("the cloud answered {}", response.status());
     }
     Ok(())
+}
+
+fn rule(name: Option<String>) -> Result<Option<Rule>> {
+    name.map(|n| {
+        Rule::from_name(&n.to_ascii_lowercase()).with_context(|| {
+            format!("{n:?} is not a rule: cheating, harassment, spam, name, illegal or other")
+        })
+    })
+    .transpose()
 }

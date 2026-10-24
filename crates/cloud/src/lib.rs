@@ -24,6 +24,7 @@ pub mod limits;
 pub mod live;
 pub mod mail;
 pub mod metrics;
+pub mod moderation;
 pub mod news;
 pub mod party;
 pub mod routes;
@@ -97,6 +98,13 @@ pub async fn open(
         .await
         .context("cannot open the database")?;
 
+    let ban_key = moderation::banhash::BanKey::load(config.ban_secret.as_deref(), &config.data_dir)
+        .context("cannot load the key for banned e-mail addresses")?;
+    let resalted = moderation::banhash::resalt_known(&mut *pool.acquire().await?, &ban_key).await?;
+    if resalted > 0 {
+        tracing::info!(resalted, "gave older bans the keyed e-mail hash");
+    }
+
     let node = util::random_token(12);
     let (news, notes) = match &config.nats_url {
         Some(url) => {
@@ -133,6 +141,8 @@ pub async fn open(
         social: tokio::sync::Mutex::new(()),
         metrics: metrics::Metrics::default(),
         draining: std::sync::atomic::AtomicBool::new(false),
+        ban_key,
+        retention_at: std::sync::atomic::AtomicU64::new(0),
     });
     // The first heartbeat, so that other nodes count this one as alive from the start.
     state

@@ -23,6 +23,9 @@ use crate::{db, util};
 
 pub type AppState = Arc<Inner>;
 
+/// How often a node deletes moderation data past its retention.
+const RETENTION_EVERY_SECS: u64 = 60 * 60;
+
 /// What every request checks: which devices are signed in and which accounts are banned.
 #[derive(Default)]
 pub struct AuthCache {
@@ -50,6 +53,10 @@ pub struct Inner {
     /// Set when the node is shutting down: it reports itself not ready, so that the load
     /// balancer stops sending players, before it closes their connections.
     pub draining: AtomicBool,
+    /// The key of the hash of banned e-mail addresses.
+    pub ban_key: crate::moderation::banhash::BanKey,
+    /// When this node last ran the retention sweep of moderation data, in Unix seconds.
+    pub retention_at: std::sync::atomic::AtomicU64,
 }
 
 fn ms(duration: Duration) -> i64 {
@@ -60,6 +67,19 @@ impl Inner {
     /// Fails when the device is signed out or the account is banned. A device this node has
     /// not seen yet, because it signed in through another node, is looked up in the store.
     pub async fn check_device(&self, device: u64, account: u64) -> Result<(), AppError> {
+        self.check_device_owner(device, account).await?;
+        let cache = self.cache.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(until) = cache.bans.get(&account).copied()
+            && until.is_none_or(|t| t > util::now())
+        {
+            return Err(AppError::banned(until));
+        }
+        Ok(())
+    }
+
+    /// Fails when the device is signed out or belongs to another account. A ban does not matter
+    /// here: a banned person may still read their statements and appeal.
+    pub async fn check_device_owner(&self, device: u64, account: u64) -> Result<(), AppError> {
         let known = {
             let cache = self.cache.read().unwrap_or_else(|e| e.into_inner());
             cache.devices.get(&device).copied()
@@ -78,12 +98,6 @@ impl Inner {
             return Err(AppError::unauthorized(
                 "This device is signed out. Sign in again.",
             ));
-        }
-        let cache = self.cache.read().unwrap_or_else(|e| e.into_inner());
-        if let Some(until) = cache.bans.get(&account).copied()
-            && until.is_none_or(|t| t > util::now())
-        {
-            return Err(AppError::banned(until));
         }
         Ok(())
     }
@@ -338,7 +352,12 @@ impl Inner {
 
     /// Applies a ban to what is running: closes connections and takes the account out of its
     /// sessions. The database row is written by the caller.
-    pub async fn apply_ban(&self, account: u64, until: Option<u64>) -> Result<(), AppError> {
+    pub async fn apply_ban(
+        &self,
+        account: u64,
+        until: Option<u64>,
+        statement: Option<anyplay_api::Statement>,
+    ) -> Result<(), AppError> {
         {
             let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
             cache.bans.insert(account, until);
@@ -348,7 +367,7 @@ impl Inner {
             account,
             &Event::Banned {
                 until,
-                statement: None,
+                statement: statement.map(Box::new),
             },
             close::BANNED,
             "banned",
@@ -451,11 +470,35 @@ impl Inner {
             dirty.extend(self.leave_everything(account).await?);
         }
         self.refresh_presence(dirty).await;
+        self.sweep_moderation().await;
         Ok(())
     }
 }
 
 impl Inner {
+    /// Deletes moderation data past its retention, at most once an hour per node. A failure is
+    /// logged and tried again at the next sweep.
+    async fn sweep_moderation(&self) {
+        use std::sync::atomic::Ordering;
+        let now = util::now();
+        let last = self.retention_at.load(Ordering::Relaxed);
+        if now < last + RETENTION_EVERY_SECS
+            || self
+                .retention_at
+                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
+        {
+            return;
+        }
+        match crate::moderation::sweep_retention(self).await {
+            Ok(swept) => tracing::info!(?swept, "retention sweep"),
+            Err(error) => {
+                self.retention_at.store(last, Ordering::Relaxed);
+                tracing::error!(error = %error.body.message, "the retention sweep failed");
+            }
+        }
+    }
+
     /// Reads the bans that apply now, so that a ban another node did not manage to tell still
     /// holds here.
     async fn reload_bans(&self) -> Result<(), AppError> {

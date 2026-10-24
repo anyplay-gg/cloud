@@ -246,6 +246,8 @@ async fn meet_and_play(alice_relay: AliceRelay) -> Link {
         data_dir: cloud_dir.path().to_path_buf(),
         name: "End-to-end cloud".into(),
         relays: vec![relay_url],
+        // The players sign up a moment before they befriend each other.
+        new_account_hours: 0,
         ..Config::default()
     };
     let state = open(config, Tuning::default(), mail.clone()).await.unwrap();

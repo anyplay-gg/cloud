@@ -109,6 +109,8 @@ pub async fn request(
     if db::request_exists(&state.db, me, them).await? {
         return Ok(requested);
     }
+    // A muted account sends none, a new one only a few.
+    crate::moderation::may_send_friend_request(&state, me).await?;
     if db::count_friends(&state.db, me).await? >= MAX_FRIENDS {
         return Err(AppError::limit("You have the most friends allowed."));
     }
@@ -119,6 +121,7 @@ pub async fn request(
         return Err(AppError::limit("This account has too many open requests."));
     }
     db::insert_request(&state.db, me, them, now()).await?;
+    crate::moderation::friend_request_sent(&state, me).await?;
     notify(&state, &[me, them]);
     Ok(requested)
 }

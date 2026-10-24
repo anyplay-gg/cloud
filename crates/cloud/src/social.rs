@@ -8,10 +8,10 @@
 
 use anyplay_api::Event;
 
+use crate::chat;
 use crate::error::AppError;
 use crate::party::{self, Gone, PartyState};
 use crate::state::Inner;
-use crate::{chat, db, util};
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
@@ -136,19 +136,4 @@ impl Inner {
         chat::sweep_empty(&mut conn, cut).await?;
         Ok(())
     }
-}
-
-/// Whether an account may start a conversation with someone who is not its friend.
-///
-/// This is the one place that decides. For now an account must be at least
-/// `stranger_min_age_hours` old (ADR 0012: new accounts may not write to strangers on their
-/// first day). The moderation work can replace the body with its shared check for new accounts
-/// without touching the callers.
-pub async fn may_write_to_strangers(state: &Inner, account: u64) -> Result<bool, AppError> {
-    let created = db::account(&state.db, account)
-        .await?
-        .ok_or_else(AppError::not_found)?
-        .created;
-    let age = util::now().saturating_sub(created as u64);
-    Ok(age >= state.config.stranger_min_age_hours.saturating_mul(3600))
 }
