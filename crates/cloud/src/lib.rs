@@ -14,6 +14,7 @@ use anyhow::{Context as _, Result};
 use anyplay_ticket::Signer;
 use tokio::net::TcpListener;
 
+pub mod avatar;
 pub mod cli;
 pub mod config;
 pub mod db;
@@ -26,6 +27,7 @@ pub mod news;
 pub mod routes;
 pub mod state;
 pub mod util;
+pub mod visibility;
 
 mod error;
 

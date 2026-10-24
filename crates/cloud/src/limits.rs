@@ -22,6 +22,9 @@ pub struct Rates {
     /// account because an endpoint ID costs nothing to make.
     pub relay_tickets_per_account: u32,
     pub relay_ticket_window: Duration,
+    /// Avatar uploads per account in `avatar_window`.
+    pub avatar_uploads: u32,
+    pub avatar_window: Duration,
 }
 
 impl Default for Rates {
@@ -38,6 +41,8 @@ impl Default for Rates {
             admin_per_ip: 60,
             relay_tickets_per_account: 20,
             relay_ticket_window: Duration::from_secs(60 * 60),
+            avatar_uploads: 5,
+            avatar_window: Duration::from_secs(60 * 60),
         }
     }
 }

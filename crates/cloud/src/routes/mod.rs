@@ -9,7 +9,7 @@ use axum::extract::{MatchedPath, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 
 use crate::error::AppError;
 use crate::metrics::Snapshot;
@@ -21,6 +21,7 @@ pub mod auth;
 pub mod events;
 pub mod friends;
 pub mod misc;
+pub mod profiles;
 pub mod sessions;
 pub mod trophies;
 
@@ -66,6 +67,14 @@ pub fn router(state: AppState) -> Router {
             path::PRIVACY,
             get(trophies::get_privacy).put(trophies::set_privacy),
         )
+        .route(path::ACCOUNT_PROFILE, get(profiles::of_account))
+        .route(path::MY_PROFILE, patch(profiles::update))
+        .route(
+            path::MY_AVATAR,
+            put(profiles::set_avatar).delete(profiles::remove_avatar),
+        )
+        .route(path::AVATAR, get(profiles::avatar))
+        .route(path::MY_PLAYTIME, put(profiles::upload_playtime))
         .route(path::RELAY_TICKETS, post(misc::relay_tickets))
         .route(path::REPORTS, post(misc::report))
         .route(path::EVENTS, get(events::events));

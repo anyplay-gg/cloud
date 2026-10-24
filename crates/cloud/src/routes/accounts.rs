@@ -5,6 +5,7 @@ use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -46,6 +47,9 @@ pub async fn export(State(state): State<AppState>, auth: Auth) -> Result<Json<Va
     let ban = db::ban_of(&state.db, auth.account).await?;
     let trophies = db::trophies_of(&state.db, auth.account).await?;
     let privacy = db::privacy_of(&state.db, auth.account).await?;
+    let (about, favourites) = db::profiles::profile_of(&state.db, auth.account).await?;
+    let avatar = db::profiles::avatar_of(&state.db, auth.account).await?;
+    let playtime = db::profiles::playtime_of(&state.db, auth.account).await?;
     let sessions = {
         let mut conn = state.db.acquire().await?;
         let mut views = Vec::new();
@@ -77,6 +81,12 @@ pub async fn export(State(state): State<AppState>, auth: Auth) -> Result<Json<Va
             "title_id": t.title_id, "number": t.number, "grade": t.grade, "earned": t.earned,
         })).collect::<Vec<_>>(),
         "privacy": privacy,
+        "profile": {"about": about, "favourites": favourites},
+        "avatar": avatar.map(|a| json!({
+            "hash": a.hash, "updated": a.updated,
+            "png": base64::engine::general_purpose::STANDARD.encode(&a.picture),
+        })),
+        "playtime": playtime,
     })))
 }
 

@@ -12,6 +12,8 @@ use sqlx::any::{AnyPoolOptions, install_default_drivers};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
 use sqlx::{ConnectOptions as _, Connection as _, Executor as _, FromRow};
 
+pub mod profiles;
+
 pub type Pool = sqlx::AnyPool;
 
 /// Where the store keeps its data.
@@ -860,18 +862,24 @@ pub async fn title_rarity(pool: &Pool, title_id: &str) -> sqlx::Result<Vec<(i64,
     .await
 }
 
-/// Who sees the account's trophies; the default without a setting.
+/// Who sees each part of the account's profile; the default without a setting.
 pub async fn privacy_of(pool: &Pool, account: u64) -> sqlx::Result<anyplay_api::Privacy> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT trophies FROM privacy WHERE account_id = $1")
-            .bind(i(account))
-            .fetch_optional(pool)
-            .await?;
-    Ok(row.map_or_else(anyplay_api::Privacy::default, |(name,)| {
-        anyplay_api::Privacy {
-            trophies: audience_of(&name),
-        }
-    }))
+    let row: Option<(String, String, String, String, String)> = sqlx::query_as(
+        "SELECT trophies, about, favourites, avatar, playtime FROM privacy WHERE account_id = $1",
+    )
+    .bind(i(account))
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map_or_else(
+        anyplay_api::Privacy::default,
+        |(trophies, about, favourites, avatar, playtime)| anyplay_api::Privacy {
+            trophies: audience_of(&trophies),
+            about: audience_of(&about),
+            favourites: audience_of(&favourites),
+            avatar: audience_of(&avatar),
+            playtime: audience_of(&playtime),
+        },
+    ))
 }
 
 pub async fn set_privacy(
@@ -880,11 +888,17 @@ pub async fn set_privacy(
     privacy: anyplay_api::Privacy,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT INTO privacy (account_id, trophies) VALUES ($1, $2) \
-         ON CONFLICT (account_id) DO UPDATE SET trophies = $2",
+        "INSERT INTO privacy (account_id, trophies, about, favourites, avatar, playtime) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         ON CONFLICT (account_id) DO UPDATE SET trophies = $2, about = $3, favourites = $4, \
+         avatar = $5, playtime = $6",
     )
     .bind(i(account))
     .bind(audience_name(privacy.trophies))
+    .bind(audience_name(privacy.about))
+    .bind(audience_name(privacy.favourites))
+    .bind(audience_name(privacy.avatar))
+    .bind(audience_name(privacy.playtime))
     .execute(pool)
     .await?;
     Ok(())

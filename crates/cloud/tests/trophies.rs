@@ -451,7 +451,11 @@ async fn export_holds_the_records_and_deletion_removes_them() {
         export["trophies"],
         json!([{"title_id": "PPSA01234", "number": 3, "grade": "silver", "earned": t}])
     );
-    assert_eq!(export["privacy"], json!({"trophies": "nobody"}));
+    assert_eq!(
+        export["privacy"],
+        json!({"trophies": "nobody", "about": "friends", "favourites": "friends",
+               "avatar": "friends", "playtime": "friends"})
+    );
 
     cloud.delete("/v1/me", alec.token()).await.ok(204);
     let db = &cloud.state.db;

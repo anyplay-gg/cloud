@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use anyplay_api::{
-    AccountTrophies, Audience, Card, Cards, MAX_CARDS, MAX_TROPHY_NUMBER, MAX_TROPHY_UPLOAD,
-    Privacy, RARITY_MIN_PLAYERS, Rarity, TitleTrophies, TrophiesAdded, TrophyRarity, TrophyUpload,
+    AccountTrophies, Card, Cards, MAX_CARDS, MAX_TROPHY_NUMBER, MAX_TROPHY_UPLOAD, Part, Privacy,
+    RARITY_MIN_PLAYERS, Rarity, TitleTrophies, TrophiesAdded, TrophyRarity, TrophyUpload,
     is_title_id,
 };
 use axum::Json;
@@ -12,12 +12,13 @@ use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use serde::Deserialize;
 
-use crate::db::{self, Pool};
+use crate::db;
 use crate::error::{AppError, Result};
 use crate::http::{ApiJson, Auth, parse_id};
 use crate::routes::accounts::account_of;
 use crate::state::AppState;
 use crate::util::now;
+use crate::visibility::{may_see, viewing};
 
 /// A trophy may not be earned later than this many seconds from now.
 const FUTURE_SLACK: u64 = 24 * 60 * 60;
@@ -28,23 +29,6 @@ fn title_id(text: &str) -> Result<&str> {
     } else {
         Err(AppError::bad_request("That is not a title ID."))
     }
-}
-
-/// True when `viewer` may see the trophies of `owner`: the owner always; friends unless the
-/// owner shows them to nobody; everyone else only if the owner shows them to everyone. A block in
-/// either direction hides them.
-async fn may_see(pool: &Pool, viewer: u64, owner: u64) -> Result<bool> {
-    if viewer == owner {
-        return Ok(true);
-    }
-    if db::blocked_either(pool, viewer, owner).await? {
-        return Ok(false);
-    }
-    Ok(match db::privacy_of(pool, owner).await?.trophies {
-        Audience::Nobody => false,
-        Audience::Everyone => true,
-        Audience::Friends => db::are_friends(pool, viewer, owner).await?,
-    })
 }
 
 pub async fn upload(
@@ -84,7 +68,9 @@ pub async fn of_account(
     Path(id): Path<String>,
 ) -> Result<Json<AccountTrophies>> {
     let id = parse_id(&id)?;
-    if db::account(&state.db, id).await?.is_none() || !may_see(&state.db, auth.account, id).await? {
+    if db::account(&state.db, id).await?.is_none()
+        || !may_see(&state.db, auth.account, id, Part::Trophies).await?
+    {
         return Err(AppError::not_found());
     }
     let mut titles: Vec<TitleTrophies> = Vec::new();
@@ -162,14 +148,21 @@ pub async fn cards(
         let Some(row) = db::account(&state.db, id).await? else {
             continue;
         };
-        let trophies = if may_see(&state.db, auth.account, id).await? {
+        let seen = viewing(&state.db, auth.account, id).await?;
+        let trophies = if seen.can(Part::Trophies) {
             Some(db::trophy_counts(&state.db, id).await?)
+        } else {
+            None
+        };
+        let avatar = if seen.can(Part::Avatar) {
+            db::profiles::avatar_hash_of(&state.db, id).await?
         } else {
             None
         };
         cards.push(Card {
             account: account_of(&row),
             trophies,
+            avatar,
         });
     }
     Ok(Json(Cards { cards }))
