@@ -816,6 +816,31 @@ pub async fn trophies_of(pool: &Pool, account: u64) -> sqlx::Result<Vec<TrophyRo
     .await
 }
 
+/// An account's trophy records counted per title and grade, with the time of the latest.
+pub async fn trophy_summary(
+    pool: &Pool,
+    account: u64,
+) -> sqlx::Result<Vec<(String, anyplay_api::Grade, u32, u64)>> {
+    let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+        "SELECT title_id, grade, COUNT(*), MAX(earned) FROM trophies WHERE account_id = $1 \
+         GROUP BY title_id, grade ORDER BY title_id, grade",
+    )
+    .bind(i(account))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(title, grade, n, last)| {
+            Some((
+                title,
+                grade_of(&grade)?,
+                u32::try_from(n).unwrap_or(u32::MAX),
+                u(last),
+            ))
+        })
+        .collect())
+}
+
 /// The number of an account's records per grade.
 pub async fn trophy_counts(pool: &Pool, account: u64) -> sqlx::Result<anyplay_api::Count> {
     let rows: Vec<(String, i64)> =

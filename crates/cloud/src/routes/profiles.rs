@@ -17,7 +17,7 @@ use crate::http::{ApiJson, Auth, parse_id};
 use crate::routes::accounts::account_of;
 use crate::state::AppState;
 use crate::util::now;
-use crate::visibility::viewing;
+use crate::visibility::{Viewing, viewing};
 use crate::{avatar, db};
 
 /// A day may be this many days ahead of UTC today, for clocks and time zones.
@@ -26,10 +26,16 @@ const DAYS_AHEAD: i64 = 1;
 /// The profile of `owner` as `viewer` may see it. A part the viewer may not see, or that is not
 /// set, is `None`.
 async fn profile_for(state: &AppState, viewer: u64, owner: u64) -> Result<Profile> {
+    let seen = viewing(&state.db, viewer, owner).await?;
+    profile_seen(state, &seen, owner).await
+}
+
+/// The profile of `owner` as a viewer who stands to them as `seen` says may see it. The web
+/// portal uses it for viewers who may be signed out ([`crate::visibility::viewing_as`]).
+pub(crate) async fn profile_seen(state: &AppState, seen: &Viewing, owner: u64) -> Result<Profile> {
     let row = db::account(&state.db, owner)
         .await?
         .ok_or_else(AppError::not_found)?;
-    let seen = viewing(&state.db, viewer, owner).await?;
     let (about, favourites) = store::profile_of(&state.db, owner).await?;
     let about = (seen.can(Part::About) && !about.is_empty()).then_some(about);
     let favourites = (seen.can(Part::Favourites) && !favourites.is_empty()).then_some(favourites);
