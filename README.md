@@ -77,6 +77,8 @@ Caddy gets certificates and puts TLS in front of the cloud. The cloud creates it
 
 For a first try on your own machine, set `MAIL=log` in `.env`: sign-in codes then appear in `docker compose logs cloud`.
 
+To update a running deployment, use [`deploy/update.sh`](deploy/update.sh) ([docs/deploy.md](docs/deploy.md)): it builds first, replaces the containers, checks the public address and rolls back on failure.
+
 Back up the `cloud-data` volume. It holds the database and the signing key. Losing the key signs everybody out and makes every relay refuse its players until it is given the new public key.
 
 Moderation, with `ADMIN_TOKEN` set in `.env`:

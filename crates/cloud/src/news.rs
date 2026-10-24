@@ -73,6 +73,8 @@ enum Note {
 }
 
 const NODES: &str = "anyplay.nodes";
+/// No node answers on this subject; see [`registered`].
+const NOBODY: &str = "anyplay.nobody";
 
 fn subject(account: u64) -> String {
     format!("anyplay.account.{account}")
@@ -199,6 +201,7 @@ impl News {
         });
 
         let mut nodes = client.subscribe(NODES).await?;
+        registered(&client).await;
         let (notes, received) = unbounded_channel();
         tokio::spawn(async move {
             while let Some(message) = nodes.next().await {
@@ -257,6 +260,7 @@ impl News {
                 return;
             }
         };
+        registered(&nats.client).await;
         let local = self.local.clone();
         let received = self.received.clone();
         let task = tokio::spawn(async move {
@@ -300,8 +304,8 @@ impl News {
 
     /// Registers the event connection of a device, closing an older one of the same device. The
     /// receiver yields `first` before anything else; [`News::detach`] needs the same `serial`.
-    /// In a cluster the node listens to the account's news before `first` goes out, so nothing
-    /// sent after the welcome is missed.
+    /// In a cluster the NATS server has registered the node's subscription to the account's news
+    /// before `first` goes out, so nothing sent after the welcome is missed.
     pub async fn attach(
         &self,
         account: u64,
@@ -440,6 +444,24 @@ impl News {
                 reason: reason.into(),
             });
         }
+    }
+}
+
+/// Returns once the NATS server has read everything this client sent before, subscriptions
+/// included. `subscribe` and `flush` return as soon as the bytes are on their way, while news
+/// another node publishes in the meantime would miss the subscription. A request nobody answers
+/// comes back from the server as "no responders", and the server answers it only after reading
+/// what came before it on the same connection. Without a connection to NATS there is nothing to
+/// wait for: news is lost then anyway.
+async fn registered(client: &async_nats::Client) {
+    use async_nats::client::RequestErrorKind;
+    if client.connection_state() != async_nats::connection::State::Connected {
+        return;
+    }
+    match client.request(NOBODY, Vec::new().into()).await {
+        Err(error) if error.kind() == RequestErrorKind::NoResponders => {}
+        Ok(_) => tracing::warn!("a node answered on {NOBODY}"),
+        Err(error) => tracing::warn!(%error, "NATS did not confirm a subscription"),
     }
 }
 

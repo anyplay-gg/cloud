@@ -16,6 +16,7 @@ anyplay-fake-game = { path = "../../../network/crates/fake-game" }
 anyplay-net = { path = "../../../network/crates/net" }
 anyplay-relay = { path = "../relay" }
 anyplay-ticket.workspace = true
+iroh-base = "1.4.1"
 iroh-relay = { version = "1.4.1", features = ["server"] }
 reqwest.workspace = true
 rustls.workspace = true

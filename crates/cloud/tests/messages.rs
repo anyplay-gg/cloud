@@ -844,7 +844,14 @@ async fn old_messages_and_empty_conversations_are_swept_away() {
         .await
         .unwrap();
 
-    wait_until(|| async { texts(&cloud, &alec, &conversation.id).await == ["new"] }).await;
+    // A sweep may run between the two statements above and take the messages but not yet the
+    // conversation, so wait for both to be gone.
+    let empty_path = format!("/v1/conversations/{}", empty.id);
+    wait_until(|| async {
+        texts(&cloud, &alec, &conversation.id).await == ["new"]
+            && cloud.get(&empty_path, alec.token()).await.status == 404
+    })
+    .await;
     // The numbers go on where they were.
     let next: Message = say(&cloud, &alec, &conversation.id, "later")
         .await
