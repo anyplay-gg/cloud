@@ -1,0 +1,10 @@
+# Supply-chain settings (see web/README.md). This is a single package, not a workspace.
+packages: []
+minimumReleaseAge: 10080 # seven days, in minutes
+minimumReleaseAgeStrict: true
+trustPolicy: no-downgrade
+blockExoticSubdeps: true
+strictDepBuilds: true
+# Old releases that predate npm provenance and are pulled in by build-time tooling only.
+trustPolicyExclude:
+  - 'semver@6.3.1'

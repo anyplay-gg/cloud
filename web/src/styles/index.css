@@ -1,0 +1,356 @@
+@import "tailwindcss";
+@import "./fonts.css";
+@import "./tokens.generated.css";
+@import "./tokens.css";
+
+@custom-variant coarse (@media (pointer: coarse));
+@custom-variant pointer-hover (@media (hover: hover) and (pointer: fine));
+
+@layer base {
+	html {
+		font-family: var(--font-sans);
+		font-size: 100%;
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+		text-rendering: optimizeLegibility;
+		font-optical-sizing: auto;
+		-webkit-text-size-adjust: 100%;
+		background: var(--bg);
+		color: var(--fg);
+		scrollbar-color: var(--line-strong) transparent;
+	}
+	body {
+		min-height: 100dvh;
+		font-size: var(--text-body);
+		line-height: var(--text-body--line-height);
+		letter-spacing: var(--text-body--letter-spacing);
+		font-feature-settings: "cv11", "calt";
+		overflow-wrap: break-word;
+	}
+	:where(h1, h2, h3, h4) {
+		text-wrap: balance;
+		font-weight: 600;
+	}
+	:where(p, li) {
+		text-wrap: pretty;
+	}
+	:where(code, kbd, samp, pre) {
+		font-family: var(--font-mono);
+		font-size: 0.92em;
+		font-feature-settings: "zero";
+	}
+	:where(button, [role="button"], summary, label[for]) {
+		cursor: default;
+	}
+	:where(a[href]) {
+		cursor: pointer;
+	}
+	::selection {
+		background: var(--accent-5);
+		color: var(--fg);
+	}
+	:where(:focus-visible) {
+		outline: 2px solid var(--accent-ring);
+		outline-offset: 2px;
+	}
+	:where(:focus):not(:focus-visible) {
+		outline: none;
+	}
+	@media (forced-colors: active) {
+		:where(:focus-visible) {
+			outline-color: Highlight;
+		}
+	}
+	/* Inputs stay at 16px on small touch screens so iOS Safari does not zoom the page. */
+	@media (pointer: coarse) {
+		:where(input, select, textarea) {
+			font-size: max(1rem, var(--text-body));
+		}
+	}
+	img,
+	svg {
+		display: block;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		*,
+		*::before,
+		*::after {
+			scroll-behavior: auto !important;
+		}
+	}
+}
+
+/* Set for two frames while the theme or accent changes, so the switch snaps. */
+.no-transitions,
+.no-transitions *,
+.no-transitions *::before,
+.no-transitions *::after {
+	transition: none !important;
+	animation: none !important;
+}
+
+@layer utilities {
+	/* Press feedback shared by everything pressable. */
+	.press {
+		transition-property: transform, background-color, border-color, color, box-shadow, opacity;
+		transition-duration: var(--dur-quick);
+		transition-timing-function: var(--ease-out);
+	}
+	.press:active:not(:disabled, [aria-disabled="true"], [data-disabled]) {
+		transform: scale(0.97);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.press:active:not(:disabled, [aria-disabled="true"], [data-disabled]) {
+			transform: none;
+		}
+	}
+	/* Hover only where hover exists, so a tap does not leave a stuck state. */
+	.hoverable {
+		@media (hover: hover) and (pointer: fine) {
+			&:hover {
+				background-color: var(--hover);
+			}
+		}
+	}
+	/* The 8px-inside, 24px-outside spacing rule for text-only row actions. */
+	.hit-44 {
+		position: relative;
+		&::after {
+			content: "";
+			position: absolute;
+			inset: -0.375rem;
+		}
+	}
+	.nums {
+		font-variant-numeric: tabular-nums;
+	}
+	.scroll-fade-y {
+		mask-image: linear-gradient(
+			to bottom,
+			transparent,
+			#000 1rem,
+			#000 calc(100% - 1rem),
+			transparent
+		);
+	}
+}
+
+/* Overlay motion. Base UI sets data-starting-style / data-ending-style; the origin comes from
+   the anchor so popups grow out of their trigger. Dialogs stay centred. */
+@layer components {
+	.pop {
+		transform-origin: var(--transform-origin);
+		transition-property: transform, opacity;
+		transition-duration: var(--dur-regular);
+		transition-timing-function: var(--ease-out);
+		&[data-starting-style],
+		&[data-ending-style] {
+			opacity: 0;
+			transform: scale(0.96);
+		}
+		&[data-ending-style] {
+			transition-duration: var(--dur-exit);
+		}
+	}
+	.pop-instant {
+		transition-duration: 0ms;
+	}
+	.backdrop {
+		transition-property: opacity;
+		transition-duration: var(--dur-regular);
+		transition-timing-function: var(--ease-out);
+		&[data-starting-style],
+		&[data-ending-style] {
+			opacity: 0;
+		}
+		&[data-ending-style] {
+			transition-duration: var(--dur-exit);
+		}
+	}
+	/* Dialogs sit in a flex viewport, so the transform is free for the entrance. On phones the
+	   dialog is a bottom sheet and rises from the edge. */
+	.dialog-pop {
+		transition-property: transform, opacity;
+		transition-duration: var(--dur-regular);
+		transition-timing-function: var(--ease-out);
+		&[data-starting-style],
+		&[data-ending-style] {
+			opacity: 0;
+			transform: translateY(8px) scale(0.97);
+		}
+		&[data-ending-style] {
+			transition-duration: var(--dur-exit);
+		}
+		@media (max-width: 39.99rem) {
+			transition-duration: var(--dur-slow);
+			transition-timing-function: var(--ease-drawer);
+			&[data-starting-style],
+			&[data-ending-style] {
+				opacity: 1;
+				transform: translateY(100%);
+			}
+			&[data-ending-style] {
+				transition-duration: var(--dur-regular);
+			}
+		}
+	}
+	/* Base UI measures each toast and sets --toast-index, --toast-height and the swipe movement.
+	   Collapsed they stack with a peek; hovered or focused they spread out. */
+	.toast {
+		--gap: 0.5rem;
+		--peek: 0.5rem;
+		--scale: calc(max(0, 1 - (var(--toast-index) * 0.06)));
+		--shrink: calc(1 - var(--scale));
+		--height: var(--toast-frontmost-height, var(--toast-height));
+		--offset-y: calc(
+			var(--toast-offset-y) *
+			-1 +
+			(var(--toast-index) * var(--gap) * -1) +
+			var(--toast-swipe-movement-y)
+		);
+		height: var(--height);
+		z-index: calc(1000 - var(--toast-index));
+		transform-origin: bottom center;
+		transform: translateX(var(--toast-swipe-movement-x))
+			translateY(
+				calc(
+					var(--toast-swipe-movement-y) -
+					(var(--toast-index) * var(--peek)) -
+					(var(--shrink) * var(--height))
+				)
+			)
+			scale(var(--scale));
+		transition-property: transform, opacity, height;
+		transition-duration: var(--dur-slow);
+		transition-timing-function: var(--ease-out);
+		&[data-expanded] {
+			height: var(--toast-height);
+			transform: translateX(var(--toast-swipe-movement-x)) translateY(var(--offset-y));
+		}
+		&[data-starting-style] {
+			transform: translateY(calc(100% + 1rem));
+		}
+		&[data-ending-style] {
+			opacity: 0;
+			transform: translateY(calc(100% + 1rem));
+			transition-duration: var(--dur-exit);
+		}
+		&[data-limited] {
+			opacity: 0;
+		}
+		&::after {
+			content: "";
+			position: absolute;
+			top: 100%;
+			inset-inline: 0;
+			height: calc(var(--gap) + 1px);
+		}
+		@media (prefers-reduced-motion: reduce) {
+			&[data-starting-style],
+			&[data-ending-style] {
+				transform: none;
+			}
+		}
+	}
+	.sheet-pop {
+		transition-property: transform, opacity;
+		transition-duration: var(--dur-slow);
+		transition-timing-function: var(--ease-drawer);
+		&[data-starting-style],
+		&[data-ending-style] {
+			transform: translateX(-100%);
+		}
+		&[data-ending-style] {
+			transition-duration: var(--dur-regular);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.pop,
+		.dialog-pop,
+		.sheet-pop {
+			&[data-starting-style],
+			&[data-ending-style] {
+				transform: none;
+				opacity: 0;
+			}
+		}
+	}
+}
+
+/* Shimmer for skeletons: opacity pulse only, so it is cheap and stops under reduced motion. */
+@keyframes skeleton-pulse {
+	50% {
+		opacity: 0.55;
+	}
+}
+.skeleton {
+	animation: skeleton-pulse 1.6s var(--ease-in-out) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+	.skeleton {
+		animation: none;
+	}
+}
+
+/* Another player's accent, independent of the accent this browser picked. */
+[data-person-accent="blue"] {
+	--pa: var(--swatch-blue);
+}
+[data-person-accent="mint"] {
+	--pa: var(--swatch-mint);
+}
+[data-person-accent="coral"] {
+	--pa: var(--swatch-coral);
+}
+[data-person-accent="violet"] {
+	--pa: var(--swatch-violet);
+}
+[data-person-accent="gold"] {
+	--pa: var(--swatch-gold);
+}
+[data-person-accent="white"] {
+	--pa: var(--swatch-white);
+}
+
+/* Landing hero: two soft glows of the Cosmic theme drift slowly. Transform and opacity only,
+   and nothing moves for people who asked for less motion. */
+.landing-glow {
+	position: absolute;
+	z-index: -1;
+	pointer-events: none;
+	border-radius: 9999px;
+}
+.landing-glow-a {
+	inset-block-start: -22rem;
+	inset-inline-end: -14rem;
+	width: 52rem;
+	height: 52rem;
+	background: radial-gradient(closest-side, color-mix(in oklab, var(--t-bright) 46%, transparent), transparent);
+}
+.landing-glow-b {
+	inset-block-end: -26rem;
+	inset-inline-start: -16rem;
+	width: 46rem;
+	height: 46rem;
+	background: radial-gradient(closest-side, color-mix(in oklab, var(--t-bright) 20%, transparent), transparent);
+}
+@media (prefers-reduced-motion: no-preference) {
+	.landing-glow-a {
+		animation: glow-a 38s var(--ease-in-out) infinite alternate;
+	}
+	.landing-glow-b {
+		animation: glow-b 46s var(--ease-in-out) infinite alternate;
+	}
+}
+@keyframes glow-a {
+	to {
+		transform: translate3d(-6rem, 5rem, 0) scale(1.08);
+		opacity: 0.8;
+	}
+}
+@keyframes glow-b {
+	to {
+		transform: translate3d(8rem, -4rem, 0) scale(1.12);
+		opacity: 0.7;
+	}
+}

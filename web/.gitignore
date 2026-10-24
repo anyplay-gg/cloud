@@ -1,0 +1,7 @@
+node_modules
+dist
+dist-mock
+src/paraglide
+*.log
+.vite
+.tmp-*

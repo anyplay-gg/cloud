@@ -1,0 +1,194 @@
+/* Semantic tokens. Components use these names, never the generated ramps directly.
+   The ramps (--gray-N, --accent-N, --danger-N, ...) come from scripts/gen-tokens.mjs. */
+
+:root {
+	color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+	:root:not([data-theme]) {
+		color-scheme: light;
+	}
+}
+:root[data-theme="dark"] {
+	color-scheme: dark;
+}
+:root[data-theme="light"] {
+	color-scheme: light;
+}
+
+:root {
+	/* surfaces */
+	--bg: var(--gray-1);
+	--surface: var(--gray-2);
+	--raised: var(--gray-3);
+	--hover: var(--gray-4);
+	--active: var(--gray-5);
+	--track: var(--gray-4);
+	/* lines: alpha hairlines like the launcher (white 0.08 / 0.14); form controls use the solid
+	   --control-border that the generator picked for 3:1 */
+	--line: light-dark(rgb(0 0 0 / 0.08), rgb(255 255 255 / 0.08));
+	--line-strong: light-dark(rgb(0 0 0 / 0.14), rgb(255 255 255 / 0.14));
+	--edge: light-dark(rgb(255 255 255 / 0.7), rgb(255 255 255 / 0.05));
+	/* text */
+	--fg: var(--gray-12);
+	--fg-muted: var(--gray-11);
+	--fg-faint: var(--gray-10);
+	/* accent roles (the ramp itself is switched by data-accent) */
+	--accent: var(--accent-9);
+	--accent-hover: var(--accent-10);
+	--accent-ring: var(--accent-9);
+	--accent-text: var(--accent-11);
+	--accent-soft: var(--accent-3);
+	/* overlays */
+	--scrim: light-dark(rgb(16 16 16 / 0.32), rgb(0 0 0 / 0.6));
+	--shadow-color: light-dark(rgb(0 0 0 / 0.1), rgb(0 0 0 / 0.5));
+	--shadow-color-soft: light-dark(rgb(0 0 0 / 0.06), rgb(0 0 0 / 0.3));
+
+	/* motion */
+	--ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+	--ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+	--ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+	--dur-quick: 120ms;
+	--dur-regular: 180ms;
+	--dur-slow: 280ms;
+	--dur-exit: 140ms;
+
+	/* layout */
+	--sidebar-w: 15rem;
+	--topbar-h: 3.5rem;
+}
+
+/* Launcher theme gradients for profile banners (docs/DESIGN.md 1.2): deep, middle, bright. */
+[data-profile-theme="cosmic"] {
+	--t-deep: #030617;
+	--t-mid: #0a266b;
+	--t-bright: #6ba3ff;
+}
+[data-profile-theme="aurora"] {
+	--t-deep: #02080b;
+	--t-mid: #054d4d;
+	--t-bright: #8fffc7;
+}
+[data-profile-theme="sunset"] {
+	--t-deep: #0f030a;
+	--t-mid: #851c38;
+	--t-bright: #ffa354;
+}
+
+@theme {
+	--color-*: initial;
+	--font-*: initial;
+	--text-*: initial;
+	--radius-*: initial;
+	--shadow-*: initial;
+	--breakpoint-*: initial;
+
+	--breakpoint-sm: 40rem;
+	--breakpoint-nav: 56rem;
+	--breakpoint-lg: 72rem;
+
+	--font-sans: "Inter Variable", "Inter Fallback", system-ui, sans-serif;
+	--font-mono: "Geist Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+	/* Type scale, named by use. Sizes in rem (14px UI base); tracking tightens as size grows. */
+	--text-caption: 0.75rem;
+	--text-caption--line-height: 1rem;
+	--text-caption--letter-spacing: 0.01em;
+	--text-small: 0.8125rem;
+	--text-small--line-height: 1.125rem;
+	--text-body: 0.875rem;
+	--text-body--line-height: 1.25rem;
+	--text-body--letter-spacing: -0.006em;
+	--text-prose: 1rem;
+	--text-prose--line-height: 1.5rem;
+	--text-prose--letter-spacing: -0.011em;
+	--text-lead: 1.125rem;
+	--text-lead--line-height: 1.625rem;
+	--text-lead--letter-spacing: -0.014em;
+	--text-title: 1.25rem;
+	--text-title--line-height: 1.75rem;
+	--text-title--letter-spacing: -0.017em;
+	--text-heading: 1.5rem;
+	--text-heading--line-height: 2rem;
+	--text-heading--letter-spacing: -0.019em;
+	--text-display: 2rem;
+	--text-display--line-height: 2.5rem;
+	--text-display--letter-spacing: -0.022em;
+	--text-hero: 2.5rem;
+	--text-hero--line-height: 2.75rem;
+	--text-hero--letter-spacing: -0.025em;
+
+	/* Radii: controls 10, menu items 8 inside 14 popups (6 padding), cards 16, dialogs 20. */
+	--radius-xs: 0.25rem;
+	--radius-sm: 0.5rem;
+	--radius-md: 0.625rem;
+	--radius-lg: 0.875rem;
+	--radius-xl: 1rem;
+	--radius-2xl: 1.25rem;
+	--radius-full: 9999px;
+
+	--shadow-pop:
+		0 0 0 1px var(--line-strong), 0 12px 32px -8px var(--shadow-color),
+		0 2px 6px var(--shadow-color-soft);
+	--shadow-dialog:
+		0 0 0 1px var(--line-strong), 0 24px 64px -12px var(--shadow-color),
+		0 4px 12px var(--shadow-color-soft);
+	--shadow-card: 0 0 0 1px var(--line), inset 0 1px 0 var(--edge);
+	--shadow-knob: 0 1px 2px rgb(0 0 0 / 0.25);
+}
+
+@theme inline {
+	--color-page: var(--bg);
+	--color-surface: var(--surface);
+	--color-raised: var(--raised);
+	--color-hover: var(--hover);
+	--color-active: var(--active);
+	--color-track: var(--track);
+	--color-line: var(--line);
+	--color-line-strong: var(--line-strong);
+	--color-control: var(--control-border);
+	--color-fg: var(--fg);
+	--color-fg-muted: var(--fg-muted);
+	--color-fg-faint: var(--fg-faint);
+	--color-ink: var(--ink);
+	--color-ink-hover: var(--ink-hover);
+	--color-on-ink: var(--on-ink);
+	--color-on-danger: var(--on-danger);
+	--color-scrim: var(--scrim);
+	--color-accent: var(--accent);
+	--color-accent-hover: var(--accent-hover);
+	--color-accent-text: var(--accent-text);
+	--color-accent-soft: var(--accent-soft);
+	--color-on-accent: var(--on-accent);
+	--color-accent-4: var(--accent-4);
+	--color-accent-7: var(--accent-7);
+	--color-danger: var(--danger-9);
+	--color-danger-hover: var(--danger-10);
+	--color-danger-soft: var(--danger-3);
+	--color-danger-line: var(--danger-7);
+	--color-danger-text: var(--danger-11);
+	--color-warning: var(--warning-9);
+	--color-warning-soft: var(--warning-3);
+	--color-warning-line: var(--warning-7);
+	--color-warning-text: var(--warning-11);
+	--color-success: var(--success-9);
+	--color-success-soft: var(--success-3);
+	--color-success-line: var(--success-7);
+	--color-success-text: var(--success-11);
+	--color-platinum: var(--grade-platinum-9);
+	--color-platinum-soft: var(--grade-platinum-3);
+	--color-platinum-line: var(--grade-platinum-7);
+	--color-platinum-text: var(--grade-platinum-11);
+	--color-gold: var(--grade-gold-9);
+	--color-gold-soft: var(--grade-gold-3);
+	--color-gold-line: var(--grade-gold-7);
+	--color-gold-text: var(--grade-gold-11);
+	--color-silver: var(--grade-silver-9);
+	--color-silver-soft: var(--grade-silver-3);
+	--color-silver-line: var(--grade-silver-7);
+	--color-silver-text: var(--grade-silver-11);
+	--color-bronze: var(--grade-bronze-9);
+	--color-bronze-soft: var(--grade-bronze-3);
+	--color-bronze-line: var(--grade-bronze-7);
+	--color-bronze-text: var(--grade-bronze-11);
+}

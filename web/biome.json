@@ -1,0 +1,30 @@
+{
+	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+	"vcs": { "enabled": false },
+	"files": {
+		"includes": [
+			"**",
+			"!dist",
+			"!dist-mock",
+			"!node_modules",
+			"!src/paraglide",
+			"!src/routeTree.gen.ts",
+			"!src/styles/tokens.generated.css",
+			"!pnpm-lock.yaml"
+		]
+	},
+	"formatter": { "enabled": true, "indentStyle": "tab", "lineWidth": 100 },
+	"javascript": { "formatter": { "quoteStyle": "double" } },
+	"css": { "parser": { "tailwindDirectives": true }, "formatter": { "enabled": true } },
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"recommended": true,
+			"a11y": { "recommended": true },
+			"correctness": { "useExhaustiveDependencies": "error", "noUnusedImports": "error" },
+			"style": { "useConst": "error" },
+			"suspicious": { "noExplicitAny": "error" }
+		}
+	},
+	"assist": { "actions": { "source": { "organizeImports": "on" } } }
+}
