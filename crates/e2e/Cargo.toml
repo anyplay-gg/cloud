@@ -1,0 +1,24 @@
+[package]
+name = "anyplay-e2e"
+description = "End-to-end tests: a cloud, a relay, two net services and two fake games in one process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.91"
+publish = false
+
+[dev-dependencies]
+anyplay-bridge-protocol = { path = "../../../network/crates/bridge-protocol" }
+anyplay-cloud = { path = "../cloud" }
+anyplay-control = { path = "../../../network/crates/control" }
+anyplay-fake-game = { path = "../../../network/crates/fake-game" }
+anyplay-net = { path = "../../../network/crates/net" }
+anyplay-relay = { path = "../relay" }
+anyplay-ticket.workspace = true
+iroh-relay = { version = "1.4.1", features = ["server"] }
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true

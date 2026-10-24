@@ -1,0 +1,16 @@
+[package]
+name = "anyplay-ticket"
+description = "The signed tokens that the AnyPlay cloud issues and its relays check"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64.workspace = true
+ed25519-dalek.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true

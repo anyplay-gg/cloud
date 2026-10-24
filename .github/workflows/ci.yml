@@ -1,0 +1,71 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+# The cloud depends on the network's API crate by relative path (`../network/crates/api`), so
+# every job checks out both repositories side by side.
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: cloud
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          path: cloud
+      - uses: actions/checkout@v7.0.1
+        with:
+          repository: anyplay-gg/network
+          path: network
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          workspaces: cloud
+      - name: Format
+        # Not `--all`: that would also check the network checkout's crates.
+        run: cargo fmt -p anyplay-ticket -p anyplay-cloud -p anyplay-relay -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          path: cloud
+      - uses: actions/checkout@v7.0.1
+        with:
+          repository: anyplay-gg/network
+          path: network
+      - name: Build the cloud image
+        run: docker build -f cloud/deploy/Dockerfile --target cloud -t anyplay-cloud .
+      - name: Build the relay image
+        run: docker build -f cloud/deploy/Dockerfile --target relay -t anyplay-relay .
+      - name: Build the Caddy image
+        run: docker build -f cloud/deploy/Dockerfile --target caddy -t anyplay-caddy .
+      - name: Check the compose file
+        env:
+          CLOUD_DOMAIN: cloud.example.com
+          RELAY_DOMAIN: relay.example.com
+          ACME_EMAIL: operator@example.com
+        run: docker compose -f cloud/deploy/compose.yaml config --quiet
