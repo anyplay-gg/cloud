@@ -8,6 +8,7 @@ Everything in the [cloud API](https://github.com/anyplaynet/network/blob/main/sp
 | Friends and blocks | Requests by handle, mutual requests become friends at once, blocks stay private. | works |
 | Presence | Who is online, what they play, and whether their game is open to join. | works |
 | Sessions | Create, join and leave, with capacity, a leader, opaque game properties and a version guard: only the same game version and AnyPS5 build play together. | works |
+| Play Together | A session of kind `lan` for games that find others on a local network: the launcher opens it, friends join it, and it ends when its host leaves. Presence and invitations say so. | works |
 | Invitations | Invite friends into a session; the invitation ends with the session. | works |
 | Join codes | A short code that stands for a player and lets someone who is not a friend, a Discord friend for example, ask to join the game the player offers. Redeeming one makes an ordinary invitation, and nothing joins by itself. The cloud keeps only a hash of the code; a code lives 2 hours by default (`join_code_minutes`), and a player has one at a time. | works |
 | Trophies | Records of earned trophies (title, number, grade, time; no names or art), rarity once 10 players own a title, gamer cards with counts by grade. Private by default: friends see them, and each player can show them to everyone or nobody. | works |

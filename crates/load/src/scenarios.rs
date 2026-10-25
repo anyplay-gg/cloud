@@ -576,6 +576,7 @@ async fn one_session(ctx: &Arc<Ctx>, leader: &Arc<Shared>, size: usize, hold: Du
         title: "Load Game".into(),
         version: "1.00".into(),
         build: "load".into(),
+        kind: Default::default(),
         max_members: size as u16,
         visibility: Visibility::Friends,
         properties: String::new(),

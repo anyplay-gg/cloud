@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use anyplay_api::{
     CreateSession, ErrorCode, Event, Expected, Invite, Invited, JoinSession, MAX_MEMBERS,
-    MAX_PROPERTIES, Session, UpdateSession, Visibility,
+    MAX_PROPERTIES, Session, SessionKind, UpdateSession, Visibility,
 };
 use axum::Json;
 use axum::extract::{Path, State};
@@ -108,6 +108,7 @@ pub async fn create(
     let created = now() as i64;
     let row = SessionRow {
         id: random_uuid(),
+        kind: request.kind.as_str().to_owned(),
         title_id: request.title_id,
         title: request.title,
         version: request.version,
@@ -335,10 +336,15 @@ pub async fn update(
             "max_members is below the number of members.",
         ));
     }
-    if let Some(leader) = request.leader
-        && !session.is_member(leader.0)
-    {
-        return Err(AppError::bad_request("The new leader must be a member."));
+    if let Some(leader) = request.leader {
+        if session.kind() == SessionKind::Lan && leader.0 != session.leader() {
+            return Err(AppError::bad_request(
+                "The host of a Play Together session cannot change.",
+            ));
+        }
+        if !session.is_member(leader.0) {
+            return Err(AppError::bad_request("The new leader must be a member."));
+        }
     }
     if let Some(properties) = request.properties {
         session.row.properties = properties;
@@ -460,6 +466,7 @@ pub(crate) async fn open_invitations(
             from_handle: from.1.to_owned(),
             to_id: to_id as i64,
             session_id: id.clone(),
+            kind: session.row.kind.clone(),
             title_id: session.row.title_id.clone(),
             title: session.row.title.clone(),
             version: session.row.version.clone(),

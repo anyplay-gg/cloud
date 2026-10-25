@@ -331,19 +331,19 @@ impl Inner {
         }
         live::delete_member(&mut tx, id, account).await?;
         session.members.retain(|m| m.account_id as u64 != account);
-        let gone = match session.members.first() {
-            None => {
-                let gone = live::take_of_session(&mut tx, id).await?;
-                live::delete_session(&mut tx, id).await?;
-                gone
+        // A Play Together session is its host's world: it ends with the host (network ADR 0030).
+        let ends_with_host =
+            session.kind() == anyplay_api::SessionKind::Lan && session.leader() == account;
+        let gone = if session.members.is_empty() || ends_with_host {
+            let gone = live::take_of_session(&mut tx, id).await?;
+            live::delete_session(&mut tx, id).await?;
+            gone
+        } else {
+            if session.leader() == account {
+                session.row.leader = session.members[0].account_id;
+                live::update_session(&mut tx, &session.row).await?;
             }
-            Some(first) => {
-                if session.leader() == account {
-                    session.row.leader = first.account_id;
-                    live::update_session(&mut tx, &session.row).await?;
-                }
-                Vec::new()
-            }
+            Vec::new()
         };
         tx.commit().await?;
 
@@ -351,7 +351,13 @@ impl Inner {
             .push(account, &Event::SessionGone { id: id.to_owned() });
         self.invitations_gone(&gone);
         let mut dirty = vec![account];
-        if !session.members.is_empty() {
+        if ends_with_host {
+            for member in session.member_ids() {
+                self.news
+                    .push(member, &Event::SessionGone { id: id.to_owned() });
+                dirty.push(member);
+            }
+        } else if !session.members.is_empty() {
             self.announce(&session);
             dirty.extend(session.member_ids());
         }
