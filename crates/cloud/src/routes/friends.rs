@@ -147,6 +147,7 @@ pub async fn request(
         db::make_friends(&mut tx, me, them, now()).await?;
         tx.commit().await?;
         notify(&state, &[me, them]);
+        state.record_friends(me, them).await;
         return Ok(friends);
     }
     if db::request_exists(&mut tx, me, them).await? {
@@ -194,6 +195,7 @@ pub async fn accept(
     db::make_friends(&mut tx, auth.account, them, now()).await?;
     tx.commit().await?;
     notify(&state, &[auth.account, them]);
+    state.record_friends(auth.account, them).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

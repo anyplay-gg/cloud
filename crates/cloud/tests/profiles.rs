@@ -375,7 +375,7 @@ async fn privacy_written_before_profiles_keeps_working_and_new_parts_start_at_fr
     assert_eq!(
         privacy,
         json!({"trophies": "everyone", "about": "friends", "favourites": "friends",
-               "avatar": "friends", "playtime": "friends"})
+               "avatar": "friends", "playtime": "friends", "feed": "friends"})
     );
     cloud
         .put(
@@ -980,7 +980,7 @@ async fn export_holds_the_profile_and_deletion_removes_it() {
     assert_eq!(
         export["privacy"],
         json!({"trophies": "friends", "about": "everyone", "favourites": "friends",
-               "avatar": "friends", "playtime": "nobody"})
+               "avatar": "friends", "playtime": "nobody", "feed": "friends"})
     );
     assert_eq!(
         export["profile"],

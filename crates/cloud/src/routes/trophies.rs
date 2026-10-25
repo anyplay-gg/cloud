@@ -64,8 +64,10 @@ pub async fn upload(
         &upload.trophies,
     )
     .await?;
+    // The feed hears of trophies that are new and fresh; it never fails the upload.
+    state.record_trophies(auth.account, title, &added).await;
     Ok(Json(TrophiesAdded {
-        added: u32::try_from(added).unwrap_or(u32::MAX),
+        added: u32::try_from(added.len()).unwrap_or(u32::MAX),
     }))
 }
 
