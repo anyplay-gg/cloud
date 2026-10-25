@@ -49,7 +49,8 @@ A node holds nothing that another node needs. Any node can answer any request, a
 | Sessions, members, invitations | store | joins from many nodes must see one capacity and one member list |
 | Parties, party members, party invitations | store | one party per account and 8 members, whichever node writes |
 | Join codes (a hash of each, one per account) | store | a code issued through one node is redeemed through another; swept when it expires |
-| Conversations, messages, read marks | store | durable for 30 days; the conversation's counter gives each message its number |
+| Conversations, messages, read marks, reactions, mute and pin | store | durable for 30 days; the conversation's counter gives each message its number and a second counter (`rev`) numbers the edits, unsends and reactions |
+| Typing signals | none | never stored: the event goes to the other members' connections and is forgotten; one per account and conversation every 2 seconds is kept, in memory |
 | Virtual addresses | store (the member rows) | unique inside a session |
 | Event connections (the sockets) | the node that holds them | they cannot move |
 | Who is signed in, who is banned | a cache in each node, filled from the store | checked on every request; changes arrive as news |

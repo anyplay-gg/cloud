@@ -131,11 +131,25 @@ pub async fn file_report(state: &AppState, reporter: u64, request: api::Report) 
         "handle: {}\naccount created: {}",
         reported.handle, reported.created
     );
-    if let Some(message) = reported_message(&mut conn, reporter, target, &request).await? {
+    if let Some((message, held)) = reported_message(&mut conn, reporter, target, &request).await? {
+        // An unsent message is reported by the text it had last; an edited one also with every
+        // text it had before.
+        let mut held = held;
+        let text = if message.deleted {
+            held.pop().unwrap_or_default()
+        } else {
+            message.text.clone()
+        };
         content.push_str(&format!(
             "\nmessage {} in conversation {} (sent {}):\n{}",
-            message.seq, message.conversation, message.created, message.text
+            message.seq, message.conversation, message.created, text
         ));
+        if message.deleted {
+            content.push_str("\n(the writer unsent this message)");
+        }
+        for (k, before) in held.iter().enumerate() {
+            content.push_str(&format!("\n(earlier text {}:)\n{before}", k + 1));
+        }
     }
     store::insert_report(
         &mut conn,
@@ -162,7 +176,7 @@ async fn reported_message(
     reporter: u64,
     account: u64,
     request: &api::Report,
-) -> Result<Option<api::Message>> {
+) -> Result<Option<(api::Message, Vec<String>)>> {
     let (conversation, seq) = match (&request.conversation, request.seq) {
         (None, None) => return Ok(None),
         (Some(conversation), Some(seq)) if seq > 0 => (conversation, seq),
@@ -177,19 +191,23 @@ async fn reported_message(
         .iter()
         .find(|m| m.id() == reporter && m.state != crate::chat::DECLINED)
         .ok_or_else(AppError::not_found)?;
-    let floor = (me.from_seq.max(0) as u64).max(seq - 1);
-    let message = crate::chat::messages_after(conn, conversation, reporter, floor, 1)
+    let floor = me.from_seq.max(0) as u64;
+    let message = crate::chat::messages_after(conn, conversation, reporter, floor, seq - 1, 1)
         .await?
         .into_iter()
         .next()
         .filter(|m| m.seq == seq)
         .ok_or_else(AppError::not_found)?;
+    let held = crate::chat::held_texts(conn, conversation, seq, crate::chat::hold_cut_ms()).await?;
+    if message.deleted && held.is_empty() {
+        return Err(AppError::not_found());
+    }
     if message.sender.id.0 != account {
         return Err(AppError::bad_request(
             "The message was written by another account.",
         ));
     }
-    Ok(Some(message))
+    Ok(Some((message, held)))
 }
 
 /// The reports a moderator reads. `status` is `open` (oldest first), `decided` or `all`.

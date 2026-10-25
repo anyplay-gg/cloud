@@ -31,6 +31,12 @@ pub struct Rates {
     /// Messages one account may send per `messages_window`.
     pub messages: u32,
     pub messages_window: Duration,
+    /// Edits, unsends and reactions one account may make per `message_changes_window`.
+    pub message_changes: u32,
+    pub message_changes_window: Duration,
+    /// Typing signals one account may send over all conversations per `typing_window`.
+    pub typing: u32,
+    pub typing_window: Duration,
     /// Calls one account may start per `calls_window`.
     pub calls: u32,
     pub calls_window: Duration,
@@ -87,6 +93,10 @@ impl Default for Rates {
             feed_reaction_window: Duration::from_secs(60),
             messages: 30,
             messages_window: Duration::from_secs(60),
+            message_changes: 60,
+            message_changes_window: Duration::from_secs(60),
+            typing: 30,
+            typing_window: Duration::from_secs(60),
             calls: 10,
             calls_window: Duration::from_secs(60),
             strangers: 10,
