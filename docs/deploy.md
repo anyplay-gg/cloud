@@ -3,14 +3,14 @@
 `deploy/update.sh` moves a deployment made with [`deploy/compose.yaml`](../deploy/compose.yaml) to given commits of this repository and of the network repository, checks that it came up and rolls back if it did not. Run it on the machine that hosts the cloud, from a checkout laid out as in the README (`cloud/` and `network/` side by side, `cloud/deploy/.env` filled in):
 
 ```sh
-cloud/deploy/update.sh                                   # origin/main of both
+cloud/deploy/update.sh                                   # origin/main of the cloud, the network commit in its network.ref
 cloud/deploy/update.sh --cloud 1a2b3c4 --network v0.4.0  # commits, tags or branches
 cloud/deploy/update.sh --dry-run                         # show what would change, change nothing
 ```
 
 | Option | Meaning |
 |---|---|
-| `--cloud REF`, `--network REF` | What to deploy. A branch name means its state on `origin`. Default `origin/main`. |
+| `--cloud REF`, `--network REF` | What to deploy. A branch name means its state on `origin`. `--cloud` defaults to `origin/main`. `--network` defaults to the commit in [`network.ref`](../network.ref) of the cloud commit being deployed (not of the checkout that is there now); `--network REF` overrides it. |
 | `--pre-hook CMD` | A command to run before the first change, for example your backup. If it fails the update stops and nothing has changed. Also `ANYPLAY_UPDATE_HOOK`. |
 | `--timeout SECONDS` | How long the new version gets to become healthy and to answer. Default 180. Also `ANYPLAY_UPDATE_TIMEOUT`. |
 | `--no-rollback` | Leave a failed version running, for looking at it. |
@@ -27,6 +27,12 @@ cloud/deploy/update.sh --dry-run                         # show what would chang
 5. Runs `docker compose up -d --wait`. Compose replaces only the services whose image or settings changed. When the Caddyfile or a site file (`deploy/*.caddy`) changed, it also starts a new Caddy container: Caddy reads them through single-file mounts, which keep showing the old file after a checkout.
 6. Checks that `/v1/info` answers over the public address, through Caddy and TLS, and that every container is running after a few seconds.
 7. On success it prunes dangling images and build cache older than seven days. On failure it checks out the previous commits, puts the previous images back, starts them and checks again.
+
+## Which network revision
+
+The cloud builds against one network commit everywhere: the single full SHA in [`network.ref`](../network.ref). CI, the Kubernetes job, fuzzing, the advisory check and `update.sh` read it, and the Docker image is built from the `network/` checkout that `update.sh` puts on that commit. Merging to the network's `main` therefore never changes what the cloud builds or deploys.
+
+To move to newer network code, change `network.ref` to the network commit you need **in the same pull request** as the cloud change that needs it, so CI proves the pair. The workflow `network-drift` (nightly and on demand) builds the cloud's `main` against the network's `main` and goes red when that no longer works; it reports, it blocks nothing. A hotfix on the server can still pass `--network <ref>`.
 
 ## Downtime
 
