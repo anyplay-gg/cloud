@@ -17,7 +17,7 @@
 set -Eeuo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-image=${ANYPLAY_BACKUP_IMAGE:-python:3.13-alpine}
+image=${ANYPLAY_BACKUP_IMAGE:-python:3.13-alpine@sha256:bf12ecc0bea3f171d55145dd02c78b5eeb09f30ee2ac9cc2b4c9e4e8f5e30741}
 id=$$
 vol=anyplay_backuptest_src_$id
 scratch=anyplay_backuptest_scratch_$id
@@ -128,11 +128,11 @@ cat >"$work/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "docker $*" >>"$STUB_LOG"
 case "$1 $2" in
-  "volume inspect") exit 0 ;;
+  "volume inspect") exit "${STUB_VOLUME_RC:-0}" ;;
   "compose build") exit 0 ;;
   "compose config") exit 0 ;;
   "compose up") exit 0 ;;
-  "compose ps") exit 0 ;;
+  "compose ps") echo "${STUB_PS:-}"; exit 0 ;;
 esac
 exit 0
 STUB
@@ -149,8 +149,22 @@ if command -v flock >/dev/null && df -BG --output=avail "$root" >/dev/null 2>&1;
     ok "update.sh with an unwritable backup dir exits non-zero"
   fi
   show "$out"
-  check "...and says the backup failed" grep -q "the backup failed" <<<"$out"
+  check "...and says the folder is not writable" grep -q "is not writable" <<<"$out"
   refuses "...before docker compose build" grep -q "compose build" "$STUB_LOG"
+
+  # A missing volume with a cloud container is no first install: stop before anything changes.
+  : >"$STUB_LOG"
+  if out=$(STUB_VOLUME_RC=1 STUB_PS=abc123 run_update 2>&1); then
+    fail "update.sh with no volume but a cloud container exits non-zero"
+  else
+    ok "update.sh with no volume but a cloud container exits non-zero"
+  fi
+  check "...and asks for ANYPLAY_CLOUD_VOLUME" grep -q "ANYPLAY_CLOUD_VOLUME" <<<"$out"
+  refuses "...before docker compose build" grep -q "compose build" "$STUB_LOG"
+  : >"$STUB_LOG"
+  out=$(STUB_VOLUME_RC=1 STUB_PS='' ANYPLAY_BACKUP_DIR=$work/b3 run_update 2>&1 || true)
+  check "no volume and no container is a first install" grep -q "first install" <<<"$out"
+  check "...and goes on to build" grep -q "compose build" "$STUB_LOG"
 
   : >"$STUB_LOG"
   out=$(run_update --no-backup 2>&1 || true)
@@ -218,7 +232,10 @@ if command -v flock >/dev/null && df -BG --output=avail "$root" >/dev/null 2>&1;
     "$root/cloud/deploy/update.sh" --timeout 3 --no-rollback 2>&1 || true)
   show "$out"
   check "update.sh logs the backup and the archive age" grep -q "backup ok: anyplay-cloud-.*s old; restore with deploy/restore.sh" <<<"$out"
-  check "update.sh went on to build after the backup" grep -q "compose build" "$STUB_LOG"
+  build_line=$(grep -n "compose build" "$STUB_LOG" | head -1 | cut -d: -f1)
+  stop_line=$(grep -n "compose stop cloud" "$STUB_LOG" | head -1 | cut -d: -f1)
+  up_line=$(grep -n "compose up" "$STUB_LOG" | head -1 | cut -d: -f1)
+  check "update.sh builds first, then backs up (stop), then starts the new version" test "${build_line:-9}" -lt "${stop_line:-0}" -a "${stop_line:-9}" -lt "${up_line:-0}"
   check "the archive is where update.sh said" test -n "$(find "$work/b2" -name 'anyplay-cloud-*.tar.gz')"
   check "the cloud container runs again after the update's backup" running
 fi

@@ -3,8 +3,8 @@
 #   sudo cp anyplay-backup.service anyplay-backup.timer /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now anyplay-backup.timer
 #
-# backup.sh stops the cloud for a few seconds, so the timer runs at a quiet hour. flock makes it
-# skip a run while update.sh holds the same lock (update.sh takes its own backup first).
+# backup.sh stops the cloud until it is healthy again (tens of seconds), so the timer runs at a quiet hour. flock makes it
+# skip a run while update.sh holds the same lock (update.sh takes its own backup before it starts the new version).
 [Unit]
 Description=AnyPlay cloud backup
 Requires=docker.service

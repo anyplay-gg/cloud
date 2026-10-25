@@ -119,6 +119,26 @@ jobs:
       - name: Test on PostgreSQL, and as a cluster of two nodes
         run: cargo test -p anyplay-cloud
 
+  # The deploy scripts: syntax, shellcheck, and their own test (stand-in repositories and docker, plus
+  # throwaway volumes with the pinned python image).
+  shell:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloud/deploy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: cloud
+      - name: Syntax
+        run: for f in *.sh; do bash -n "$f"; done
+      - name: ShellCheck
+        # Preinstalled on the runner; -x follows the sourced backup-env.sh.
+        run: shellcheck -x *.sh
+      - name: Backup and restore tests
+        run: ./test-backup.sh
+
   docker:
     runs-on: ubuntu-latest
     steps:

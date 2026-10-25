@@ -7,7 +7,8 @@
 #
 # REF is a commit, tag or branch (a branch means its state on `origin`). --cloud defaults to
 # origin/main; --network defaults to the commit in `network.ref` of the cloud commit being deployed.
-# Before the first change it runs backup.sh and stops if that fails (--no-backup skips it).
+# After the build, right before the new version starts, it runs backup.sh and stops if that fails
+# (--no-backup skips it).
 # Details, what "near-zero downtime" means and how to roll back by hand: docs/deploy.md.
 set -Eeuo pipefail
 
@@ -25,7 +26,7 @@ main() {
       --no-rollback) rollback=0; shift ;;
       --no-backup) backup=0; shift ;;
       --dry-run) dry=1; shift ;;
-      -h|--help) sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
+      -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
       *) echo "unknown argument: $1 (see --help)" >&2; return 2 ;;
     esac
   done
@@ -82,25 +83,25 @@ main() {
   free_gb=$(df -BG --output=avail "$root" | tail -1 | tr -dc 0-9)
   [ "${free_gb:-0}" -ge 5 ] || die "less than 5 GB free on $root"
 
-  # 2. Back up before the first change: a new version may migrate the database, and the old one does
-  # not undo that. backup.sh stops the cloud for a few seconds, copies the data volume and starts it.
-  local volume=${ANYPLAY_CLOUD_VOLUME:-anyplay_cloud-data} backup_dir backup_path='' max_age=${ANYPLAY_BACKUP_MAX_AGE:-900}
+  # 2. Check what the backup needs, now, while nothing has changed. The backup itself is taken in step 4,
+  # right before the new version starts: the build takes minutes while the old version keeps serving and
+  # writing, and a backup from before the build would lose everything written meanwhile. A new version may
+  # migrate the database on its first start, and the old one does not undo that.
+  local volume=${ANYPLAY_CLOUD_VOLUME:-anyplay_cloud-data} backup_dir backup_path='' max_age=${ANYPLAY_BACKUP_MAX_AGE:-900} do_backup=0
   backup_dir=${ANYPLAY_BACKUP_DIR:-$deploy/backups}
   case $max_age in '' | *[!0-9]*) die "ANYPLAY_BACKUP_MAX_AGE must be a number of seconds" ;; esac
   if [ "$backup" = 0 ]; then
     log "WARNING: --no-backup: no backup before this update; a migration cannot be undone"
-  elif ! docker volume inspect "$volume" >/dev/null 2>&1; then
-    log "no volume $volume yet (first install): nothing to back up"
+  elif docker volume inspect "$volume" >/dev/null 2>&1; then
+    do_backup=1
+    { mkdir -p "$backup_dir" && [ -w "$backup_dir" ]; } 2>/dev/null || die "the backup folder $backup_dir is not writable; nothing was changed (--no-backup skips the backup)"
   else
-    log "backing up"
-    "$deploy/backup.sh" --dir "$backup_dir" || die "the backup failed; nothing was changed (--no-backup skips it)"
-    local newest age
-    newest=$(find "$backup_dir" -maxdepth 1 -type f -printf '%f\n' | grep -E '^anyplay-cloud-[0-9]{8}T[0-9]{6}Z[.]tar[.]gz$' | sort | tail -n 1) || true
-    [ -n "$newest" ] || die "no backup archive found in $backup_dir; nothing was changed"
-    age=$(( $(date +%s) - $(stat -c %Y "$backup_dir/$newest") ))
-    [ "$age" -le "$max_age" ] || die "the newest backup ($newest) is ${age}s old, more than ${max_age}s; nothing was changed"
-    backup_path=$backup_dir/$newest
-    log "backup ok: $newest, ${age}s old; restore with deploy/restore.sh $backup_path"
+    # Not finding the volume is only a first install when there is no cloud container either. The volume's
+    # name depends on the compose project name (COMPOSE_PROJECT_NAME, -p), so a live install can be here.
+    local existing
+    existing=$(docker compose ps -a -q cloud 2>/dev/null) || die "cannot ask docker compose about the cloud container; nothing was changed"
+    [ -z "$existing" ] || die "no volume $volume, but a cloud container exists; set ANYPLAY_CLOUD_VOLUME to its data volume (docker inspect shows it); nothing was changed (--no-backup skips the backup)"
+    log "no volume $volume and no cloud container (first install): nothing to back up"
   fi
 
   # Anything else the operator wants checked or done before the first change.
@@ -149,6 +150,30 @@ main() {
     return 1
   fi
 
+  # 4b. Back up now: the old version still runs, the new one is built and has not started, so the archive
+  # holds everything written until this moment and the new version's migration comes after it. If the
+  # backup fails, nothing is started and the old sources go back.
+  if [ "$do_backup" = 1 ]; then
+    log "backing up, right before the new version starts"
+    if ! "$deploy/backup.sh" --dir "$backup_dir"; then
+      log "the backup failed; restoring the previous sources, the running version was not touched (--no-backup skips the backup)"
+      restore_sources
+      return 1
+    fi
+    local newest age
+    newest=$(find "$backup_dir" -maxdepth 1 -type f -printf '%f
+' | grep -E '^anyplay-cloud-[0-9]{8}T[0-9]{6}Z[.]tar[.]gz$' | sort | tail -n 1) || true
+    age=-1
+    [ -z "$newest" ] || age=$(( $(date +%s) - $(stat -c %Y "$backup_dir/$newest") ))
+    if [ -z "$newest" ] || [ "$age" -gt "$max_age" ]; then
+      log "no fresh backup archive in $backup_dir (newest: ${newest:-none}); restoring the previous sources, the running version was not touched"
+      restore_sources
+      return 1
+    fi
+    backup_path=$backup_dir/$newest
+    log "backup ok: $newest, ${age}s old; restore with deploy/restore.sh $backup_path"
+  fi
+
   # 5. Replace only the services whose image or settings changed. The cloud has one SQLite file and
   # so one writer: it stops and starts again in a few seconds, the relay and Caddy follow.
   log "starting the new version"
@@ -175,7 +200,8 @@ main() {
   else
     log "ROLLBACK FAILED: look at 'docker compose ps' and 'docker compose logs'"
   fi
-  log "data changes of a newer version (database migrations) are not undone; restore the backup for that:"
+  log "data changes of a newer version (database migrations) are not undone; restore the backup for that."
+  log "Anything written after the backup (it was taken just before the new version started) is not in it:"
   if [ -n "$backup_path" ]; then
     log "  restore with deploy/restore.sh $backup_path --really   (without --really it only checks the archive)"
   else

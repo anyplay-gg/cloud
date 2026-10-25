@@ -16,13 +16,14 @@
 #   --no-stop       do not stop the cloud; only for a volume that nothing writes to (tests)
 #
 # The copy runs in a throwaway container of $ANYPLAY_BACKUP_IMAGE (default python:3.13-alpine,
-# which has tar and sha256sum); the cloud image needs no extra tool.
+# which has tar and sha256sum, pinned by digest); the cloud image needs no extra tool. The image is
+# fetched before the cloud stops, so a slow or failing registry never keeps the cloud down.
 set -Eeuo pipefail
 
 main() {
   local here dir=${ANYPLAY_BACKUP_DIR:-} keep=${ANYPLAY_BACKUP_KEEP:-14} \
     volume=${ANYPLAY_CLOUD_VOLUME:-anyplay_cloud-data} stop=1 \
-    image=${ANYPLAY_BACKUP_IMAGE:-python:3.13-alpine}
+    image=${ANYPLAY_BACKUP_IMAGE:-python:3.13-alpine@sha256:bf12ecc0bea3f171d55145dd02c78b5eeb09f30ee2ac9cc2b4c9e4e8f5e30741}
   wait=${ANYPLAY_BACKUP_TIMEOUT:-120} # wait, tmp, stopped: global, the EXIT trap runs after main has returned
   here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   # shellcheck source=backup-env.sh
@@ -56,6 +57,9 @@ main() {
   dir=$(cd "$dir" && { pwd -W 2>/dev/null || pwd; }) # -W: a Windows path for Docker Desktop (Git Bash)
   local probe=$dir/.write-test.$$
   { : >"$probe" && rm -f "${probe:?}"; } 2>/dev/null || die "$dir is not writable"
+  # The image must be here before the cloud stops: a pull takes the cloud down for as long as it lasts, and a
+  # registry failure or rate limit would block every update with the cloud stopped.
+  docker image inspect "$image" >/dev/null 2>&1 || docker pull --quiet "$image" >/dev/null || die "cannot get the image $image; nothing was changed"
 
   local stamp name
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -113,9 +117,9 @@ main() {
     ' sh ".$name.partial" || die "the copy failed; nothing was kept"
   [ -s "$tmp" ] || die "the archive is empty"
   mv "$tmp" "$dir/$name"
-  local down=$((SECONDS - t0))
+  local did_stop=$stopped
   restart_cloud || die "the cloud did not come back; look at 'docker compose logs cloud'"
-  log "the cloud was stopped for about ${down}s"
+  [ "$did_stop" = 0 ] || log "the cloud was down for about $((SECONDS - t0))s, from the stop until its health check passed again"
 
   # The manifest: standard sha256sum format, so `sha256sum -c` verifies it.
   (cd "$dir" && sha256sum "$name" >"$name.sha256") || die "cannot write the manifest"
