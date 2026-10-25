@@ -1,0 +1,11 @@
+# Runs anyplay-backup.service every night (example). Keep 14 archives by default, so a fortnight.
+[Unit]
+Description=Nightly AnyPlay cloud backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

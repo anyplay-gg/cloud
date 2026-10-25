@@ -1,0 +1,20 @@
+# A scheduled backup of the cloud data (example; adjust the paths and the user).
+#
+#   sudo cp anyplay-backup.service anyplay-backup.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now anyplay-backup.timer
+#
+# backup.sh stops the cloud until it is healthy again (tens of seconds), so the timer runs at a quiet hour. flock makes it
+# skip a run while update.sh holds the same lock (update.sh takes its own backup before it starts the new version).
+[Unit]
+Description=AnyPlay cloud backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+# A user in the docker group; the archives belong to it and are mode 0600.
+User=anyplay
+WorkingDirectory=/opt/anyplay/cloud/deploy
+ExecStart=/usr/bin/flock -n /tmp/anyplay-update.lock /opt/anyplay/cloud/deploy/backup.sh
+# Settings can also go in deploy/.env: ANYPLAY_BACKUP_DIR, ANYPLAY_BACKUP_KEEP.
+TimeoutStartSec=15min

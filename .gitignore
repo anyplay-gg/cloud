@@ -8,3 +8,4 @@
 /deploy/.env
 # Local build workaround for the windows-gnu toolchain, see README "Development".
 /.cargo/
+/deploy/backups/

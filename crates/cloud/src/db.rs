@@ -550,10 +550,25 @@ pub async fn device_by_current(pool: &Pool, hash: &[u8]) -> sqlx::Result<Option<
     .await
 }
 
+/// A replaced refresh token that came back.
+#[derive(Clone, Debug, FromRow)]
+pub struct UsedRefresh {
+    #[sqlx(flatten)]
+    pub device: DeviceRow,
+    /// When the token was replaced.
+    pub used: i64,
+    /// 1 when no token of the device was replaced after it, so it is the immediate predecessor
+    /// of the current one.
+    pub newest: i64,
+}
+
 /// The device a replaced refresh token belonged to, if it was replaced recently.
-pub async fn device_by_used(pool: &Pool, hash: &[u8]) -> sqlx::Result<Option<DeviceRow>> {
+pub async fn device_by_used(pool: &Pool, hash: &[u8]) -> sqlx::Result<Option<UsedRefresh>> {
     sqlx::query_as(
-        "SELECT d.id, d.account_id, d.name, d.platform, d.refresh_hash, d.created, d.last_used \
+        "SELECT d.id, d.account_id, d.name, d.platform, d.refresh_hash, d.created, d.last_used, \
+         u.used AS used, \
+         CASE WHEN EXISTS (SELECT 1 FROM used_refresh n WHERE n.device_id = u.device_id \
+         AND n.used > u.used) THEN 0 ELSE 1 END AS newest \
          FROM used_refresh u JOIN devices d ON d.id = u.device_id WHERE u.hash = $1",
     )
     .bind(hash)
@@ -574,7 +589,47 @@ pub async fn rotate_refresh(
     new: &[u8],
     now: u64,
 ) -> sqlx::Result<bool> {
+    rotate_from(writer, pool, device, Some(old), new, now).await
+}
+
+/// Replaces the device's current refresh hash, whatever it is when the transaction reads it, and
+/// remembers it. For a request that carries an older token with a valid proof: the answer to it
+/// was lost, or another request with the same token won the race. False when the device is gone
+/// or the hash changed meanwhile.
+pub async fn rotate_current_refresh(
+    writer: &Writer,
+    pool: &Pool,
+    device: u64,
+    new: &[u8],
+    now: u64,
+) -> sqlx::Result<bool> {
+    rotate_from(writer, pool, device, None, new, now).await
+}
+
+async fn rotate_from(
+    writer: &Writer,
+    pool: &Pool,
+    device: u64,
+    old: Option<&[u8]>,
+    new: &[u8],
+    now: u64,
+) -> sqlx::Result<bool> {
     let mut tx = writer.begin(pool).await?;
+    let old: Vec<u8> = match old {
+        Some(old) => old.to_vec(),
+        None => {
+            let row: Option<(Vec<u8>,)> =
+                sqlx::query_as("SELECT refresh_hash FROM devices WHERE id = $1")
+                    .bind(i(device))
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            match row {
+                Some((hash,)) => hash,
+                None => return Ok(false),
+            }
+        }
+    };
+    let old = old.as_slice();
     let result = sqlx::query(
         "UPDATE devices SET refresh_hash = $1, last_used = $2 WHERE id = $3 AND refresh_hash = $4",
     )

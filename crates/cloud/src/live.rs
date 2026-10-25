@@ -12,7 +12,8 @@
 use std::collections::HashMap;
 
 use anyplay_api::{
-    Account, AccountId, Activity, Invitation, Member, Presence, Session, SessionRef, Visibility,
+    Account, AccountId, Activity, Invitation, Member, Presence, Session, SessionKind, SessionRef,
+    Visibility,
 };
 use sqlx::{AnyConnection, FromRow};
 
@@ -340,6 +341,7 @@ struct PresenceRow {
 struct JoinableRow {
     account_id: i64,
     id: String,
+    kind: String,
     title_id: String,
     max_members: i64,
     members: i64,
@@ -367,6 +369,7 @@ fn presence(row: &PresenceRow, joinable: &[JoinableRow]) -> Presence {
                     joinable: s.members < s.max_members,
                     members: s.members as u16,
                     max_members: s.max_members as u16,
+                    kind: SessionKind::from_text(&s.kind),
                 });
             activity
         });
@@ -377,7 +380,7 @@ fn presence(row: &PresenceRow, joinable: &[JoinableRow]) -> Presence {
     }
 }
 
-const JOINABLE: &str = "SELECT m.account_id AS account_id, s.id AS id, s.title_id AS title_id, \
+const JOINABLE: &str = "SELECT m.account_id AS account_id, s.id AS id, s.kind AS kind, s.title_id AS title_id, \
      s.max_members AS max_members, \
      (SELECT COUNT(*) FROM members x WHERE x.session_id = s.id) AS members \
      FROM members m JOIN sessions s ON s.id = m.session_id \
@@ -512,6 +515,8 @@ pub async fn due_to_leave(conn: &mut Conn, cut_ms: i64) -> sqlx::Result<Vec<u64>
 #[derive(Clone, Debug, FromRow)]
 pub struct SessionRow {
     pub id: String,
+    /// `game` or `lan` (network ADR 0030).
+    pub kind: String,
     pub title_id: String,
     pub title: String,
     pub version: String,
@@ -555,6 +560,10 @@ impl SessionState {
         visibility_from(&self.row.visibility)
     }
 
+    pub fn kind(&self) -> SessionKind {
+        SessionKind::from_text(&self.row.kind)
+    }
+
     pub fn member_ids(&self) -> Vec<u64> {
         self.members.iter().map(|m| u(m.account_id)).collect()
     }
@@ -566,6 +575,7 @@ impl SessionState {
     pub fn view(&self) -> Session {
         Session {
             id: self.row.id.clone(),
+            kind: self.kind(),
             title_id: self.row.title_id.clone(),
             title: self.row.title.clone(),
             version: self.row.version.clone(),
@@ -610,7 +620,7 @@ fn visibility_from(text: &str) -> Visibility {
     }
 }
 
-const SESSION_COLUMNS: &str = "id, title_id, title, version, build, leader, max_members, \
+const SESSION_COLUMNS: &str = "id, kind, title_id, title, version, build, leader, max_members, \
      visibility, properties, created, revision";
 
 async fn members_of(conn: &mut Conn, id: &str) -> sqlx::Result<Vec<MemberRow>> {
@@ -672,9 +682,9 @@ pub async fn count_sessions_of(conn: &mut Conn, account: u64) -> sqlx::Result<i6
 
 pub async fn insert_session(conn: &mut Conn, row: &SessionRow) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT INTO sessions (id, title_id, title, version, build, leader, max_members, \
+        "INSERT INTO sessions (id, kind, title_id, title, version, build, leader, max_members, \
          visibility, properties, created, revision) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)",
+         VALUES ($1, $11, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)",
     )
     .bind(&row.id)
     .bind(&row.title_id)
@@ -686,6 +696,7 @@ pub async fn insert_session(conn: &mut Conn, row: &SessionRow) -> sqlx::Result<(
     .bind(&row.visibility)
     .bind(&row.properties)
     .bind(row.created)
+    .bind(&row.kind)
     .execute(conn)
     .await?;
     Ok(())
@@ -775,6 +786,8 @@ pub struct InvitationRow {
     pub from_handle: String,
     pub to_id: i64,
     pub session_id: String,
+    /// The kind of the session invited to.
+    pub kind: String,
     pub title_id: String,
     pub title: String,
     pub version: String,
@@ -794,6 +807,7 @@ impl InvitationRow {
                 handle: self.from_handle.clone(),
             },
             session: self.session_id.clone(),
+            kind: SessionKind::from_text(&self.kind),
             title_id: self.title_id.clone(),
             title: self.title.clone(),
             version: self.version.clone(),
@@ -822,7 +836,7 @@ pub async fn insert_invitation(
 ) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO invitations (id, from_id, from_handle, to_id, session_id, title_id, title, \
-         version, expires, deadline_ms) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+         version, expires, deadline_ms, kind) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(&invitation.id)
     .bind(invitation.from_id)
@@ -834,6 +848,7 @@ pub async fn insert_invitation(
     .bind(&invitation.version)
     .bind(invitation.expires)
     .bind(deadline_ms)
+    .bind(&invitation.kind)
     .execute(conn)
     .await?;
     Ok(())
@@ -867,7 +882,7 @@ pub async fn invitation_from(
     now_ms: i64,
 ) -> sqlx::Result<Option<InvitationRow>> {
     sqlx::query_as(
-        "SELECT id, from_id, from_handle, to_id, session_id, title_id, title, version, expires          FROM invitations WHERE to_id = $1 AND session_id = $2 AND from_id = $3          AND deadline_ms > $4 ORDER BY deadline_ms DESC LIMIT 1",
+        "SELECT id, from_id, from_handle, to_id, session_id, kind, title_id, title, version, expires          FROM invitations WHERE to_id = $1 AND session_id = $2 AND from_id = $3          AND deadline_ms > $4 ORDER BY deadline_ms DESC LIMIT 1",
     )
     .bind(i(to))
     .bind(session)

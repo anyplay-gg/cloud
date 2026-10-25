@@ -8,3 +8,5 @@
 **/data
 **/.env
 **/.cargo
+# Backups (deploy/backups by default) hold signing.key, ban.key and the account database: never part of an image or of the upload to the daemon.
+**/backups

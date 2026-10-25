@@ -3,10 +3,12 @@
 # the cloud and network repositories, checks that it came up, and rolls back when it did not.
 #
 #   cloud/deploy/update.sh [--cloud REF] [--network REF] [--pre-hook CMD] [--timeout SECONDS]
-#                          [--no-rollback] [--dry-run]
+#                          [--no-rollback] [--no-backup] [--dry-run]
 #
 # REF is a commit, tag or branch (a branch means its state on `origin`). --cloud defaults to
 # origin/main; --network defaults to the commit in `network.ref` of the cloud commit being deployed.
+# After the build, right before the new version starts, it runs backup.sh and stops if that fails
+# (--no-backup skips it).
 # Details, what "near-zero downtime" means and how to roll back by hand: docs/deploy.md.
 set -Eeuo pipefail
 
@@ -14,7 +16,7 @@ set -Eeuo pipefail
 # very file, and bash reads a script while it runs.
 main() {
   local cloud_ref=origin/main network_ref='' hook=${ANYPLAY_UPDATE_HOOK:-} \
-    timeout=${ANYPLAY_UPDATE_TIMEOUT:-180} rollback=1 dry=0
+    timeout=${ANYPLAY_UPDATE_TIMEOUT:-180} rollback=1 dry=0 backup=1
   while [ $# -gt 0 ]; do
     case $1 in
       --cloud) cloud_ref=${2:?--cloud needs a ref}; shift 2 ;;
@@ -22,8 +24,9 @@ main() {
       --pre-hook) hook=${2:?--pre-hook needs a command}; shift 2 ;;
       --timeout) timeout=${2:?--timeout needs seconds}; shift 2 ;;
       --no-rollback) rollback=0; shift ;;
+      --no-backup) backup=0; shift ;;
       --dry-run) dry=1; shift ;;
-      -h|--help) sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
+      -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
       *) echo "unknown argument: $1 (see --help)" >&2; return 2 ;;
     esac
   done
@@ -40,7 +43,7 @@ main() {
   command -v docker >/dev/null || die "docker is not installed"
   command -v git >/dev/null || die "git is not installed"
   command -v curl >/dev/null || die "curl is not installed"
-  [ -d "$cloud_dir/.git" ] && [ -d "$network_dir/.git" ] || die "expected git checkouts at $cloud_dir and $network_dir"
+  { [ -d "$cloud_dir/.git" ] && [ -d "$network_dir/.git" ]; } || die "expected git checkouts at $cloud_dir and $network_dir"
   [ -f "$deploy/.env" ] || die "$deploy/.env is missing (copy .env.example)"
 
   # One update at a time.
@@ -48,6 +51,9 @@ main() {
   flock -n 9 || die "another update is running"
 
   cd "$deploy"
+  # shellcheck source=backup-env.sh
+  . "$deploy/backup-env.sh"
+  anyplay_backup_env "$deploy"
   for d in "$cloud_dir" "$network_dir"; do
     git -C "$d" diff --quiet HEAD -- || die "$d has uncommitted changes to tracked files; commit or stash them"
   done
@@ -77,7 +83,28 @@ main() {
   free_gb=$(df -BG --output=avail "$root" | tail -1 | tr -dc 0-9)
   [ "${free_gb:-0}" -ge 5 ] || die "less than 5 GB free on $root"
 
-  # 2. Backup (or any check) the operator wants before the first change.
+  # 2. Check what the backup needs, now, while nothing has changed. The backup itself is taken in step 4,
+  # right before the new version starts: the build takes minutes while the old version keeps serving and
+  # writing, and a backup from before the build would lose everything written meanwhile. A new version may
+  # migrate the database on its first start, and the old one does not undo that.
+  local volume=${ANYPLAY_CLOUD_VOLUME:-anyplay_cloud-data} backup_dir backup_path='' max_age=${ANYPLAY_BACKUP_MAX_AGE:-900} do_backup=0
+  backup_dir=${ANYPLAY_BACKUP_DIR:-$deploy/backups}
+  case $max_age in '' | *[!0-9]*) die "ANYPLAY_BACKUP_MAX_AGE must be a number of seconds" ;; esac
+  if [ "$backup" = 0 ]; then
+    log "WARNING: --no-backup: no backup before this update; a migration cannot be undone"
+  elif docker volume inspect "$volume" >/dev/null 2>&1; then
+    do_backup=1
+    { mkdir -p "$backup_dir" && [ -w "$backup_dir" ]; } 2>/dev/null || die "the backup folder $backup_dir is not writable; nothing was changed (--no-backup skips the backup)"
+  else
+    # Not finding the volume is only a first install when there is no cloud container either. The volume's
+    # name depends on the compose project name (COMPOSE_PROJECT_NAME, -p), so a live install can be here.
+    local existing
+    existing=$(docker compose ps -a -q cloud 2>/dev/null) || die "cannot ask docker compose about the cloud container; nothing was changed"
+    [ -z "$existing" ] || die "no volume $volume, but a cloud container exists; set ANYPLAY_CLOUD_VOLUME to its data volume (docker inspect shows it); nothing was changed (--no-backup skips the backup)"
+    log "no volume $volume and no cloud container (first install): nothing to back up"
+  fi
+
+  # Anything else the operator wants checked or done before the first change.
   if [ -n "$hook" ]; then
     log "pre-update hook"
     bash -c "$hook" || die "the pre-update hook failed; nothing was changed"
@@ -123,6 +150,30 @@ main() {
     return 1
   fi
 
+  # 4b. Back up now: the old version still runs, the new one is built and has not started, so the archive
+  # holds everything written until this moment and the new version's migration comes after it. If the
+  # backup fails, nothing is started and the old sources go back.
+  if [ "$do_backup" = 1 ]; then
+    log "backing up, right before the new version starts"
+    if ! "$deploy/backup.sh" --dir "$backup_dir"; then
+      log "the backup failed; restoring the previous sources, the running version was not touched (--no-backup skips the backup)"
+      restore_sources
+      return 1
+    fi
+    local newest age
+    newest=$(find "$backup_dir" -maxdepth 1 -type f -printf '%f
+' | grep -E '^anyplay-cloud-[0-9]{8}T[0-9]{6}Z[.]tar[.]gz$' | sort | tail -n 1) || true
+    age=-1
+    [ -z "$newest" ] || age=$(( $(date +%s) - $(stat -c %Y "$backup_dir/$newest") ))
+    if [ -z "$newest" ] || [ "$age" -gt "$max_age" ]; then
+      log "no fresh backup archive in $backup_dir (newest: ${newest:-none}); restoring the previous sources, the running version was not touched"
+      restore_sources
+      return 1
+    fi
+    backup_path=$backup_dir/$newest
+    log "backup ok: $newest, ${age}s old; restore with deploy/restore.sh $backup_path"
+  fi
+
   # 5. Replace only the services whose image or settings changed. The cloud has one SQLite file and
   # so one writer: it stops and starts again in a few seconds, the relay and Caddy follow.
   log "starting the new version"
@@ -149,7 +200,13 @@ main() {
   else
     log "ROLLBACK FAILED: look at 'docker compose ps' and 'docker compose logs'"
   fi
-  log "data changes of a newer version (database migrations) are not undone; restore a backup for that"
+  log "data changes of a newer version (database migrations) are not undone; restore the backup for that."
+  log "Anything written after the backup (it was taken just before the new version started) is not in it:"
+  if [ -n "$backup_path" ]; then
+    log "  restore with deploy/restore.sh $backup_path --really   (without --really it only checks the archive)"
+  else
+    log "  restore with deploy/restore.sh <archive>; no backup was taken in this run"
+  fi
   return 1
 }
 

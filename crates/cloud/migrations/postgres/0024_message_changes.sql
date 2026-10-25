@@ -1,4 +1,4 @@
--- The schema of migrations/sqlite/0022_message_changes.sql for PostgreSQL.
+-- The schema of migrations/sqlite/0024_message_changes.sql for PostgreSQL.
 ALTER TABLE conversations ADD COLUMN rev BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE messages ADD COLUMN reply_seq BIGINT;
 ALTER TABLE messages ADD COLUMN edited_ms BIGINT;
