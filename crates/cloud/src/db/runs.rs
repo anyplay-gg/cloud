@@ -1,4 +1,4 @@
-//! Run reports (migration 0015).
+//! Run reports (migration 0016).
 
 use anyplay_api::{Os, RunReport, Verdict, VerdictCounts};
 
