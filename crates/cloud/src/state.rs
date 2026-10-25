@@ -243,13 +243,30 @@ impl Inner {
         }
     }
 
+    /// Reads what the friends of `account` see and marks it sent in one write transaction that
+    /// holds the account's presence: two refreshes at once (the game sets its activity while its
+    /// session opens) then run one after the other, and the later one reads what the earlier one
+    /// wrote. Read and marked apart, a refresh that read before a change could mark its older
+    /// presence after one that read after it, and the friends kept the older one with the higher
+    /// revision.
+    ///
+    /// An account without a presence row has nothing to tell yet: its first connection writes the
+    /// row and refreshes. On PostgreSQL a refresh without a row must stop there, since nothing is
+    /// locked: the row could appear between its read and its mark, and the mark would write the
+    /// offline presence it read over the one the first refresh told.
     async fn refresh_one(&self, account: u64) -> Result<(), AppError> {
         let presence = {
-            let mut conn = self.db.acquire().await?;
-            let mut presence = live::presence_of(&mut conn, account).await?;
-            let Some(revision) = live::mark_sent(&mut conn, account, &presence).await? else {
+            let mut tx = self.begin_write().await?;
+            if self.config.database_url.is_some() && !live::lock_presence(&mut tx, account).await? {
+                tx.commit().await?;
+                return Ok(());
+            }
+            let mut presence = live::presence_of(&mut tx, account).await?;
+            let Some(revision) = live::mark_sent(&mut tx, account, &presence).await? else {
+                tx.commit().await?;
                 return Ok(());
             };
+            tx.commit().await?;
             presence.revision = revision;
             presence
         };

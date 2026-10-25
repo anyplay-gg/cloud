@@ -764,6 +764,94 @@ async fn friends_see_a_joinable_session_in_presence() {
     let _ = Visibility::Invite;
 }
 
+/// A game sets its activity and opens its session at nearly the same time, as a launcher and a
+/// game do. Whatever the order, the last presence a friend is told is the one the cloud holds:
+/// with the session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_opened_while_the_activity_changes_reaches_friends() {
+    const ROUNDS: usize = 20;
+    let cloud = TestCloud::start().await;
+    let mut wrong = Vec::new();
+    for round in 0..ROUNDS {
+        let (a, b) = cloud
+            .friends(&format!("Alec{round}"), &format!("Sam{round}"))
+            .await;
+        let mut eb = cloud.events(b.token()).await;
+        let _ea = cloud.events(a.token()).await;
+        let _ = eb
+            .until(|e| matches!(e, Event::Presence { presence, .. } if presence.online))
+            .await;
+        let activity = json!({"activity": {"title_id": "GAME00001", "title": "Test Game", "version": "01.000"}});
+        let (presence, session) = tokio::join!(
+            cloud.put("/v1/presence", a.token(), Some(activity)),
+            cloud.post("/v1/sessions", a.token(), create_body(1, 4, "friends")),
+        );
+        presence.ok(204);
+        let session: Session = session.ok(200).json();
+        // Both requests have told the friends by the time they answer.
+        let mut last = None;
+        while let Some(event) = eb.next_within(Duration::from_millis(200)).await {
+            if let Event::Presence { presence, .. } = event
+                && last
+                    .as_ref()
+                    .is_none_or(|l: &anyplay_api::Presence| presence.revision > l.revision)
+            {
+                last = Some(presence);
+            }
+        }
+        let told = last
+            .and_then(|p| p.activity)
+            .and_then(|a| a.session)
+            .map(|s| s.id);
+        if told.as_deref() != Some(session.id.as_str()) {
+            wrong.push((round, told));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "rounds where the friend was told a stale presence: {wrong:?}"
+    );
+}
+
+/// A player sets an activity while their first connection opens. Whatever the order, the last
+/// presence a friend is told is online: never the offline one read before the connection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_activity_set_while_the_first_connection_opens_reaches_friends_online() {
+    const ROUNDS: usize = 20;
+    let cloud = TestCloud::start().await;
+    let mut wrong = Vec::new();
+    for round in 0..ROUNDS {
+        let (a, b) = cloud
+            .friends(&format!("Ada{round}"), &format!("Ben{round}"))
+            .await;
+        let mut eb = cloud.events(b.token()).await;
+        let activity = json!({"activity": {"title_id": "GAME00001", "title": "Test Game", "version": "01.000"}});
+        let (presence, _ea) = tokio::join!(
+            cloud.put("/v1/presence", a.token(), Some(activity)),
+            cloud.events(a.token()),
+        );
+        presence.ok(204);
+        let mut last = None;
+        while let Some(event) = eb.next_within(Duration::from_millis(200)).await {
+            if let Event::Presence { account, presence } = event
+                && account.0 == a.id
+                && last
+                    .as_ref()
+                    .is_none_or(|l: &anyplay_api::Presence| presence.revision > l.revision)
+            {
+                last = Some(presence);
+            }
+        }
+        if !last.as_ref().is_some_and(|p| p.online) {
+            wrong.push((round, last.map(|p| (p.online, p.revision))));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "rounds where the friend was last told offline: {wrong:?}"
+    );
+}
+
 #[tokio::test]
 async fn every_change_to_a_session_raises_its_revision() {
     let cloud = TestCloud::start().await;
