@@ -1902,3 +1902,234 @@ async fn an_account_with_a_passkey_changes_its_address_only_after_a_passkey() {
         .await
         .ok(200);
 }
+
+// The link of the app's account button
+
+/// A device with a key, signed in by API, and a link from the cloud the way the app asks for it.
+async fn account_link(cloud: &TestCloud, email: &str) -> (anyplay_api::SignedIn, String) {
+    let key = DeviceKey::generate();
+    let (challenge, code) = cloud.ask_for_code(email).await;
+    let reply = cloud
+        .request(
+            Method::POST,
+            "/v1/auth/code",
+            None,
+            Some(json!(anyplay_api::CodeRequest {
+                challenge: challenge.challenge,
+                code,
+                device: Device {
+                    name: "Keyed PC".into(),
+                    platform: Platform::Linux,
+                    key: Some(key.public()),
+                },
+            })),
+        )
+        .await
+        .ok(200);
+    let device = match reply.json() {
+        anyplay_api::CodeAnswer::SignedIn { tokens, me } => anyplay_api::SignedIn { tokens, me },
+        other => panic!("expected a sign-in, got {other:?}"),
+    };
+    let access = device.tokens.access.clone();
+    let proof = anyplay_proof::make(
+        &key,
+        &anyplay_proof::Subject {
+            method: "POST",
+            path: path::AUTH_BROWSER_LINK,
+            credential: &access,
+        },
+        now(),
+    );
+    let response = cloud
+        .http
+        .post(format!("http://{}{}", cloud.base, path::AUTH_BROWSER_LINK))
+        .bearer_auth(&access)
+        .header(anyplay_proof::HEADER, proof)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let link: anyplay_api::AccountLink = response.json().await.unwrap();
+    (device, link.url)
+}
+
+fn code_in(url: &str) -> String {
+    Url::parse(url)
+        .unwrap()
+        .query_pairs()
+        .find(|(k, _)| k == "c")
+        .unwrap()
+        .1
+        .into_owned()
+}
+
+#[tokio::test]
+async fn the_account_link_points_at_the_website_when_another_service_serves_it() {
+    let own = TestCloud::start().await;
+    let external = TestCloud::with(|c| c.portal_external = true, |_| {}).await;
+    for (cloud, expected) in [(&own, "/web/link"), (&external, "/link")] {
+        let alec = cloud.sign_up("Alec").await;
+        let (_, url) = account_link(cloud, &alec.email).await;
+        assert_eq!(Url::parse(&url).unwrap().path(), expected);
+        assert!(!code_in(&url).is_empty());
+    }
+
+    // The old address of a launcher from before the move goes on to the website. A cloud with
+    // its own account web keeps the page.
+    let alec = external.sign_up("Beth").await;
+    let (_, url) = account_link(&external, &alec.email).await;
+    let code = code_in(&url);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let old = client
+        .get(format!("http://{}/web/link?c={code}", external.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(old.status().as_u16(), 303);
+    assert_eq!(old.headers()["location"], format!("/link?c={code}"));
+    // The redirect used nothing up.
+    let portal = Portal::new(&external);
+    portal.session().await;
+    portal.get(&format!("/link/{code}")).await.ok(200);
+
+    let own_alec = own.sign_up("Cleo").await;
+    let (_, url) = account_link(&own, &own_alec.email).await;
+    let page = client
+        .get(format!("http://{}/web/link?c={}", own.base, code_in(&url)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.status().as_u16(), 200);
+}
+
+#[tokio::test]
+async fn the_link_page_asks_and_only_the_press_signs_the_browser_in() {
+    let cloud = TestCloud::with(|c| c.portal_external = true, |_| {}).await;
+    let alec = cloud.sign_up("Alec").await;
+    let (_, url) = account_link(&cloud, &alec.email).await;
+    let code = code_in(&url);
+
+    let portal = Portal::new(&cloud);
+    let first = portal.session().await;
+    // Asking names the account and does not use the code up, however often a program asks.
+    for _ in 0..3 {
+        let peek = portal.get(&format!("/link/{code}")).await.ok(200);
+        assert_eq!(peek["handle"], "Alec");
+    }
+    portal.get("/account").await.error(401, "unauthorized");
+
+    // A press without the token of the session signs nobody in and keeps the code.
+    portal
+        .dispatch(
+            portal
+                .client
+                .post(portal.url(&format!("{API}/link/{code}")))
+                .json(&json!({})),
+        )
+        .await
+        .error(401, "unauthorized");
+    // Neither does a press that is not JSON.
+    portal
+        .dispatch(
+            portal
+                .client
+                .post(portal.url(&format!("{API}/link/{code}")))
+                .header("x-csrf-token", portal.token())
+                .header("content-type", "text/plain")
+                .body("{}"),
+        )
+        .await
+        .error(415, "unsupported_media_type");
+    portal.get(&format!("/link/{code}")).await.ok(200);
+
+    let view = portal
+        .post(&format!("/link/{code}"), json!({}))
+        .await
+        .ok(200);
+    assert_eq!(view["signed_in"], true);
+    assert_eq!(view["account"]["handle"], "Alec");
+    assert_eq!(view["flow"]["step"], "done");
+    assert_ne!(view["csrf"], first["csrf"], "a new session");
+    portal.get("/account").await.ok(200);
+
+    // Used once, for a look as well as for a press.
+    portal
+        .get(&format!("/link/{code}"))
+        .await
+        .error(404, "not_found");
+    let again = Portal::new(&cloud);
+    again.session().await;
+    again
+        .post(&format!("/link/{code}"), json!({}))
+        .await
+        .error(404, "not_found");
+    again.get("/account").await.error(401, "unauthorized");
+
+    // A code nobody made, and one that is far too long.
+    portal.get("/link/nothing").await.error(404, "not_found");
+    portal
+        .get(&format!("/link/{}", "x".repeat(300)))
+        .await
+        .error(404, "not_found");
+
+    // The device that asked signing out kills a link it made.
+    let (device, url) = account_link(&cloud, &alec.email).await;
+    let code = code_in(&url);
+    cloud
+        .state
+        .sign_out_device(device.tokens.device)
+        .await
+        .unwrap();
+    let late = Portal::new(&cloud);
+    late.session().await;
+    late.post(&format!("/link/{code}"), json!({}))
+        .await
+        .error(404, "not_found");
+    late.get("/account").await.error(401, "unauthorized");
+}
+
+#[tokio::test]
+async fn a_banned_account_gets_no_session_from_a_link_but_the_statement() {
+    let cloud = TestCloud::with(
+        |c| {
+            c.portal_external = true;
+            c.admin_token = Some(ADMIN.into());
+        },
+        |_| {},
+    )
+    .await;
+    let alec = cloud.sign_up("Alec").await;
+    let (_, url) = account_link(&cloud, &alec.email).await;
+    let code = code_in(&url);
+    cloud
+        .request(
+            Method::POST,
+            "/admin/v1/bans",
+            Some(ADMIN),
+            Some(json!({"handle": "Alec", "rule": "cheating", "reason": "Test ban"})),
+        )
+        .await
+        .ok(200);
+
+    let portal = Portal::new(&cloud);
+    portal.session().await;
+    let refused = portal
+        .post(&format!("/link/{code}"), json!({}))
+        .await
+        .error(403, "banned");
+    assert!(refused["ban"].get("appeal_token").is_none(), "{refused}");
+    portal.get("/account").await.error(401, "unauthorized");
+    // The browser learns of the ban and shows the statement, where it can appeal.
+    assert_eq!(portal.session().await["flow"]["step"], "banned");
+    let shown = portal.get("/ban").await.ok(200);
+    assert_eq!(shown["reason"], "Test ban");
+    assert_eq!(shown["appeal"]["state"], "open");
+    // The code is used up.
+    portal
+        .get(&format!("/link/{code}"))
+        .await
+        .error(404, "not_found");
+}

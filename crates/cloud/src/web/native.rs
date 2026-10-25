@@ -21,12 +21,12 @@ use crate::state::AppState;
 use crate::util::now;
 
 /// The kind of one-time value behind a link to the account web.
-const LINK: &str = "link";
+pub(crate) const LINK: &str = "link";
 
 #[derive(Serialize, Deserialize)]
-struct LinkGrant {
-    account: u64,
-    device: u64,
+pub(crate) struct LinkGrant {
+    pub account: u64,
+    pub device: u64,
 }
 
 /// `POST /v1/auth/browser/token`: the app trades the code the browser brought to its loopback
@@ -105,8 +105,15 @@ pub async fn link(
         state.tuning.link_ttl,
     )
     .await?;
+    // With the account web on another service, the link opens its page; a cloud that serves
+    // its own account web keeps the page of the cloud.
+    let path = if state.config.portal_external {
+        "/link"
+    } else {
+        "/web/link"
+    };
     Ok(Json(AccountLink {
-        url: format!("{}/web/link?c={id}", web.origin),
+        url: format!("{}{path}?c={id}", web.origin),
         expires: now() + state.tuning.link_ttl.as_secs(),
     }))
 }
@@ -131,6 +138,17 @@ pub async fn link_page(
     headers: axum::http::HeaderMap,
     Query(query): Query<LinkQuery>,
 ) -> WebResult {
+    // Launchers of before the move hold links to this address.
+    if state.config.portal_external {
+        let to = match &query.c {
+            Some(code) => format!(
+                "/link?{}",
+                serde_urlencoded::to_string([("c", code)]).unwrap_or_default()
+            ),
+            None => "/link".to_owned(),
+        };
+        return Ok(super::redirect_plain(&to));
+    }
     let code = query.c.ok_or_else(expired_link)?;
     let data = store::flow_peek(&state.db, LINK, &code)
         .await?
