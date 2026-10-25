@@ -1,12 +1,13 @@
 //! The HTTP routes. Paths and their `{id}` placeholders come from `anyplay_api::path`.
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyplay_api::path;
 use axum::Router;
 use axum::extract::{MatchedPath, Request, State};
-use axum::http::{StatusCode, header};
+use axum::http::{Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
@@ -190,8 +191,121 @@ pub fn router(state: AppState) -> Router {
             );
             (axum::http::StatusCode::METHOD_NOT_ALLOWED, axum::Json(body))
         })
+        .layer(middleware::from_fn_with_state(
+            Arc::new(Guard::new(&state.config)),
+            guard,
+        ))
         .layer(middleware::from_fn_with_state(state.clone(), log_requests))
         .with_state(state)
+}
+
+/// What a node does to keep a slow store from piling requests up: it cuts off a request that takes
+/// too long and, when asked to, turns requests away once too many are in flight. Both answer 503
+/// with `Retry-After`, so a client backs off instead of waiting.
+struct Guard {
+    timeout: Option<Duration>,
+    permits: Option<Arc<tokio::sync::Semaphore>>,
+}
+
+impl Guard {
+    fn new(config: &crate::Config) -> Self {
+        Self {
+            timeout: (config.request_timeout_secs > 0)
+                .then(|| Duration::from_secs(config.request_timeout_secs)),
+            permits: (config.max_in_flight_requests > 0).then(|| {
+                Arc::new(tokio::sync::Semaphore::new(
+                    config.max_in_flight_requests as usize,
+                ))
+            }),
+        }
+    }
+}
+
+/// Routes left out of both limits. The event connection lives for hours: its handler answers the
+/// upgrade at once and the socket runs on a task of its own, but it stays out so that stays true.
+/// The health checks must answer exactly when the node is loaded: a shed liveness probe would make
+/// the orchestrator restart the pod then.
+fn is_exempt(route: &str) -> bool {
+    matches!(route, path::EVENTS | HEALTH | READY)
+}
+
+async fn guard(State(guard): State<Arc<Guard>>, request: Request, next: Next) -> Response {
+    let exempt = request
+        .extensions()
+        .get::<MatchedPath>()
+        .is_some_and(|m| is_exempt(m.as_str()));
+    if exempt || (guard.timeout.is_none() && guard.permits.is_none()) {
+        return next.run(request).await;
+    }
+    // Shed, never queue: a request that waits for a place only adds to the pile.
+    let permit = match &guard.permits {
+        Some(permits) => match permits.clone().try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                crate::metrics::REQUESTS_SHED.fetch_add(1, Ordering::Relaxed);
+                return busy(1, false);
+            }
+        },
+        None => None,
+    };
+    let Some(limit) = guard.timeout else {
+        let _permit = permit;
+        return next.run(request).await;
+    };
+    // A write that has begun is not cut off: it may have committed, or sit between its steps (the
+    // news and pushes after a commit), and dropping it half-way would leave the client to retry
+    // something that is already done. It runs to its end on a task of its own and only the wait
+    // for its answer stops; its place under the cap is held until it ends. A read has nothing to
+    // finish, so it is dropped.
+    let writes = !matches!(
+        *request.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS
+    );
+    if !writes {
+        let _permit = permit;
+        return match tokio::time::timeout(limit, next.run(request)).await {
+            Ok(response) => response,
+            Err(_) => timed_out(limit, false),
+        };
+    }
+    let mut task = tokio::spawn(async move {
+        let _permit = permit;
+        next.run(request).await
+    });
+    match tokio::time::timeout(limit, &mut task).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            tracing::error!(%error, "a request handler panicked");
+            AppError::internal().into_response()
+        }
+        // Dropping the handle leaves the task running.
+        Err(_) => timed_out(limit, true),
+    }
+}
+
+fn timed_out(limit: Duration, still_running: bool) -> Response {
+    crate::metrics::REQUEST_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+    tracing::warn!(
+        limit_secs = limit.as_secs(),
+        still_running,
+        "a request ran into the request timeout"
+    );
+    busy(2, still_running)
+}
+
+/// The 503 of the guard. For a write that keeps running it says so: the change may still land, so
+/// a client checks before it repeats a create.
+fn busy(retry_after: u64, write_may_finish: bool) -> Response {
+    let message = if write_may_finish {
+        "The cloud is busy. Your change may still go through; check before you try again."
+    } else {
+        "The cloud is busy. Try again in a moment."
+    };
+    let mut error = AppError::new(anyplay_api::ErrorCode::Internal, message);
+    error.retry_after = Some(retry_after);
+    let mut response = error.into_response();
+    *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+    response
 }
 
 /// `/metrics`, for the listener of its own.
@@ -258,6 +372,11 @@ async fn metrics(State(state): State<AppState>) -> Response {
     let text = state.metrics.render(&Snapshot {
         node: &state.node,
         connections,
+        pool: (
+            state.db.size(),
+            state.db.num_idle(),
+            state.db.options().get_max_connections(),
+        ),
         news_sent,
         news_received,
         push: state.push.as_ref().map(|p| {

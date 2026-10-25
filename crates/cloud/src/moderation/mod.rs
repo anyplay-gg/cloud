@@ -929,7 +929,8 @@ pub async fn sweep_retention(state: &crate::state::Inner) -> Result<store::Swept
     let config = &state.config;
     let now = now();
     let ago = |days: u64| now.saturating_sub(days.saturating_mul(DAY));
-    let mut conn = state.db.acquire().await?;
+    // The deletes are not capped, so they run without the statement timeout of requests.
+    let mut conn = crate::db::acquire_maintenance(&state.db).await?;
     let bans = store::delete_old_bans(&mut conn, ago(config.retention_bans_days)).await?;
     let actions = store::delete_old_actions(&mut conn, ago(config.retention_bans_days)).await?;
     let reports = store::delete_old_reports(

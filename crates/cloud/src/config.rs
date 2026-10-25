@@ -66,6 +66,18 @@ pub struct Config {
     pub database_url: Option<String>,
     /// The most connections the store keeps open.
     pub database_connections: u32,
+    /// How long a request waits for a free store connection before it is answered with a
+    /// retryable error. On SQLite it also bounds the wait in the writer queue.
+    pub database_acquire_timeout_ms: u64,
+    /// PostgreSQL only: a statement that runs longer is cancelled. `0` switches it off.
+    pub database_statement_timeout_ms: u64,
+    /// A request not answered within this many seconds gets a 503 with `Retry-After`. The event
+    /// connection, the metrics and the health checks are left out. `0` switches it off.
+    pub request_timeout_secs: u64,
+    /// The most requests a node works on at once; another is turned away with a 503 and
+    /// `Retry-After` instead of queueing. The event connection, the metrics and the health checks
+    /// do not count. `0` (the default) is no limit.
+    pub max_in_flight_requests: u32,
     /// A `nats://` URL. With it the cloud runs as one node of a cluster and tells the other
     /// nodes about changes over NATS.
     pub nats_url: Option<String>,
@@ -162,6 +174,10 @@ impl Default for Config {
             signing_key_file: None,
             database_url: None,
             database_connections: 16,
+            database_acquire_timeout_ms: 5000,
+            database_statement_timeout_ms: 15000,
+            request_timeout_secs: 30,
+            max_in_flight_requests: 0,
             nats_url: None,
             name: "AnyPlay cloud".into(),
             relays: Vec::new(),
@@ -276,6 +292,18 @@ impl Config {
         }
         if let Some(v) = get("DATABASE_CONNECTIONS") {
             self.database_connections = parse("DATABASE_CONNECTIONS", &v)?;
+        }
+        if let Some(v) = get("DATABASE_ACQUIRE_TIMEOUT_MS") {
+            self.database_acquire_timeout_ms = parse("DATABASE_ACQUIRE_TIMEOUT_MS", &v)?;
+        }
+        if let Some(v) = get("DATABASE_STATEMENT_TIMEOUT_MS") {
+            self.database_statement_timeout_ms = parse("DATABASE_STATEMENT_TIMEOUT_MS", &v)?;
+        }
+        if let Some(v) = get("REQUEST_TIMEOUT_SECS") {
+            self.request_timeout_secs = parse("REQUEST_TIMEOUT_SECS", &v)?;
+        }
+        if let Some(v) = get("MAX_IN_FLIGHT_REQUESTS") {
+            self.max_in_flight_requests = parse("MAX_IN_FLIGHT_REQUESTS", &v)?;
         }
         if let Some(v) = get("NATS_URL") {
             self.nats_url = Some(v);
@@ -423,6 +451,9 @@ impl Config {
         }
         if self.database_connections == 0 {
             bail!("database_connections must be at least 1");
+        }
+        if self.database_acquire_timeout_ms < 100 {
+            bail!("database_acquire_timeout_ms must be at least 100");
         }
         if let Some(url) = &self.nats_url {
             if !(url.starts_with("nats://") || url.starts_with("tls://")) {

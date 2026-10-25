@@ -32,3 +32,9 @@ URLs in config.relays. The guide is docs/kubernetes.md.
 
 WARNING: config.mail is "log": sign-in codes are written to the log. Use smtp outside of tests.
 {{- end }}
+{{- $nodes := ternary .Values.autoscaling.maxReplicas .Values.replicas .Values.autoscaling.enabled }}
+{{- $connections := mul (int $nodes) (int .Values.config.databaseConnections) }}
+{{- if gt (mul $connections 100) (mul (int .Values.config.postgresMaxConnections) 80) }}
+
+WARNING: {{ $nodes }} nodes x {{ .Values.config.databaseConnections }} connections is {{ $connections }}, more than 80 percent of the {{ .Values.config.postgresMaxConnections }} connections PostgreSQL allows (config.postgresMaxConnections). Raise max_connections, lower config.databaseConnections or autoscaling.maxReplicas, or put PgBouncer in between (docs/kubernetes.md).
+{{- end }}

@@ -194,6 +194,9 @@ impl TestCloud {
             database_url,
             // Many test clouds share one database server.
             database_connections: 4,
+            // Dozens of test clouds open databases on one server at once, which can take longer
+            // than the production default; the tests of the limit set their own.
+            database_acquire_timeout_ms: 30_000,
             nats_url,
             // Tests make friends minutes after signing up; the rule has its own tests.
             new_account_hours: 0,

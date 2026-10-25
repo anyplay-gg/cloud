@@ -32,6 +32,10 @@
         "termsVersion": { "type": "string" },
         "trustProxy": { "type": "boolean" },
         "databaseConnections": { "type": "integer", "minimum": 1 },
+        "postgresMaxConnections": { "type": "integer", "minimum": 1 },
+        "databaseAcquireTimeoutMs": { "type": "integer", "minimum": 100 },
+        "databaseStatementTimeoutMs": { "type": "integer", "minimum": 0 },
+        "requestTimeoutSecs": { "type": "integer", "minimum": 0 },
         "drainSeconds": { "type": "integer", "minimum": 0 },
         "logFormat": { "enum": ["json", "text"] },
         "extra": { "type": "object" }

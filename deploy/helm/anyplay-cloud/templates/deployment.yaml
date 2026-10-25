@@ -68,6 +68,12 @@ spec:
               value: {{ .Values.natsUrl | quote }}
             - name: ANYPLAY_CLOUD_DATABASE_CONNECTIONS
               value: {{ .Values.config.databaseConnections | quote }}
+            - name: ANYPLAY_CLOUD_DATABASE_ACQUIRE_TIMEOUT_MS
+              value: {{ .Values.config.databaseAcquireTimeoutMs | quote }}
+            - name: ANYPLAY_CLOUD_DATABASE_STATEMENT_TIMEOUT_MS
+              value: {{ .Values.config.databaseStatementTimeoutMs | quote }}
+            - name: ANYPLAY_CLOUD_REQUEST_TIMEOUT_SECS
+              value: {{ .Values.config.requestTimeoutSecs | quote }}
             - name: ANYPLAY_CLOUD_NAME
               value: {{ .Values.config.name | quote }}
             - name: ANYPLAY_CLOUD_MAIL

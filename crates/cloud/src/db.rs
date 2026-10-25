@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::time::Duration;
 
 use anyplay_api::handle_skeleton;
 use sqlx::any::{AnyPoolOptions, install_default_drivers};
@@ -38,6 +39,8 @@ type Conn = sqlx::AnyConnection;
 /// its place, or the node's writers stop.
 pub struct Writer {
     queue: Option<std::sync::Arc<tokio::sync::Mutex<()>>>,
+    /// The longest a transaction waits for its turn in the queue.
+    acquire_timeout: Duration,
 }
 
 /// A transaction from [`Writer::begin`]. On SQLite it keeps its place in the queue until it ends.
@@ -54,23 +57,54 @@ impl Writer {
     pub fn new(sqlite: bool) -> Self {
         Self {
             queue: sqlite.then(Default::default),
+            acquire_timeout: Limits::default().acquire_timeout,
         }
     }
 
+    /// Sets how long a transaction waits for its turn on SQLite. The pool has its own limit for
+    /// the connection.
+    pub fn acquire_timeout(mut self, timeout: Duration) -> Self {
+        self.acquire_timeout = timeout;
+        self
+    }
+
+    /// Fails with [`sqlx::Error::PoolTimedOut`] when the turn or a connection takes longer than
+    /// the acquire timeout, instead of queueing for as long as the writers ahead take.
     pub async fn begin(&self, pool: &Pool) -> sqlx::Result<WriteTx> {
-        match &self.queue {
+        let started = std::time::Instant::now();
+        let result = self.begin_inner(pool).await;
+        // The waits that ran into the timeout are the saturated case, so they count too.
+        crate::metrics::WRITE_WAIT.observe(started.elapsed());
+        result
+    }
+
+    /// Like [`Writer::begin`] for the transactions of maintenance (deletion), whose statements may
+    /// run longer than a request may: on PostgreSQL the statement timeout is off for this
+    /// transaction only.
+    pub async fn begin_maintenance(&self, pool: &Pool) -> sqlx::Result<WriteTx> {
+        let mut tx = self.begin(pool).await?;
+        if tx.backend_name() == "PostgreSQL" {
+            tx.execute("SET LOCAL statement_timeout = 0").await?;
+        }
+        Ok(tx)
+    }
+
+    async fn begin_inner(&self, pool: &Pool) -> sqlx::Result<WriteTx> {
+        Ok(match &self.queue {
             Some(queue) => {
-                let turn = queue.clone().lock_owned().await;
-                Ok(WriteTx {
+                let turn = tokio::time::timeout(self.acquire_timeout, queue.clone().lock_owned())
+                    .await
+                    .map_err(|_| sqlx::Error::PoolTimedOut)?;
+                WriteTx {
                     tx: Some(pool.begin_with("BEGIN IMMEDIATE").await?),
                     turn: Some(turn),
-                })
+                }
             }
-            None => Ok(WriteTx {
+            None => WriteTx {
                 tx: Some(pool.begin().await?),
                 turn: None,
-            }),
-        }
+            },
+        })
     }
 }
 
@@ -123,10 +157,56 @@ pub enum Location<'a> {
     Postgres(&'a str),
 }
 
-/// Opens the store with at most `connections` connections and brings its tables up to date.
+/// What bounds the store's connections and queries.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// The most connections the pool keeps open.
+    pub connections: u32,
+    /// The longest a query waits for a free connection.
+    pub acquire_timeout: Duration,
+    /// PostgreSQL only: the longest a statement runs. Zero is no limit.
+    pub statement_timeout: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            connections: 16,
+            acquire_timeout: Duration::from_millis(5000),
+            statement_timeout: Duration::from_millis(15000),
+        }
+    }
+}
+
+/// A connection for maintenance that runs longer than a request may (the retention sweeps). On
+/// PostgreSQL it comes without the statement timeout. It leaves the pool and is closed when
+/// dropped, so no request ever inherits the missing limit.
+pub async fn acquire_maintenance(pool: &Pool) -> sqlx::Result<Conn> {
+    let mut conn = pool.acquire().await?;
+    if conn.backend_name() == "PostgreSQL" {
+        conn.execute("SET statement_timeout = 0").await?;
+    }
+    Ok(conn.detach())
+}
+
+/// Opens the store with at most `connections` connections and the other limits at their defaults.
 pub async fn open(location: Location<'_>, connections: u32) -> anyhow::Result<Pool> {
+    open_with(
+        location,
+        Limits {
+            connections,
+            ..Limits::default()
+        },
+    )
+    .await
+}
+
+/// Opens the store and brings its tables up to date.
+pub async fn open_with(location: Location<'_>, limits: Limits) -> anyhow::Result<Pool> {
     install_default_drivers();
-    let options = AnyPoolOptions::new().max_connections(connections);
+    let options = AnyPoolOptions::new()
+        .max_connections(limits.connections)
+        .acquire_timeout(limits.acquire_timeout);
     match location {
         Location::File(path) => {
             // WAL belongs to the file, so it is set once, before the pool opens connections.
@@ -153,8 +233,32 @@ pub async fn open(location: Location<'_>, connections: u32) -> anyhow::Result<Po
             Ok(pool)
         }
         Location::Postgres(url) => {
-            let pool = options.connect(url).await?;
-            sqlx::migrate!("./migrations/postgres").run(&pool).await?;
+            // Migrations may run longer than a request may, so they get a connection of their own
+            // that has no limits; the pool that serves requests opens after them.
+            let migrations = AnyPoolOptions::new()
+                .max_connections(1)
+                .connect(url)
+                .await?;
+            sqlx::migrate!("./migrations/postgres")
+                .run(&migrations)
+                .await?;
+            migrations.close().await;
+            let statement_ms = limits.statement_timeout.as_millis();
+            let pool = options
+                .after_connect(move |conn, _| {
+                    Box::pin(async move {
+                        conn.execute(sqlx::AssertSqlSafe(format!(
+                            "SET statement_timeout = {statement_ms}"
+                        )))
+                        .await?;
+                        // A client that vanished inside a transaction would hold its locks.
+                        conn.execute("SET idle_in_transaction_session_timeout = '30s'")
+                            .await?;
+                        Ok(())
+                    })
+                })
+                .connect(url)
+                .await?;
             Ok(pool)
         }
     }
@@ -386,7 +490,7 @@ pub async fn insert_account(
 /// Deletes an account and everything that hangs on it. Bans, the actions against the account
 /// and reports about it stay until their retention ends; reports it filed lose their link to it.
 pub async fn delete_account(writer: &Writer, pool: &Pool, id: u64) -> sqlx::Result<()> {
-    let mut tx = writer.begin(pool).await?;
+    let mut tx = writer.begin_maintenance(pool).await?;
     crate::moderation::store::forget_reporter(&mut tx, id).await?;
     // Foreign keys cascade to devices, friends, requests and blocks.
     sqlx::query("DELETE FROM accounts WHERE id = $1")
@@ -1538,6 +1642,28 @@ mod tests {
             assert!(next.is_ok(), "round {round}: {:?}", next.err());
             next.unwrap().commit().await.unwrap();
         }
+    }
+
+    /// A writer behind a long transaction gives up after the acquire timeout instead of queueing
+    /// for as long as the one ahead takes.
+    #[tokio::test]
+    async fn a_writer_waiting_for_its_turn_times_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = open(Location::File(&dir.path().join("cloud.db")), 4)
+            .await
+            .unwrap();
+        let writer = Writer::new(true).acquire_timeout(Duration::from_millis(200));
+        let first = writer.begin(&pool).await.unwrap();
+        // The wait that ends in the timeout is in the histogram as well: it is the saturated case.
+        let slow = crate::metrics::WRITE_WAIT.count_above(0.1);
+        let started = std::time::Instant::now();
+        let second = writer.begin(&pool).await;
+        assert!(matches!(second, Err(sqlx::Error::PoolTimedOut)));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(crate::metrics::WRITE_WAIT.count_above(0.1) > slow);
+        // The one ahead is not disturbed and the queue works again after it.
+        first.commit().await.unwrap();
+        writer.begin(&pool).await.unwrap().commit().await.unwrap();
     }
 
     /// A writer that stops waiting for its turn (its client went away) leaves the queue, and the

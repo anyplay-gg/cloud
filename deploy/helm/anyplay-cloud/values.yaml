@@ -38,7 +38,19 @@ config:
   termsVersion: ""
   # The nodes sit behind an Ingress or load balancer that sets X-Forwarded-For.
   trustProxy: true
+  # Connections per node. nodes x databaseConnections must stay below your PostgreSQL
+  # max_connections with room for the operator; NOTES.txt warns above 80 percent of
+  # postgresMaxConnections. Put PgBouncer (CloudNativePG can run it) in between before the nodes
+  # number in the dozens.
   databaseConnections: 16
+  # The max_connections of your PostgreSQL (its default is 100). Only the install notes read it.
+  postgresMaxConnections: 100
+  # Milliseconds a request waits for a database connection before it gets a retryable 429.
+  databaseAcquireTimeoutMs: 5000
+  # Milliseconds a PostgreSQL statement may run (0 = no limit).
+  databaseStatementTimeoutMs: 15000
+  # Seconds before a request gets a 503 (0 = no limit). Event connections are left out.
+  requestTimeoutSecs: 30
   # Seconds a node reports itself not ready after SIGTERM before it closes its connections.
   drainSeconds: 5
   logFormat: json

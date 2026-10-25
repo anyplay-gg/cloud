@@ -210,7 +210,7 @@ impl Inner {
             .unwrap_or(i64::MAX / DAY_MS)
             .saturating_mul(DAY_MS);
         let cut = now_ms.saturating_sub(keep);
-        let mut conn = self.db.acquire().await?;
+        let mut conn = crate::db::acquire_maintenance(&self.db).await?;
         party::sweep_missed(
             &mut conn,
             now_ms.saturating_sub(MISSED_CALL_DAYS * DAY_MS) / 1000,
