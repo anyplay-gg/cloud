@@ -123,9 +123,17 @@ Each activity lists the items required by Art. 30(1)(b) to (g): purposes, catego
 | Erasure | Not defined (gap G10). Proposed: 30 days, and a restore must replay deletions. |
 | Security | `[ENCRYPTED, EU, ACCESS LIST]` |
 
-### P9. In flight: trophy records, profiles, messages, feed
+### P9. Social layer: profiles, trophies, messages, feed, parties, calls
 
-Not in the code yet (see the [inventory](data-inventory.md#in-flight-social-layer)). Add one activity per feature when it lands. Messages need their own entry, purpose, retention and moderator access rule before release.
+Built (see [inventory section 7](data-inventory.md#7-the-social-layer)). One activity each for the operator to fill in the same way as P1 to P8:
+
+| Activity | Purpose | Data subjects | Data | Recipients | Erasure |
+|---|---|---|---|---|---|
+| Profile, avatar, trophies, playtime, run reports | Show a profile and compare with friends | Players | About text, favourites, picture, trophies, playtime, reports | Friends, or everyone (including signed-out visitors) as the player chooses | Life of the account |
+| Messages | Deliver messages | Players | Text, sender, time, read marks | Conversation members; moderators on a report | 30 days after sending; own messages on deletion |
+| Feed | Tell friends what happened | Players | Items, reactions, list of titles seen | Friends | Items 90 days; list for the life of the account |
+| Parties, calls, sessions, join codes | Play and talk together | Players | Handle, endpoint, relay, address, voice flag, missed calls | Members, friends of members, holders of a join code | Minutes to 30 days |
+| Notifications | Push notices | Players who switch them on | Push address and keys | The browser maker's push service | Until switched off |
 
 ## Security measures, general (Art. 30(1)(g))
 

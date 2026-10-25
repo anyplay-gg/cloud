@@ -2,7 +2,7 @@
 
 Groundwork for anyone who runs an AnyPlay cloud in the EU. They cover the GDPR (Regulation (EU) 2016/679) and the Digital Services Act (Regulation (EU) 2022/2065). They are written from what the code stores and logs.
 
-> **This is not legal advice, and no lawyer has read it.** The notes below (inventory, record, DSA, open questions) are drafts written from the code. The privacy notice and the terms of use are final texts, published on 25 October 2026 at https://anyplaynet.com/privacy and https://anyplaynet.com/terms. The operator decided to publish them without a lawyer's review and under the name "AnyPlay", with no person's name or address. Their one source is the website repository: [privacy.tsx](https://github.com/anyplaynet/web/blob/main/apps/web/src/components/legal/privacy.tsx) and [terms.tsx](https://github.com/anyplaynet/web/blob/main/apps/web/src/components/legal/terms.tsx). Change the text there, in the same pull request as any change to the code it describes, and raise the version and date in `meta.ts` and `TERMS_VERSION`. Statements marked "inference" are ours, not the law's.
+> **This is not legal advice, and no lawyer has read it.** The notes below (inventory, record, DSA, open questions) are drafts written from the code. The privacy notice and the terms of use are final texts, published on 25 October 2026 at https://anyplaynet.com/privacy and https://anyplaynet.com/terms. The operator of anyplaynet.com, a private person, decided to publish them without a lawyer's review. The legal notice (Impressum) is published with them at https://anyplaynet.com/legal. The name and address of the operator appear only in those three texts, which live in the website repository, never in this repository. These files in this folder stay generic: other operators fill the placeholders in their own copy. The source of the three texts is the website repository: [privacy.tsx](https://github.com/anyplaynet/web/blob/main/apps/web/src/components/legal/privacy.tsx) and [terms.tsx](https://github.com/anyplaynet/web/blob/main/apps/web/src/components/legal/terms.tsx). Change the text there, in the same pull request as any change to the code it describes, and raise the version and date in `meta.ts` and `TERMS_VERSION`. The cloud needs `PRIVACY_URL`, `TERMS_URL` and `TERMS_VERSION` in `deploy/.env`, and `deploy/web.caddy` must route `/legal`, `/privacy` and `/terms` to the website ([deploy.md](../deploy.md)). Statements marked "inference" are ours, not the law's.
 
 ## Where the law comes from
 
@@ -14,8 +14,9 @@ The documents cite the article and paragraph and link the text: [GDPR](https://e
 |---|---|---|
 | [data-inventory.md](data-inventory.md) | Every kind of personal data the cloud and relay store or log, where, why, how long, who sees it, and the gaps in the code. | Draft, from the code at the base commit |
 | [records-of-processing.md](records-of-processing.md) | A record of processing activities under GDPR Art. 30. | Draft, operator fills the placeholders |
-| [privacy notice](https://github.com/anyplaynet/web/blob/main/apps/web/src/components/legal/privacy.tsx) | The privacy notice for players (Art. 12 to 14). | Published, version 1 |
-| [terms of use](https://github.com/anyplaynet/web/blob/main/apps/web/src/components/legal/terms.tsx) | Terms of use: clean-line duties, moderation, appeal, age. | Published, version 1 |
+| [legal notice](https://github.com/anyplaynet/web/blob/main/apps/web/src/components/legal/notice.tsx) | Impressum (§ 5 DDG), person responsible for content (§ 18(2) MStV), consumer arbitration statement (§ 36 VSBG) and the DSA Art. 11 and 12 contact points. | Published, version 2 |
+| [privacy notice](https://github.com/anyplaynet/web/blob/main/apps/web/src/components/legal/privacy.tsx) | The privacy notice for players (Art. 12 to 14). | Published, version 2 |
+| [terms of use](https://github.com/anyplaynet/web/blob/main/apps/web/src/components/legal/terms.tsx) | Terms of use: clean-line duties, moderation, appeal, age. | Published, version 2 |
 | [dsa.md](dsa.md) | The DSA category, the duties of a small provider, and the engineering tasks. | Draft |
 | [open-questions.md](open-questions.md) | What the lawyer must answer, by risk. | Draft |
 
@@ -25,26 +26,26 @@ The documents cite the article and paragraph and link the text: [GDPR](https://e
 
 | # | Needed | Source | Status |
 |---|---|---|---|
-| 1 | Operator identity, legal form, address, contact (imprint if commercial) | GDPR Art. 13(1)(a); DSA Art. 11, 12; DDG § 5 | **Decided:** the operator is named "AnyPlay"; the contact is one e-mail address; no person or street address is published. Whether that meets DDG § 5 and GDPR Art. 13(1)(a) for this service is not settled. |
+| 1 | Operator identity, legal form, address, contact (imprint if commercial) | GDPR Art. 13(1)(a); DSA Art. 11, 12; DDG § 5 | **Done** for anyplaynet.com: the operator is a private person; name, postal address and e-mail are in the [legal notice](https://anyplaynet.com/legal), the privacy notice and the terms. |
 | 2 | Lawyer has read all documents here and answered [open-questions.md](open-questions.md) | | **Open** |
-| 3 | Privacy notice, published at `privacy_url` | GDPR Art. 12 to 14 | **Published** (anyplaynet.com/privacy) |
-| 4 | Terms of use, published at `terms_url`, machine-readable | DSA Art. 14 | **Published** (anyplaynet.com/terms) |
+| 3 | Privacy notice, published at `privacy_url` | GDPR Art. 12 to 14 | **Published** ([anyplaynet.com/privacy](https://anyplaynet.com/privacy)), version 2 |
+| 4 | Terms of use, published at `terms_url`, machine-readable | DSA Art. 14 | **Published** ([anyplaynet.com/terms](https://anyplaynet.com/terms)), version 2 |
 | 5 | Record of processing, filled in | GDPR Art. 30 | Draft |
 | 6 | Data protection impact assessment decision, and one if needed | GDPR Art. 35 | **Open.** Question O3. |
 | 7 | Processor contracts: mail provider, hosting, backup, relay host | GDPR Art. 28 | **Open.** Question O6. |
 | 8 | Breach process: who decides, 72-hour notice to the authority, notice to players | GDPR Art. 33, 34 | **Open.** Question O7. |
-| 9 | Point of contact for authorities, and for players, published | DSA Art. 11, 12 | **Open** (no page, no address) |
-| 10 | Notice form for illegal content, receipt and decision | DSA Art. 16 | **Code.** Tasks T1, T2 in [dsa.md](dsa.md). |
+| 9 | Point of contact for authorities, and for players, published | DSA Art. 11, 12 | **Done** for anyplaynet.com: [legal notice](https://anyplaynet.com/legal), section "Points of contact under the DSA". |
+| 10 | Notice form for illegal content, receipt and decision | DSA Art. 16 | **Interim** for anyplaynet.com: notices go to the operator's `abuse@` address, as the [terms](https://anyplaynet.com/terms#notices) say. **Code:** the form and the receipt, tasks T1, T2 in [dsa.md](dsa.md). |
 | 11 | Statement of reasons for bans | DSA Art. 17 | **Built** for the app and the API (task T4, [moderation.md](../moderation.md)). **Code:** the mail. |
-| 12 | Appeal route | DSA Art. 20 (voluntary), Art. 17(3)(f) | **Built** (task T5). |
+| 12 | Appeal route | DSA Art. 20 (voluntary), Art. 17(3)(f) | **Built** (task T5); the [terms](https://anyplaynet.com/terms#appeal) describe it and give the contact address as a fallback. |
 | 13 | Moderation audit log, per-person admin access | DSA Art. 9, 10; GDPR Art. 5(2) | **Built** for moderation: audit log and moderator accounts (task T6). **Open:** the log of orders from authorities. |
 | 14 | Retention rules in force: bans, reports, devices, inactive accounts, logs | GDPR Art. 5(1)(e) | **Partly.** Bans, reports, actions, appeals and the audit log are swept (G1, G2 closed). **Code:** devices and inactive accounts (G3), log retention (G5). |
 | 15 | No e-mail addresses or codes in logs: `mail = smtp`, log rotation, relay and proxy log settings | GDPR Art. 5(1)(c), 32 | **Code and configuration.** Gaps G4, G5. |
-| 16 | Age and terms version recorded at sign-up | GDPR Art. 7(1) if consent, Art. 5(2); DSA Art. 14(2) | **Done for new accounts** (migration 0008, account web, `terms_version`). Gap G9 keeps the question of older accounts. |
-| 17 | Access and deletion work for all stored data, backups included | GDPR Art. 15, 17, 20 | **Partly.** Gaps G6, G7, G10. |
+| 16 | Age and terms version recorded at sign-up | GDPR Art. 7(1) if consent, Art. 5(2); DSA Art. 14(2) | **Done for new accounts** (migration 0008, account web, `terms_version`); raising `TERMS_VERSION` makes every account accept again at its next web sign-in. Gap G9 keeps the question of older accounts. |
+| 17 | Access and deletion work for all stored data, backups included | GDPR Art. 15, 17, 20 | **Partly.** The export is built but incomplete (G6); deletion has a 30-day grace period (G7, partly closed); backups are covered by G10. |
 | 18 | Procedure for threats to life and orders from authorities | DSA Art. 9, 10, 18 | **Open.** Task T7. |
 | 19 | Launcher: local storage and the privacy text | TDDDG § 25; GDPR Art. 13 | **Open.** Question O9. |
-| 20 | Chat and voice: youth-protection duties | JMStV, JuSchG | **Open.** Question O2. Needed before messages and voice ship. |
+| 20 | Chat and voice: youth-protection duties | JMStV, JuSchG | **Open, and overdue:** messages, voice and calls are live. Question O2. |
 | 21 | Cyber Resilience Act position of the launcher | CRA | **Open.** Question O13. |
 | 22 | Data, logs and backups in the EU, confirmed per provider | GDPR Chapter V | **Open** |
 
@@ -54,7 +55,7 @@ The inventory is the base. The record, the privacy notice and the terms are buil
 
 ## Status of the social layer
 
-Trophy records (migration 0003), profiles, messages and the feed are not in the code at the base commit. The inventory lists what to add when they land, following the network decisions ([ADR 0009 to 0012](https://github.com/anyplaynet/network/tree/main/docs/adr)). Messages change the risk picture most.
+Trophy records, profiles, avatars, messages, the feed, parties, calls, join codes, linked accounts and notifications are built. [Section 7 of the inventory](data-inventory.md#7-the-social-layer) describes them from the code. Messages change the risk picture most: they are stored as plain text for 30 days and are not end-to-end encrypted. Following the network decisions ([ADR 0009 to 0012](https://github.com/anyplaynet/network/tree/main/docs/adr)).
 
 ## For contributors
 
