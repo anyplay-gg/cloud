@@ -123,6 +123,9 @@ pub struct Config {
     /// For how many days a device may sign in without a device key, and so refresh without a
     /// proof. 0 makes the key mandatory ([ADR 0016 of the network]).
     pub legacy_device_days: u64,
+    /// For how many seconds after a refresh token was replaced the device may ask again with it,
+    /// when its proof is valid: the answer may have been lost. 0 treats every reuse as theft.
+    pub refresh_replay_grace_secs: u64,
     /// The folder with the built web portal (a single-page app: `index.html` and its assets).
     /// With it the cloud serves the portal from its own origin. Needs `public_url`.
     pub portal_dir: Option<PathBuf>,
@@ -189,6 +192,7 @@ impl Default for Config {
             public_url: None,
             terms_version: None,
             legacy_device_days: 30,
+            refresh_replay_grace_secs: 120,
             portal_dir: None,
             portal_external: false,
             discord_client_id: None,
@@ -368,6 +372,9 @@ impl Config {
         if let Some(v) = get("LEGACY_DEVICE_DAYS") {
             self.legacy_device_days = parse("LEGACY_DEVICE_DAYS", &v)?;
         }
+        if let Some(v) = get("REFRESH_REPLAY_GRACE_SECS") {
+            self.refresh_replay_grace_secs = parse("REFRESH_REPLAY_GRACE_SECS", &v)?;
+        }
         if let Some(v) = get("PORTAL_DIR") {
             self.portal_dir = Some(v.into());
         }
@@ -487,6 +494,9 @@ impl Config {
         }
         if self.legacy_device_days > 365 {
             bail!("legacy_device_days must be at most 365");
+        }
+        if self.refresh_replay_grace_secs > 3600 {
+            bail!("refresh_replay_grace_secs must be at most 3600");
         }
         if self.portal_external {
             if self.portal_dir.is_some() {
@@ -1040,6 +1050,30 @@ mod tests {
         config.legacy_device_days = 400;
         assert!(config.validate().is_err());
         assert_eq!(Config::default().web_origin(), None);
+    }
+
+    #[test]
+    fn the_refresh_replay_grace_is_read_and_checked() {
+        let mut config = Config::default();
+        assert_eq!(config.refresh_replay_grace_secs, 120);
+        // The name an operator sets is `ANYPLAY_CLOUD_` plus this one.
+        config
+            .apply_env(|name| (name == "REFRESH_REPLAY_GRACE_SECS").then(|| "30".into()))
+            .unwrap();
+        assert_eq!(config.refresh_replay_grace_secs, 30);
+        config.validate().unwrap();
+        assert!(
+            Config::default()
+                .apply_env(|name| (name == "REFRESH_REPLAY_GRACE_SECS").then(|| "soon".into()))
+                .is_err(),
+            "not a number"
+        );
+        config.refresh_replay_grace_secs = 0;
+        config.validate().unwrap();
+        config.refresh_replay_grace_secs = 3600;
+        config.validate().unwrap();
+        config.refresh_replay_grace_secs = 3601;
+        assert!(config.validate().is_err());
     }
 
     #[test]
