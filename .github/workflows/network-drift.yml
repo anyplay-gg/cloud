@@ -1,0 +1,56 @@
+name: network-drift
+
+# The cloud builds against the network commit in network.ref, so a merge on the network's main
+# cannot break this repository by surprise. This job looks ahead: it builds and tests the cloud's
+# main against the network's current main, every night and on demand. A red run means the next
+# bump of network.ref needs cloud changes; it blocks nothing. The summary lists the network
+# commits between the pin and main.
+
+on:
+  schedule:
+    - cron: "37 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloud
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: cloud
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: anyplay-gg/network
+          ref: main
+          fetch-depth: 0
+          path: network
+      - name: Network commits since the pin
+        run: |
+          pin=$(tr -d "[:space:]" < "$GITHUB_WORKSPACE/cloud/network.ref")
+          {
+            echo "### Network main is $(git -C ../network rev-parse --short HEAD), the cloud is pinned to ${pin:0:7}"
+            echo
+            git -C ../network log --oneline "$pin..HEAD" | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: cloud
+      - name: Build against network main
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace
