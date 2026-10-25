@@ -401,6 +401,7 @@ fn on_text(ctx: &Ctx, text: &str) {
         Ok(Event::Read { .. }) => rec.event("read"),
         Ok(Event::Conversation { .. }) => rec.event("conversation"),
         Ok(Event::ConversationGone { .. }) => rec.event("conversation_gone"),
+        Ok(Event::Feed) => rec.event("feed"),
         Ok(Event::Action { .. }) => rec.event("action"),
         Ok(Event::Unknown) | Err(_) => rec.event("unknown"),
     }

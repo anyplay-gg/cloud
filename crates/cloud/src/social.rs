@@ -134,6 +134,8 @@ impl Inner {
         let mut conn = self.db.acquire().await?;
         chat::sweep_retention(&mut conn, cut).await?;
         chat::sweep_empty(&mut conn, cut).await?;
+        drop(conn);
+        self.sweep_feed().await?;
         Ok(())
     }
 }

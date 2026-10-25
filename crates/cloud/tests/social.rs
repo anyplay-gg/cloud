@@ -52,6 +52,9 @@ async fn a_friend_request_is_accepted_and_both_sides_are_told() {
         .ok(204);
     assert_eq!(ea.next().await, Event::Friends);
     assert_eq!(eb.next().await, Event::Friends);
+    // The friendship is an item in both feeds.
+    assert_eq!(ea.next().await, Event::Feed);
+    assert_eq!(eb.next().await, Event::Feed);
     let alec = lists(cloud.get("/v1/friends", a.token()).await);
     assert_eq!(alec.friends.len(), 1);
     assert_eq!(alec.friends[0].account.id, AccountId(b.id));
@@ -266,6 +269,8 @@ async fn friends_see_when_a_friend_comes_online_plays_and_goes_offline() {
     let playing: Activity = presence.activity.expect("an activity");
     assert_eq!(playing.title_id, "GAME00001");
     assert_eq!(playing.session, None);
+    // A game played for the first time is news for the feed as well.
+    assert!(matches!(ea.next().await, Event::Feed));
     // The same activity again is not news.
     cloud
         .put("/v1/presence", b.token(), Some(activity("GAME00001")))

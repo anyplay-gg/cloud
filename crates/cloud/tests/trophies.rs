@@ -455,7 +455,7 @@ async fn export_holds_the_records_and_deletion_removes_them() {
     assert_eq!(
         export["privacy"],
         json!({"trophies": "nobody", "about": "friends", "favourites": "friends",
-               "avatar": "friends", "playtime": "friends"})
+               "avatar": "friends", "playtime": "friends", "feed": "friends"})
     );
 
     cloud.delete_account_now(&alec).await;
