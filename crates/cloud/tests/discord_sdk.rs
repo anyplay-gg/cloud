@@ -212,13 +212,13 @@ async fn dump(pool: &anyplay_cloud::db::Pool) -> String {
                 .collect::<Vec<_>>()
                 .join(" || '|' || ");
             for row in sqlx::query(sqlx::AssertSqlSafe(format!(
-                "SELECT {joined} FROM \"{table}\""
+                "SELECT CAST({joined} AS BLOB) FROM \"{table}\""
             )))
             .fetch_all(pool)
             .await
             .unwrap()
             {
-                out.push_str(&row.get::<String, _>(0));
+                out.push_str(&String::from_utf8_lossy(&row.get::<Vec<u8>, _>(0)));
                 out.push('\n');
             }
         }
