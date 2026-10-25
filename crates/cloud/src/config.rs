@@ -1053,6 +1053,30 @@ mod tests {
     }
 
     #[test]
+    fn the_refresh_replay_grace_is_read_and_checked() {
+        let mut config = Config::default();
+        assert_eq!(config.refresh_replay_grace_secs, 120);
+        // The name an operator sets is `ANYPLAY_CLOUD_` plus this one.
+        config
+            .apply_env(|name| (name == "REFRESH_REPLAY_GRACE_SECS").then(|| "30".into()))
+            .unwrap();
+        assert_eq!(config.refresh_replay_grace_secs, 30);
+        config.validate().unwrap();
+        assert!(
+            Config::default()
+                .apply_env(|name| (name == "REFRESH_REPLAY_GRACE_SECS").then(|| "soon".into()))
+                .is_err(),
+            "not a number"
+        );
+        config.refresh_replay_grace_secs = 0;
+        config.validate().unwrap();
+        config.refresh_replay_grace_secs = 3600;
+        config.validate().unwrap();
+        config.refresh_replay_grace_secs = 3601;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
     fn the_connection_settings_are_read_and_checked() {
         let mut config = Config::default();
         assert!(config.discord().is_none() && config.steam_key().is_none());

@@ -295,6 +295,98 @@ async fn a_replaced_refresh_token_with_a_valid_proof_is_a_lost_answer() {
 }
 
 #[tokio::test]
+async fn two_requests_with_the_same_current_token_do_not_sign_the_device_out() {
+    // A grace of one second, so that after a pause only the newest token still works.
+    let cloud = TestCloud::with(|c| c.refresh_replay_grace_secs = 1, |_| {}).await;
+    let alec = cloud.sign_up("Alec").await;
+    let key = DeviceKey::generate();
+    let device = sign_in(&cloud, &alec.email, "pc", Some(&key)).await;
+    let r0 = device.tokens.refresh.clone();
+
+    // Each request has its own proof, so neither is a replayed one.
+    let (proof_a, proof_b) = (proof_for(&key, &r0, now()), proof_for(&key, &r0, now()));
+    assert_ne!(proof_a, proof_b);
+    let (a, b) = tokio::join!(
+        refresh(&cloud, &r0, Some(&proof_a), None),
+        refresh(&cloud, &r0, Some(&proof_b), None),
+    );
+    let (a, b) = (tokens(a), tokens(b));
+    assert_ne!(a.refresh, b.refresh);
+    assert_eq!(me_status(&cloud, &a.access).await, 200);
+    assert_eq!(me_status(&cloud, &b.access).await, 200);
+
+    // One of the two answers is the end of the chain and the other the token before it. Once the
+    // grace is over only the end works; asking with the other one ends the family.
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    let first = refresh(
+        &cloud,
+        &a.refresh,
+        Some(&proof_for(&key, &a.refresh, now())),
+        None,
+    )
+    .await;
+    if first.status == 200 {
+        let next: Tokens = first.json();
+        assert_eq!(me_status(&cloud, &next.access).await, 200);
+        let third = step(&cloud, &key, &next.refresh).await;
+        assert_eq!(me_status(&cloud, &third.access).await, 200);
+    } else {
+        first.is_error("unauthorized", 401);
+        // `a` was the older one and asking with it ended the family, so `b` is dead as well:
+        // the two answers were one chain, not two.
+        refresh(
+            &cloud,
+            &b.refresh,
+            Some(&proof_for(&key, &b.refresh, now())),
+            None,
+        )
+        .await
+        .is_error("unauthorized", 401);
+    }
+}
+
+/// Waits until `offset_ms` after the start of a whole second, so that a request and the second
+/// counter the cloud stores agree on which second it is.
+async fn align_to_second(offset_ms: u64) {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let wait = (1000 + offset_ms - ms % 1000) % 1000;
+    tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+}
+
+#[tokio::test]
+async fn the_grace_ends_after_exactly_that_many_seconds() {
+    const GRACE: u64 = 2;
+    let cloud = TestCloud::with(|c| c.refresh_replay_grace_secs = GRACE, |_| {}).await;
+    let alec = cloud.sign_up("Alec").await;
+    let early = DeviceKey::generate();
+    let late = DeviceKey::generate();
+    let on_time = sign_in(&cloud, &alec.email, "on time", Some(&early)).await;
+    let too_late = sign_in(&cloud, &alec.email, "too late", Some(&late)).await;
+
+    // Replace both tokens in the same second, 200 ms into it. A request 2 s later is at age 2,
+    // which is not over the grace; one 3 s later is at age 3.
+    align_to_second(200).await;
+    let r0 = on_time.tokens.refresh.clone();
+    let l0 = too_late.tokens.refresh.clone();
+    let r1 = step(&cloud, &early, &r0).await;
+    let l1 = step(&cloud, &late, &l0).await;
+
+    tokio::time::sleep(std::time::Duration::from_secs(GRACE)).await;
+    let r2 = tokens(refresh(&cloud, &r0, Some(&proof_for(&early, &r0, now())), None).await);
+    assert_ne!(r2.refresh, r1.refresh);
+    assert_eq!(me_status(&cloud, &r2.access).await, 200, "age == grace");
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    refresh(&cloud, &l0, Some(&proof_for(&late, &l0, now())), None)
+        .await
+        .is_error("unauthorized", 401);
+    assert_eq!(me_status(&cloud, &l1.access).await, 401, "age > grace");
+}
+
+#[tokio::test]
 async fn a_replaced_refresh_token_without_a_valid_proof_does_not_sign_out() {
     let cloud = TestCloud::start().await;
     let alec = cloud.sign_up("Alec").await;
