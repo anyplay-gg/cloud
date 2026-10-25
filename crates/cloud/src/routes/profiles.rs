@@ -3,8 +3,8 @@
 use anyplay_api::{
     AboutProblem, AvatarSet, FavouritesProblem, MAX_ABOUT, MAX_AVATAR_UPLOAD, MAX_DAY_MINUTES,
     MAX_FAVOURITES, MAX_PLAYTIME_UPLOAD, Part, PlaytimeAdded, PlaytimeUpload, Profile, ProfileLink,
-    ProfilePage, ProfileUpdate, check_about, check_favourites, day_number, is_avatar_hash,
-    is_title_id,
+    ProfilePage, ProfileUpdate, TrophyLevel, check_about, check_favourites, day_number,
+    is_avatar_hash, is_title_id,
 };
 use axum::Json;
 use axum::extract::{Path, Request, State};
@@ -70,10 +70,11 @@ pub async fn of_account(
     let seen = viewing(&state.db, auth.account, id).await?;
     let profile = profile_seen(&state, &seen, id).await?;
     let trophies = if seen.can(Part::Trophies) {
-        Some(db::trophy_counts(&state.db, id).await?)
+        Some(db::trophy_counts(&state.db, id, auth.account).await?)
     } else {
         None
     };
+    let level = trophies.map(|count| TrophyLevel::of(count.points()));
     let links = crate::links::public(&state, id, &seen)
         .await?
         .into_iter()
@@ -85,6 +86,7 @@ pub async fn of_account(
     Ok(Json(ProfilePage {
         profile,
         trophies,
+        level,
         links,
     }))
 }

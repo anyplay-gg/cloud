@@ -983,27 +983,145 @@ pub async fn add_trophies(
     Ok(added)
 }
 
-/// All records of an account, by title and number.
-pub async fn trophies_of(pool: &Pool, account: u64) -> sqlx::Result<Vec<TrophyRow>> {
-    sqlx::query_as(
-        "SELECT title_id, number, grade, earned FROM trophies WHERE account_id = $1 \
-         ORDER BY title_id, number",
+/// The condition that keeps the records of `trophies` that `viewer` may see: all of the viewer's
+/// own, and of anyone else's those not marked secret or already revealed. `viewer` is the SQL for
+/// the viewer's account ID (a placeholder or a number; 0 is nobody).
+fn seen_by(viewer: &str) -> String {
+    format!(
+        "(trophies.account_id = {viewer} OR NOT EXISTS (SELECT 1 FROM trophy_secrets s \
+         WHERE s.account_id = trophies.account_id AND s.title_id = trophies.title_id \
+         AND s.number = trophies.number AND s.revealed = 0))"
     )
+}
+
+/// The records of an account that `viewer` may see, by title and number.
+pub async fn trophies_of(pool: &Pool, account: u64, viewer: u64) -> sqlx::Result<Vec<TrophyRow>> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT title_id, number, grade, earned FROM trophies WHERE account_id = $1 AND {} \
+         ORDER BY title_id, number",
+        seen_by("$2")
+    )))
     .bind(i(account))
+    .bind(i(viewer))
     .fetch_all(pool)
     .await
 }
 
-/// An account's trophy records counted per title and grade, with the time of the latest.
+/// The records of an account in one title that `viewer` may see, by number.
+pub async fn trophies_in_title(
+    pool: &Pool,
+    account: u64,
+    viewer: u64,
+    title_id: &str,
+) -> sqlx::Result<Vec<TrophyRow>> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT title_id, number, grade, earned FROM trophies \
+         WHERE account_id = $1 AND title_id = $3 AND {} ORDER BY number",
+        seen_by("$2")
+    )))
+    .bind(i(account))
+    .bind(i(viewer))
+    .bind(title_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Marks trophy numbers of a title as secret. A number marked already keeps its state (a
+/// revealed one stays revealed). Returns how many are newly marked.
+pub async fn mark_secret(
+    writer: &Writer,
+    pool: &Pool,
+    account: u64,
+    title_id: &str,
+    numbers: &[u16],
+) -> sqlx::Result<u32> {
+    let mut tx = writer.begin(pool).await?;
+    let mut changed = 0;
+    for number in numbers {
+        let new = sqlx::query(
+            "INSERT INTO trophy_secrets (account_id, title_id, number, revealed) \
+             VALUES ($1, $2, $3, 0) ON CONFLICT DO NOTHING",
+        )
+        .bind(i(account))
+        .bind(title_id)
+        .bind(i64::from(*number))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        changed += u32::from(new > 0);
+    }
+    tx.commit().await?;
+    Ok(changed)
+}
+
+/// Reveals secret trophies. Returns how many were secret until now.
+pub async fn reveal_secret(
+    writer: &Writer,
+    pool: &Pool,
+    account: u64,
+    title_id: &str,
+    numbers: &[u16],
+) -> sqlx::Result<u32> {
+    let mut tx = writer.begin(pool).await?;
+    let mut changed = 0;
+    for number in numbers {
+        let done = sqlx::query(
+            "UPDATE trophy_secrets SET revealed = 1 \
+             WHERE account_id = $1 AND title_id = $2 AND number = $3 AND revealed = 0",
+        )
+        .bind(i(account))
+        .bind(title_id)
+        .bind(i64::from(*number))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        changed += u32::from(done > 0);
+    }
+    tx.commit().await?;
+    Ok(changed)
+}
+
+/// Every trophy an account marked secret: title, number and whether it is revealed.
+pub async fn trophy_secrets_of(
+    pool: &Pool,
+    account: u64,
+) -> sqlx::Result<Vec<(String, i64, bool)>> {
+    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT title_id, number, revealed FROM trophy_secrets WHERE account_id = $1          ORDER BY title_id, number",
+    )
+    .bind(i(account))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(t, n, r)| (t, n, r != 0)).collect())
+}
+
+/// The numbers of a title that are secret and not revealed yet.
+pub async fn secret_numbers(pool: &Pool, account: u64, title_id: &str) -> sqlx::Result<Vec<i64>> {
+    let rows: Vec<(i64,)> = sqlx::query_as(
+        "SELECT number FROM trophy_secrets \
+         WHERE account_id = $1 AND title_id = $2 AND revealed = 0",
+    )
+    .bind(i(account))
+    .bind(title_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(n,)| n).collect())
+}
+
+/// An account's trophy records that `viewer` may see, counted per title and grade, with the time
+/// of the latest.
 pub async fn trophy_summary(
     pool: &Pool,
     account: u64,
+    viewer: u64,
 ) -> sqlx::Result<Vec<(String, anyplay_api::Grade, u32, u64)>> {
-    let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+    let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT title_id, grade, COUNT(*), MAX(earned) FROM trophies WHERE account_id = $1 \
-         GROUP BY title_id, grade ORDER BY title_id, grade",
-    )
+         AND {} GROUP BY title_id, grade ORDER BY title_id, grade",
+        seen_by("$2")
+    )))
     .bind(i(account))
+    .bind(i(viewer))
     .fetch_all(pool)
     .await?;
     Ok(rows
@@ -1019,13 +1137,20 @@ pub async fn trophy_summary(
         .collect())
 }
 
-/// The number of an account's records per grade.
-pub async fn trophy_counts(pool: &Pool, account: u64) -> sqlx::Result<anyplay_api::Count> {
-    let rows: Vec<(String, i64)> =
-        sqlx::query_as("SELECT grade, COUNT(*) FROM trophies WHERE account_id = $1 GROUP BY grade")
-            .bind(i(account))
-            .fetch_all(pool)
-            .await?;
+/// The number of an account's records per grade that `viewer` may see.
+pub async fn trophy_counts(
+    pool: &Pool,
+    account: u64,
+    viewer: u64,
+) -> sqlx::Result<anyplay_api::Count> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT grade, COUNT(*) FROM trophies WHERE account_id = $1 AND {} GROUP BY grade",
+        seen_by("$2")
+    )))
+    .bind(i(account))
+    .bind(i(viewer))
+    .fetch_all(pool)
+    .await?;
     let mut count = anyplay_api::Count::default();
     for (grade, n) in rows {
         add_to_count(&mut count, &grade, n);
@@ -1038,14 +1163,16 @@ pub async fn trophy_counts(pool: &Pool, account: u64) -> sqlx::Result<anyplay_ap
 pub async fn trophy_counts_of(
     conn: &mut Conn,
     accounts: &[u64],
+    viewer: u64,
 ) -> sqlx::Result<HashMap<u64, anyplay_api::Count>> {
     if accounts.is_empty() {
         return Ok(HashMap::new());
     }
     let rows: Vec<(i64, String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT account_id, grade, COUNT(*) FROM trophies WHERE account_id IN ({}) \
+        "SELECT account_id, grade, COUNT(*) FROM trophies WHERE account_id IN ({}) AND {} \
          GROUP BY account_id, grade",
-        id_list(accounts)
+        id_list(accounts),
+        seen_by(&i(viewer).to_string())
     )))
     .fetch_all(conn)
     .await?;
