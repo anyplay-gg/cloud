@@ -21,6 +21,7 @@ pub mod chat;
 pub mod cli;
 pub mod config;
 pub mod db;
+pub mod discord_sdk;
 pub mod feed;
 pub mod http;
 pub mod joins;

@@ -12,10 +12,13 @@ publish = false
 anyplay-bridge-protocol = { path = "../../../network/crates/bridge-protocol" }
 anyplay-cloud = { path = "../cloud" }
 anyplay-control = { path = "../../../network/crates/control" }
+anyplay-discord = { path = "../../../network/crates/discord" }
 anyplay-fake-game = { path = "../../../network/crates/fake-game" }
 anyplay-net = { path = "../../../network/crates/net" }
 anyplay-relay = { path = "../relay" }
 anyplay-ticket.workspace = true
+axum.workspace = true
+serde_urlencoded.workspace = true
 iroh-base = "1.4.1"
 iroh-relay = { version = "1.4.1", features = ["server"] }
 reqwest.workspace = true

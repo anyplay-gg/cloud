@@ -18,6 +18,7 @@ use crate::state::AppState;
 pub mod accounts;
 pub mod admin;
 pub mod auth;
+pub mod discord;
 pub mod events;
 pub mod feed;
 pub mod friends;
@@ -86,6 +87,8 @@ pub fn router(state: AppState) -> Router {
         .route(path::FEED_REACTION, put(feed::react).delete(feed::unreact))
         .route(path::MY_PLAYTIME, put(profiles::upload_playtime))
         .route(path::RELAY_TICKETS, post(misc::relay_tickets))
+        .route(path::ME_DISCORD_TOKEN, post(discord::token))
+        .route(path::ME_DISCORD_REFRESH, post(discord::refresh))
         .route(path::REPORTS, post(misc::report))
         .route(path::EVENTS, get(events::events))
         .route(

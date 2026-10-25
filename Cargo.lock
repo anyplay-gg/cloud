@@ -197,22 +197,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyplay-discord"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "anyplay-e2e"
 version = "0.1.0"
 dependencies = [
  "anyplay-bridge-protocol",
  "anyplay-cloud",
  "anyplay-control",
+ "anyplay-discord",
  "anyplay-fake-game",
  "anyplay-net",
  "anyplay-relay",
  "anyplay-ticket",
+ "axum",
  "iroh-base",
  "iroh-relay",
  "reqwest",
  "rustls",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "tempfile",
  "tokio",
 ]
@@ -254,6 +266,7 @@ dependencies = [
  "anyplay-api",
  "anyplay-bridge-protocol",
  "anyplay-control",
+ "anyplay-discord",
  "anyplay-proof",
  "anyplay-share",
  "anyplay-voice",
