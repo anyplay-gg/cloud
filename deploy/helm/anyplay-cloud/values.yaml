@@ -36,6 +36,9 @@ config:
   publicUrl: ""
   # The version of the terms in force; players who accepted another are asked again.
   termsVersion: ""
+  # The oldest launcher version the API accepts (docs/configuration.md, "Retiring old launchers").
+  # Empty: no launcher is refused.
+  minLauncherVersion: ""
   # The nodes sit behind an Ingress or load balancer that sets X-Forwarded-For.
   trustProxy: true
   # Connections per node. nodes x databaseConnections must stay below your PostgreSQL

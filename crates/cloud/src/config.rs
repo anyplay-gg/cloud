@@ -96,6 +96,10 @@ pub struct Config {
     pub terms_url: Option<String>,
     pub trust_proxy: bool,
     pub admin_token: Option<String>,
+    /// The oldest launcher version the API accepts, such as `0.3.0`. A launcher below it gets
+    /// `client_too_old` (426) on every `/v1/` request except `GET /v1/info`. Absent or empty:
+    /// no launcher is refused.
+    pub min_launcher_version: Option<String>,
     /// How many days messages are kept before the sweeps delete them.
     pub message_retention_days: u64,
     /// How many days feed items are kept before the sweeps delete them, with their reactions.
@@ -193,6 +197,7 @@ impl Default for Config {
             terms_url: None,
             trust_proxy: false,
             admin_token: None,
+            min_launcher_version: None,
             message_retention_days: 30,
             feed_retention_days: 90,
             join_code_minutes: 120,
@@ -354,6 +359,9 @@ impl Config {
         if let Some(v) = get("ADMIN_TOKEN") {
             self.admin_token = Some(v);
         }
+        if let Some(v) = get("MIN_LAUNCHER_VERSION") {
+            self.min_launcher_version = Some(v.trim().to_owned());
+        }
         if let Some(v) = get("MESSAGE_RETENTION_DAYS") {
             self.message_retention_days = parse("MESSAGE_RETENTION_DAYS", &v)?;
         }
@@ -482,6 +490,14 @@ impl Config {
             && token.len() < 16
         {
             bail!("admin_token must have at least 16 characters");
+        }
+        if let Some(text) = self.min_launcher_version.as_deref().map(str::trim)
+            && !text.is_empty()
+            && text.parse::<anyplay_api::client::Version>().is_err()
+        {
+            bail!(
+                "min_launcher_version must be a plain version such as 0.3.0 (or empty): {text:?}"
+            );
         }
         if let Some(secret) = &self.ban_secret
             && secret.len() < 16
@@ -634,6 +650,16 @@ impl Config {
             .as_deref()
             .map(str::trim)
             .filter(|v| !v.is_empty())
+    }
+
+    /// The oldest launcher version the API accepts; none when the gate is off. `validate` has
+    /// checked that it reads.
+    pub fn min_launcher(&self) -> Option<anyplay_api::client::Version> {
+        self.min_launcher_version
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .and_then(|v| v.parse().ok())
     }
 
     /// The URL the admin commands use to reach this cloud on the same machine.
@@ -1145,5 +1171,39 @@ mod tests {
         };
         empty.validate().unwrap();
         assert!(empty.discord().is_none());
+    }
+
+    #[test]
+    fn the_minimum_launcher_is_off_unless_set_and_must_be_a_version() {
+        let mut config = Config::default();
+        assert_eq!(config.min_launcher_version, None);
+        assert_eq!(config.min_launcher(), None);
+        // The name an operator sets is `ANYPLAY_CLOUD_` plus this one.
+        config
+            .apply_env(|name| (name == "MIN_LAUNCHER_VERSION").then(|| " 0.3.0 ".into()))
+            .unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.min_launcher().unwrap().as_str(), "0.3.0");
+
+        // An empty variable counts as not set, and an empty value in the file is off.
+        let mut config = Config::default();
+        config
+            .apply_env(|name| (name == "MIN_LAUNCHER_VERSION").then(|| "  ".into()))
+            .unwrap();
+        assert_eq!(config.min_launcher_version, None);
+        let empty: Config = toml::from_str("min_launcher_version = \"\"").unwrap();
+        empty.validate().unwrap();
+        assert_eq!(empty.min_launcher(), None);
+        let file: Config = toml::from_str("min_launcher_version = \"0.3.0-beta.1\"").unwrap();
+        file.validate().unwrap();
+        assert_eq!(file.min_launcher().unwrap().as_str(), "0.3.0-beta.1");
+
+        for bad in ["0.3", "v0.3.0", "0.3.0+build", "latest", "0.3.x"] {
+            let mut config = Config::default();
+            config
+                .apply_env(|name| (name == "MIN_LAUNCHER_VERSION").then(|| bad.into()))
+                .unwrap();
+            assert!(config.validate().is_err(), "{bad:?}");
+        }
     }
 }

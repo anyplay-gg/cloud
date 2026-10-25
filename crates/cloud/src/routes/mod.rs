@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use anyplay_api::client::{CLIENT_HEADER, Version, launcher_too_old};
 use anyplay_api::path;
 use axum::Router;
 use axum::extract::{MatchedPath, Request, State};
@@ -195,8 +196,57 @@ pub fn router(state: AppState) -> Router {
             Arc::new(Guard::new(&state.config)),
             guard,
         ))
+        .layer(middleware::from_fn_with_state(
+            Arc::new(ClientGate::new(&state.config)),
+            client_gate,
+        ))
         .layer(middleware::from_fn_with_state(state.clone(), log_requests))
         .with_state(state)
+}
+
+/// Retires old launchers (`min_launcher_version`): a request that names itself
+/// `X-AnyPlay-Client: launcher/<version>` with a version below the minimum is refused with
+/// `client_too_old` (426) before it is handled. It covers every `/v1/` path, the event
+/// handshake included, except `GET /v1/info`, which an old client may still read. Anything else
+/// passes: no header, a value that does not read, another product. Health checks, metrics and the
+/// account web are not under `/v1/`.
+struct ClientGate {
+    minimum: Option<Version>,
+}
+
+impl ClientGate {
+    fn new(config: &crate::Config) -> Self {
+        // `Config::validate` has refused a value that does not read; a hand-built config that
+        // skipped it gets no gate rather than a panic.
+        Self {
+            minimum: config.min_launcher(),
+        }
+    }
+}
+
+async fn client_gate(
+    State(gate): State<Arc<ClientGate>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Some(minimum) = &gate.minimum {
+        let route = request.uri().path();
+        if route.starts_with("/v1/") && route != path::INFO {
+            let client = request
+                .headers()
+                .get(CLIENT_HEADER)
+                .and_then(|v| v.to_str().ok());
+            if launcher_too_old(client, minimum) {
+                let mut error = AppError::new(
+                    anyplay_api::ErrorCode::ClientTooOld,
+                    format!("This launcher is too old. Update to {minimum} or newer."),
+                );
+                error.body.minimum = Some(minimum.as_str().into());
+                return error.into_response();
+            }
+        }
+    }
+    next.run(request).await
 }
 
 /// What a node does to keep a slow store from piling requests up: it cuts off a request that takes

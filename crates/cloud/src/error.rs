@@ -80,7 +80,7 @@ impl AppError {
             ErrorCode::VersionMismatch,
             "The game version or the AnyPS5 build differs from the session's.",
         );
-        error.body.expected = Some(expected);
+        error.body.expected = Some(Box::new(expected));
         error
     }
 

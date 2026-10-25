@@ -67,6 +67,21 @@ When a mail cannot be sent, the cloud logs one line at error level, such as `can
 
 The line carries the SMTP `status` when the server answered with one, and `reply`, the server's own words with every e-mail address taken out (such as `domain is not verified`). It never carries the address, the code or a secret. A mail the server accepted is logged at info level as `sign-in code accepted by the mail server`; if that line appears and the mail never arrives, the problem is behind the server (sender domain, spam filtering), not in the cloud. To try the settings without a player, run `anyplay-cloud admin mail-test <address>` (needs `admin_token`); it sends one short mail through the running cloud and prints `sent` or `failed: <class> (SMTP <status>)` and the server's reply.
 
+### Retiring old launchers
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `min_launcher_version` | none | The oldest launcher version the API accepts, such as `0.3.0` (plain `major.minor.patch`, optionally with a pre-release). A launcher below it is refused with `client_too_old` (HTTP 426, body `minimum`) on every `/v1/` request, the event connection included, except `GET /v1/info`; the launcher shows its "Update required" screen. Empty or unset: no launcher is refused. A value that is not a version stops the start. The environment variable is `ANYPLAY_CLOUD_MIN_LAUNCHER_VERSION`; `deploy/.env` calls it `MIN_LAUNCHER_VERSION`. |
+
+Only a client that sends `X-AnyPlay-Client: launcher/<version>` is checked ([cloud API](https://github.com/anyplaynet/network/blob/main/spec/cloud-api.md#conventions)). Browsers, the account web, the net service on its own, tools, and launchers that send nothing keep working; `/healthz`, `/readyz`, `/metrics` and the `/web` paths are never under the gate. Refused requests show in `anyplay_cloud_http_requests_total` with `status="426"`.
+
+To retire old launchers:
+
+1. Raise it only after the release that fixes things has been out for a while, so that players have been offered the update through the launcher's own updater. Keep it aligned with the launcher's signed `minimum_version` (the launcher repository's `UPDATE_MINIMUM_VERSION`, see its `docs/UPDATES.md`): a launcher below that number cannot update itself from the manifest and needs the installer, so a cloud minimum well above it sends such players to an update screen their launcher cannot act on by itself.
+2. Set `MIN_LAUNCHER_VERSION=<version>` in `cloud/deploy/.env` (on a Helm deployment, `config.minLauncherVersion`; in a file, `min_launcher_version`).
+3. Restart the cloud: `cloud/deploy/update.sh` recreates the container with the new value (see [deploy.md](deploy.md)). Check with `curl -s -H 'X-AnyPlay-Client: launcher/0.0.1' https://<host>/v1/friends`, which answers 426 and the minimum.
+4. To turn it off, empty the variable (or remove the line) and run `deploy/update.sh` again. Requests pass again at once after the restart.
+
 ### Moderation settings
 
 The model, the commands and what players see are in [moderation.md](moderation.md). The settings:

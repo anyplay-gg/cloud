@@ -100,6 +100,10 @@ spec:
             - name: ANYPLAY_CLOUD_PUBLIC_URL
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.config.minLauncherVersion }}
+            - name: ANYPLAY_CLOUD_MIN_LAUNCHER_VERSION
+              value: {{ . | quote }}
+            {{- end }}
             {{- with .Values.config.termsVersion }}
             - name: ANYPLAY_CLOUD_TERMS_VERSION
               value: {{ . | quote }}
