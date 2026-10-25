@@ -904,3 +904,58 @@ async fn every_replaced_text_is_held_for_a_report() {
         assert!(content.contains(text), "{content}");
     }
 }
+
+#[tokio::test]
+async fn a_late_member_hears_nothing_of_older_messages_and_reactions_come_in_number_order() {
+    let cloud = cloud().await;
+    let hub = cloud.sign_up("Hub").await;
+    let (bea, cyd, dee) = (
+        cloud.sign_up("Bea").await,
+        cloud.sign_up("Cyd").await,
+        cloud.sign_up("Dee").await,
+    );
+    for pal in [&bea, &cyd, &dee] {
+        befriend(&cloud, &hub, pal).await;
+    }
+    let group = open(&cloud, &hub, &[&bea, &cyd]).await;
+    let old = say(&cloud, &hub, &group.id, "before dee").await;
+    cloud
+        .post(
+            &format!("/v1/conversations/{}/members", group.id),
+            hub.token(),
+            json!({"accounts": [dee.id]}),
+        )
+        .await
+        .ok(200);
+    let mut late = cloud.events(dee.token()).await;
+    // The later account reacts first; the answer still lists accounts by number.
+    react(&cloud, &cyd, &group.id, old.seq, "gg").await.ok(200);
+    let both = react(&cloud, &bea, &group.id, old.seq, "gg")
+        .await
+        .ok(200)
+        .json::<Message>();
+    let ids: Vec<u64> = both.reactions[0].accounts.iter().map(|a| a.0).collect();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    assert_eq!(ids, sorted);
+    nothing_like(&mut late, |e| matches!(e, Event::MessageUpdate { .. })).await;
+}
+
+#[tokio::test]
+async fn a_message_can_be_edited_only_so_often_and_the_export_lists_reactions() {
+    let cloud = cloud().await;
+    let (alec, bea) = cloud.friends("Alec", "Bea").await;
+    let chat = open(&cloud, &alec, &[&bea]).await;
+    let one = say(&cloud, &alec, &chat.id, "v0").await;
+    react(&cloud, &bea, &chat.id, one.seq, "wow").await.ok(200);
+    for k in 1..=20 {
+        edit(&cloud, &alec, &chat.id, one.seq, &format!("v{k}"))
+            .await
+            .ok(200);
+    }
+    edit(&cloud, &alec, &chat.id, one.seq, "v21")
+        .await
+        .is_error("limit", 409);
+    let export: Value = cloud.get("/v1/me/export", bea.token()).await.ok(200).body;
+    assert_eq!(export["message_reactions"][0]["reaction"], "wow");
+}

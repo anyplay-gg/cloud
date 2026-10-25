@@ -453,6 +453,18 @@ pub async fn hold_text(
     Ok(())
 }
 
+/// How many texts are held for a message: how often it was edited.
+pub async fn count_holds(conn: &mut Conn, conversation: &str, seq: u64) -> sqlx::Result<i64> {
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM message_holds WHERE conversation_id = $1 AND seq = $2",
+    )
+    .bind(conversation)
+    .bind(i(seq))
+    .fetch_one(conn)
+    .await?;
+    Ok(n)
+}
+
 /// Every held text of a message, oldest first, that was held no earlier than `not_before_ms`.
 pub async fn held_texts(
     conn: &mut Conn,
@@ -711,7 +723,7 @@ async fn add_reactions(
     };
     let rows: Vec<(i64, i64, String)> = sqlx::query_as(
         "SELECT seq, account_id, reaction FROM message_reactions \
-         WHERE conversation_id = $1 AND seq >= $2 AND seq <= $3 ORDER BY created_ms, account_id",
+         WHERE conversation_id = $1 AND seq >= $2 AND seq <= $3 ORDER BY seq, account_id",
     )
     .bind(conversation)
     .bind(i(low))
@@ -722,11 +734,15 @@ async fn add_reactions(
         return Ok(());
     }
     let blocked = blocked_members(conn, conversation, viewer).await?;
+    let mut by_seq: std::collections::HashMap<u64, Vec<&(i64, i64, String)>> =
+        std::collections::HashMap::new();
+    for row in &rows {
+        if !blocked.contains(&u(row.1)) {
+            by_seq.entry(u(row.0)).or_default().push(row);
+        }
+    }
     for message in messages.iter_mut() {
-        let of: Vec<&(i64, i64, String)> = rows
-            .iter()
-            .filter(|(seq, account, _)| u(*seq) == message.seq && !blocked.contains(&u(*account)))
-            .collect();
+        let of = by_seq.remove(&message.seq).unwrap_or_default();
         message.reactions = MessageReaction::ALL
             .into_iter()
             .filter_map(|reaction| {

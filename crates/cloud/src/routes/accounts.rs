@@ -85,6 +85,10 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
     let playtime = db::profiles::playtime_of(&state.db, account_id).await?;
     let feed_items = db::feed::items_about(&state.db, account_id).await?;
     let feed_reactions = db::feed::reactions_by(&state.db, account_id).await?;
+    let message_reactions = {
+        let mut conn = state.db.acquire().await?;
+        crate::chat::reactions_by(&mut conn, account_id).await?
+    };
     let (conversations, messages, party) = {
         let mut conn = state.db.acquire().await?;
         let conversations = crate::chat::conversations_of(&mut conn, account_id).await?;
@@ -176,6 +180,9 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
         })).collect::<Vec<_>>(),
         "party": party,
         "conversations": conversations,
+        "message_reactions": message_reactions.iter().map(|(conversation, seq, reaction)| json!({
+            "conversation": conversation, "seq": seq, "reaction": reaction,
+        })).collect::<Vec<_>>(),
         "messages": messages.iter().map(|m| json!({
             "conversation": m.conversation, "seq": m.seq, "text": m.text, "created": m.created,
             "edited": m.edited, "unsent": m.deleted, "reply": m.reply,

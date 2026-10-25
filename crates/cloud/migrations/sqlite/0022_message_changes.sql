@@ -43,3 +43,5 @@ CREATE TABLE message_holds (
     FOREIGN KEY (conversation_id, seq) REFERENCES messages (conversation_id, seq) ON DELETE CASCADE
 ) STRICT;
 CREATE INDEX message_holds_held ON message_holds (held_ms);
+
+CREATE INDEX message_reactions_account ON message_reactions (account_id);

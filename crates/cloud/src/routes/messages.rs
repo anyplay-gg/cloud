@@ -27,6 +27,8 @@ use crate::state::AppState;
 use crate::util::{now, now_ms, random_uuid};
 use crate::{db, util};
 
+/// How often one message can be edited within its window.
+const MAX_EDITS: i64 = 20;
 /// Messages a stranger may send into a request before the receiver answers.
 const MAX_UNANSWERED: i64 = 5;
 /// Requests an account may hold, and groups it may be in.
@@ -509,6 +511,7 @@ pub async fn messages(
         .await?
         .is_empty();
     if query.changed_after.is_none()
+        && query.before.is_none()
         && me.state == ACCEPTED
         && !blocked_here
         && conversation.kind() == ConversationKind::Direct
@@ -611,7 +614,10 @@ fn announce_except(
         .members
         .iter()
         .filter(|m| {
-            m.state != DECLINED && !target.hidden.contains(&m.id()) && !except.contains(&m.id())
+            m.state != DECLINED
+                && !target.hidden.contains(&m.id())
+                && !except.contains(&m.id())
+                && (seq as i64) > m.from_seq
         })
         .map(|m| m.id());
     push_all(state, told, &event);
@@ -667,6 +673,11 @@ pub async fn edit(
     }
     let mut revision = None;
     if target.stored.body != request.text {
+        if chat::count_holds(&mut tx, &id, seq).await? >= MAX_EDITS {
+            return Err(AppError::limit(
+                "This message was edited as often as allowed.",
+            ));
+        }
         chat::hold_text(&mut tx, &id, seq, &target.stored.body, now).await?;
         chat::edit_message(&mut tx, &id, seq, &request.text, now).await?;
         revision = Some(revise(&mut tx, &id, seq).await?);
