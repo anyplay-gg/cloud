@@ -10,7 +10,7 @@ How to read it:
 - "Operator" means whoever runs the cloud. "Moderator" means a person holding the admin token (`admin_token`); the code has no other staff role.
 - Account, device and session IDs are random numbers (`util::random_id`). They are pseudonyms, not anonymous: the cloud can join them to the e-mail address ([Art. 4(1) and 4(5)](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679)).
 
-Trophy records, profiles, messages and the feed are not in the code yet. Migration 0003 (trophy records, privacy settings) is in flight in another change, per [network ADR 0009](https://github.com/anyplaynet/network/blob/main/docs/adr/0009-trophy-records-not-trophy-texts.md). That ADR says the cloud keeps only title ID, trophy number, grade and time. [ADR 0011](https://github.com/anyplaynet/network/blob/main/docs/adr/0011-messages-are-stored-to-be-delivered.md) says messages are stored readable by the cloud for a limited time, and [ADR 0012](https://github.com/anyplaynet/network/blob/main/docs/adr/0012-private-by-default.md) says profiles start private. The section [In flight](#in-flight-social-layer) lists what to add to this file when they land. (These ADRs are on the network branch `feat/trophies`, not yet on its `main`.)
+The social layer is built: trophies, profiles, avatars, messages, the feed, parties, calls, join codes, linked accounts, notifications and the 30-day deletion grace period. [Section 7](#7-the-social-layer) covers them, audited against cloud `8e0e02d` on 25 October 2026. Sections 1 to 6 were written before that and are corrected where they said something that is no longer true. Design background: [network ADR 0009](https://github.com/anyplaynet/network/blob/main/docs/adr/0009-trophy-records-not-trophy-texts.md) (trophy records), [ADR 0011](https://github.com/anyplaynet/network/blob/main/docs/adr/0011-messages-are-stored-to-be-delivered.md) (messages are stored readable by the cloud) and [ADR 0012](https://github.com/anyplaynet/network/blob/main/docs/adr/0012-private-by-default.md) (profiles start private).
 
 ## 1. The cloud database
 
@@ -24,9 +24,9 @@ Migrations: `crates/cloud/migrations/{sqlite,postgres}/0001_init.sql` and `0002_
 | Where | `accounts.handle`, `accounts.handle_key` (lower-case copy), `accounts.email` (plain text, normalised to lower case, unique), `accounts.created`, `accounts.id`. |
 | Why | Identify the player to friends, send sign-in codes, stop banned people coming back. |
 | Basis (proposed) | Art. 6(1)(b). |
-| Kept today | Until the player deletes the account (`DELETE /v1/me` calls `state.delete_account`, then `db::delete_account`). No inactivity limit: an abandoned account stays for ever. |
+| Kept today | Until the player deletes the account. `DELETE /v1/me` and the account web only schedule it: the account is deleted 30 days later (`deletion_at`, `state.schedule_deletion`) and the player can cancel until then; the sweep calls `db::delete_account`. No inactivity limit: an abandoned account stays for ever. |
 | Proposed | Same, plus automatic deletion after a stated period of inactivity (suggestion: 24 months, with a warning mail; lawyer to confirm). |
-| Who sees it | The player sees their own e-mail. Every signed-in player can look up another account's **handle and ID** (`GET /v1/accounts/{id}`, `?handle=`), never the e-mail. Moderators and the operator with database access see everything. |
+| Who sees it | The player sees their own e-mail. Every signed-in player can look up another account's **handle and ID** (`GET /v1/accounts/{id}`, `?handle=`), never the e-mail. **Signed-out visitors too:** the handle, the ID and whatever profile parts are set to `everyone` are public on `/u/{name}` and `/web/api/v1/users/{name}` (rate limited per IP). Moderators and the operator with database access see everything. |
 
 Migration 0008 adds `accounts.age_confirmed_at` (when the player ticked "old enough to agree on my own"; no birth date and no age), `terms_version` and `terms_accepted_at` (the version of `terms_version` in force when the player accepted, and when). They are filled at sign-up on the web and by the API's sign-up (age only there); accounts made before are null. `tokens_valid_from` is the "not before" time that "sign out everywhere" sets. When the operator changes `terms_version`, the account web asks again at the next sign-in and overwrites the version. See G9.
 
@@ -137,7 +137,7 @@ A block names the blocked person, so it is data about them too. The export lists
 | Basis (proposed) | Art. 6(1)(b). |
 | Kept today | A member leaves 30 seconds after its last connection closed (`session_grace`); the last member closes the session and its rows are deleted. Invitations last 15 minutes. A virtual address lives in the member's row and goes with it. The opaque `properties` are written by the game and the cloud does not look inside, so a game could put personal data there. |
 | Proposed | As today. Tell game developers in the API document not to put personal data in `properties`. |
-| Who sees it | Members of a session see each other's handle, endpoint ID, relay and address. The endpoint ID is not an IP address. The cloud never publishes direct addresses (ARCHITECTURE, "Relays"). |
+| Who sees it | Members of a session see each other's handle, endpoint ID, relay and address. **Friends of any member see the whole session, with every member's endpoint, relay and address, when its visibility is `friends`.** The endpoint ID is not an IP address. The cloud never publishes direct addresses (ARCHITECTURE, "Relays"). Sessions now also have a `kind` (`game` or `lan`, migration 0023); see section 7.4. |
 
 The endpoint ID is a stable key. A player who keeps the net service's data folder keeps the same ID across sessions, so session members can recognise each other over time. This is by design; the lawyer should know it exists (G11).
 
@@ -194,11 +194,13 @@ Written to standard output by `tracing`. The default filter is `info,sqlx=warn` 
 | Line | Fields | Level | Personal data |
 |---|---|---|---|
 | `sign-in code (mail = log)` | `to` (e-mail), `code` | info | **E-mail address and a live code.** Only with `mail = log`, which is the **default** in `config.rs`; `deploy/compose.yaml` defaults to `smtp`. For development only. |
-| `account banned` / `account unbanned` | `account` ID, end date | warn | Account ID. No actor. The record is the `audit_log` table, not this line. |
+| `moderation action` | `account` ID, kind | warn | Account ID. No actor. The record is the `audit_log` table, not this line. |
+| `notice (mail = log)` | `to`, subject | info | **E-mail address**, with `mail = log` only. |
+| refresh-token events (replaced, used again) and passkey errors | `device` ID, passkey error text | info/warn | Device ID. Whether the passkey error text can carry values is **not checked**. |
 | `a replaced refresh token was used again` | `device` ID | warn | Device ID. |
 | `request` (method, path, status, ms) | `path` can hold account, session or invitation IDs; the query string and the body are left out | **debug** (off by default) | IDs in the path. |
 | `no pong; dropping the connection` | `device` | debug | Device ID. |
-| database and mail errors | error text | error | Error text from sqlx or the SMTP library. We did not check whether any error text can echo an e-mail address (open item). |
+| database and mail errors | error text | error | Mail replies have every word containing `@` replaced (`mail.rs`). Database error text from sqlx is **not checked** for values. |
 | `cannot send a sign-in code` | none | error | None. |
 
 Not logged: client IP addresses, e-mail addresses (except with `mail = log`), code values (except with `mail = log`), tokens, request bodies. The cloud writes no access log of its own.
@@ -215,7 +217,7 @@ The proxy sets `X-Forwarded-For`, which the cloud trusts (`ANYPLAY_CLOUD_TRUST_P
 
 ### 3.4 Docker log driver
 
-`deploy/compose.yaml` sets no `logging:` options. We believe Docker's default `json-file` driver does not rotate (inference from Docker's documented default; not checked here), so the stdout of all services can grow without limit on the host. Set a size and file-count limit.
+`deploy/compose.yaml` sets the `json-file` driver with 3 files of 10 MB per container: a size limit, not a time limit. Lines are overwritten when the files are full.
 
 ## 4. The relay
 
@@ -225,7 +227,7 @@ Code: `crates/relay`. It is `iroh-relay` plus ticket checks (`crates/relay/src/l
 |---|---|
 | What the relay handles | The **IP address and port** of every connected client (it is the other end of the connection), the client's endpoint ID, and the relay ticket. The ticket is a signed token that names the **account ID**, the endpoint ID and an expiry (`Claims::relay`; lifetime 24 hours, `relay_ttl_secs`). Game and voice traffic passes through it end-to-end encrypted; the relay cannot read it. With QUIC address discovery on UDP 7842 the relay tells a client its own public address; it does not need to store it. |
 | Linkable? | In principle the relay can join an IP address to an account ID, because the ticket carries the account ID and the relay sees the connection's address in the same request. It never calls the cloud. We found no code that stores the pair. |
-| What our code logs | `relay client refused` with the endpoint ID and the reason, at debug level only (off by default). Start-up lines (ports, TLS mode). |
+| What our code logs | Start-up lines (ports, TLS mode). No per-connection line. The relay keeps a connection count per account (from the ticket) and each client's IP and port in memory while connected (`limits.rs`). |
 | What `iroh-relay` logs or counts | **Not verified.** We read the log lines in `iroh-relay` 1.4.1 that name an address and found only listen addresses. We did not audit trace-level output or its metrics. Open item. |
 | Rate limit | Optional bytes per second per client (`client_bytes_per_second`), held in memory by the library. |
 | Kept today | Nothing on disk by our code. Connection state in memory while connected. |
@@ -238,7 +240,7 @@ A player who uses the relay-only setting sends all game traffic through the rela
 
 | Item | State in the repository | Gap |
 |---|---|---|
-| Database file or Postgres | `cloud-data` volume (compose) or the operator's Postgres. | No backup, restore or retention is defined. The configuration says only "Back this folder up". A deleted account stays in backups until they expire. |
+| Database file or Postgres | `cloud-data` volume (compose) or the operator's Postgres. | `deploy/backup.sh` saves the volume before every update and keeps the newest 14 archives (not encrypted, mode 0600); an operator may add more (see G10). A deleted account stays in backups until they expire. |
 | Signing key | `signing.key` in `data_dir`, public half `signing.pub`. | Not personal data. Loss or theft lets someone forge tickets; a matter for security under [Art. 32(1)](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679). |
 | Mail | The SMTP server named by `smtp_host` receives the recipient address and the code of every sign-in mail. | A processor under [Art. 28](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679): a contract is needed. |
 | Hosting | The operator's server or cloud account holds everything above. | A processor contract is needed if it is a third party. Location in the EU (research note). |
@@ -263,17 +265,71 @@ The cloud does not control this data, but the cloud's privacy notice must say wh
 
 Whether the launcher or net service stores or reads anything on the device that needs consent under § 25 TDDDG is an open question ([open-questions.md](open-questions.md)).
 
-## In flight: social layer
+## 7. The social layer
 
-Not in the code at this commit. When these land, add rows here.
+Built and live (migrations 0003 to 0023). Audited against the code at cloud `8e0e02d` on 25 October 2026. Feature by feature: what is kept, who sees it, how long, and what account deletion does. Counts and periods are the code defaults; the operator can change several in `config.rs`.
 
-| Feature | What the design says | Add to this file |
-|---|---|---|
-| Trophy records, playtime (migration 0003) | Title ID, trophy number, grade and time; playtime as minutes per day. Private by default; friends only unless the player opens it. Rarity is counted across players. | Table and columns; retention (suggestion: life of the account); the visibility column; rarity counts must not reveal single players; include in export and deletion. |
-| Profile, avatar | Handle, picture upload, short text, favourite games. | Picture storage, checks and size; whether pictures can reveal special categories (inference: not intended). |
-| Messages | Stored readable by the cloud to deliver to every device, kept "for a limited time" (ADR 0011 names no period), also used for reports. | Table, retention, who may read (moderators only on a report), report attachment copy. This is the highest-risk new data ([open-questions.md](open-questions.md)). |
-| Feed | Kept 30 days (network `docs/SOCIAL.md`). | Table, 30-day sweep. |
-| Parties and voice | Voice goes through the tunnels, not the cloud. | Party membership table only. |
+### 7.1 Profile, avatar, trophies, playtime, run reports
+
+| Data | Where | Who sees it | Kept | On deletion | Export |
+|---|---|---|---|---|---|
+| About (160 characters), up to 3 favourite titles | `profiles` (0006) | By the `privacy` setting per part: `friends` (default), `everyone` (**also signed-out visitors**, on `/u/{name}` and `/web/api/v1/users/{name}`; the about text also goes into the page description, at most 200 characters) or `nobody`. A block hides everything. | Life of the account | Deleted (cascade) | Yes |
+| Avatar | `avatars` (PNG, 256 by 256, metadata dropped), SHA-256 `hash` | Same rule. **`GET /v1/avatars/{hash}` needs no token** and is cached publicly for a year (`immutable`): whoever has the hash can fetch it, and caches can keep it after removal. | Until removed or replaced | Deleted | Yes (base64) |
+| Playtime | `playtime` (title, day, minutes; at most 20,000 rows) | `privacy.playtime` | Life of the account, no sweep | Deleted | Yes |
+| Trophies | `trophies` (title, number, grade, time), `trophy_secrets` (0021) | `privacy.trophies`; secret trophies hidden until revealed. Compare shows one player's trophies next to another's when allowed. **Anonymous rarity counts every player's records once 10 players have the title, whatever the setting.** | Life of the account | Deleted | Yes |
+| Level and points | Derived from trophies, not stored | Wherever trophies are visible | | | |
+| Run reports | `run_reports` (verdict, OS, game version, toolkit; at most 1,000 rows) (0016) | Public only as counts, and only with at least 3 reports (`/compatibility`) | Life of the account | Deleted | Yes |
+| Privacy settings | `privacy` | The player | Life of the account | Deleted | Yes |
+| Linked accounts | `linked_accounts` (provider, external ID, display name, avatar, audience, time) (0013) | Per `audience`, signed-out included; the name and picture are a snapshot from linking | Until unlinked | Deleted | Yes, without the avatar |
+
+Discord tokens are not stored (`discord_sdk.rs`); login tokens from linking are revoked at once. Steam linking exists in the cloud and is hidden on the web.
+
+### 7.2 Messages
+
+| What | Detail |
+|---|---|
+| Tables | `conversations` (kind, group name, party, pair, last sequence), `conversation_members` (state, read mark), `messages` (`body`, sender, time), `message_hidden` (0007) |
+| Encryption | **None at application level.** Stored as plain text; only the transport is TLS. The operator can read everything through the database. |
+| Who sees it | Members, from the time they joined, minus messages hidden by a block. Read marks are shown to the other members. Moderators see a message only as the snapshot inside a report. |
+| Kept | Each message 30 days from sending (`message_retention_days`). An empty direct or group conversation 30 days after its last activity. A party chat ends with the party. |
+| Limits | 5 unanswered messages to a stranger; an account younger than 24 hours cannot write first to a stranger; a muted account cannot write. |
+| On deletion | The player's own messages are deleted. **A direct conversation is deleted whole, with the other person's messages.** Group conversations keep what others wrote. |
+| Export | The player's own messages and the conversations; **not** what others wrote to the player. |
+| Not built | Attachments, clips. Reactions, edit and unsend are in an open pull request (cloud#74) and must be added here when merged. |
+
+### 7.3 Feed
+
+Tables `feed_items`, `feed_members`, `feed_reactions`, `feed_firsts` (0017). Item kinds: a trophy, a new friendship (naming the friend), a first-played title, a party. Visible to the owner and the owner's friends unless `privacy.feed` is `nobody` (then nothing is recorded); party items to the party's members. Reactions show as counts; nobody sees who reacted. Items are kept 90 days (`feed_retention_days`), at most 100 a day per account. `feed_firsts` (every title the account was seen playing, at most 2,000) is kept for the life of the account with no sweep. Deletion cascades; a party item owned by someone else keeps the deleted account's ID in its `members` text until the 90-day sweep. The export holds the player's own items and reactions, not `feed_firsts`.
+
+### 7.4 Parties, calls, voice, sessions, join codes
+
+| Data | Where | Who sees it | Kept |
+|---|---|---|---|
+| Party and members (handle, endpoint, relay, voice flag, optional Discord link set by the leader) | `parties`, `party_members` (0007, 0009, 0019) | Members | A member leaves 15 minutes after disconnecting; at most 8 members |
+| Calls | A call is a party invitation with `call = 1` that rings 30 seconds | The invited player | Not kept |
+| Missed calls | `missed_calls` (caller, handle, time) | The called player | 30 days; also cleared when seen, on unfriend or block. **Not in the export.** |
+| Sessions and members (handle, endpoint, relay, virtual address, game properties up to 8 KiB, kind `game` or `lan`) | `sessions`, `members` (0002, 0023) | Members and invitees; **friends of any member when visibility is `friends`**, including every member's endpoint, relay and virtual address | A member leaves 30 seconds after the last connection; a session ends with its last member (a `lan` session with its host); invitations 15 minutes |
+| Join codes | `join_codes` (SHA-256 of the code, expiry), one per account (0018) | Anyone with a valid code sees, without signing in, the issuer's handle, the title, the member count and the kind | 120 minutes or until revoked. **Not in the export.** |
+
+**Voice audio never reaches the cloud.** It runs over QUIC on the iroh tunnel between the net services, directly or through the AnyPlay relay, end-to-end encrypted. The cloud stores only the voice flag, endpoint and relay. There are no recordings and no call log beyond missed calls. The endpoint key and the preferred virtual address (derived from the account ID) stay the same across sessions.
+
+### 7.5 Presence and "Appear offline"
+
+`presence` holds online, activity (title ID, title, version), `last_seen_ms` (never sent to anyone) and a revision; one row per account, overwritten; the activity is cleared when going offline. `accounts.appear_offline` (0020) makes friends see the account as offline and stops "first played" items. Presence is not in the export.
+
+### 7.6 Notifications (Web Push)
+
+`push_subscriptions` (endpoint, `p256dh`, `auth`, label, kinds, failures; at most 10 per account) (0015). The payload carries a title and the sender's handle, never message text, and goes through the browser maker's push service (Google, Mozilla, Apple, Microsoft). Removed when turned off, on 404 or 410, or after 5 failed sends in a row. The export omits endpoint and keys. The browser stores `localStorage["anyplay.push.device"]` and a service worker (`/sw.js`).
+
+### 7.7 Moderation records, in short
+
+Reports, actions, appeals, bans and the audit log are described in [moderation.md](../moderation.md). Retention: decided reports 183 days after the decision, open ones 365 days; actions and appeals 183 days after they end (a ban for good with no end is never swept); temporary bans 183 days after the end; the audit log 1,095 days. **All of these survive account deletion.** The appeal text is copied into the audit log, so it outlives the appeal.
+
+### 7.8 Account deletion and export, as built
+
+Deletion has a 30-day grace period (`deletion_at`). `DELETE /v1/me` and the web both schedule it, sign out every device, mail a notice, and can be cancelled. **For those 30 days the account stays visible and usable**; nothing hides it. The sweep then deletes the account and cascades; no record of the deletion is kept. Left behind: the moderation records above, party feed items owned by others (up to 90 days), relay tickets (up to 24 hours), cached avatars (up to a year), log lines, and backups (see section 5).
+
+The export (`GET /v1/me/export`, `/web/api/v1/account/export`) covers the account, devices, friends, requests, own blocks, reports filed, the 500 newest actions against the player, ban (without the hash), sessions, trophies, run reports, privacy, linked accounts, notification devices, passkeys (name and dates), consent, profile, avatar, playtime, own feed items, party, conversations and own messages. It lacks presence, `feed_firsts`, missed calls, invitations, the join code, web sessions, messages received from others and records others hold about the player (see G6).
 
 ## Gaps
 
@@ -283,11 +339,11 @@ Ordered by how much they matter. The IDs are used in the other documents.
 |---|---|---|---|
 | G1 | **Closed** (moderation change). Bans are swept 6 months after they end; the e-mail hash is keyed; the reason is shown. Open: older hashes of deleted accounts stay plain until they match or expire; bans for good have no review period. | `bans`, `moderation::banhash` | |
 | G2 | **Closed** (moderation change). Reports have a status, outcome and handler, keep a snapshot, survive both accounts and are swept. | `reports` | |
-| G3 | **No inactivity deletion.** Accounts and devices live until the player acts. | `accounts`, `devices` | Inactivity expiry with a warning mail. |
+| G3 | **No inactivity deletion.** Accounts and devices live until the player acts. `used_refresh` rows are only pruned when the same device refreshes again, and `feed_firsts` and `playtime` have no sweep. | `accounts`, `devices` | Inactivity expiry with a warning mail. |
 | G4 | **The default `mail = log` writes e-mail addresses and live codes to the log.** | `config.rs`, `mail.rs` (`LogMailer`) | Refuse to start in log mode when `signup = open` and the listen address is not loopback; or make `smtp` the default. |
 | G5 | **IP addresses reach three places that need a stated rule:** the rate limiter in memory (short, fine), the relay (logging unverified; it sees the IP and a ticket with the account ID), and the proxy if access logs are on. No log retention is set anywhere. | `limits.rs`, relay, `Caddyfile`, `compose.yaml` | Compose `logging:` limits; documented relay and proxy log settings; check `iroh-relay` output. |
-| G6 | **The export is incomplete.** It lacks presence and last-seen, the ban hash. It is JSON, which fits the "structured, commonly used and machine-readable" format of [Art. 20(1)](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679). | `routes/accounts.rs` (`export`) | Add presence and device `last_used`; document what is left out and why. |
-| G7 | **Deletion is immediate and complete for live data, but leaves bans, and nothing covers backups.** There is no confirmation step and no record that a deletion happened, so a stolen access token (15 minutes) can delete an account. | `state.delete_account` | Confirm by e-mail code; document backup expiry; keep a non-identifying deletion counter. |
+| G6 | **The export is incomplete.** It lacks presence and last-seen, `feed_firsts`, missed calls, invitations, the join code, web sessions, messages received from others and the records others hold about the player, and the ban hash. It is JSON, which fits the "structured, commonly used and machine-readable" format of [Art. 20(1)](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679). | `routes/accounts.rs` (`export`) | Add presence and device `last_used`; document what is left out and why. |
+| G7 | **Partly closed.** Deletion now has a 30-day grace period, a mailed notice and a confirmation step on the web (fresh session and the typed handle); `DELETE /v1/me` still needs only an access token. During the grace period the account stays visible. It leaves bans, reports, actions, appeals and the audit log, and nothing covers backups. No record that a deletion happened is kept. | `state.delete_account` | Confirm by e-mail code; document backup expiry; keep a non-identifying deletion counter. |
 | G8 | **Closed** for moderation (moderation change). Every action, dismissal, lifting, appeal and role change is a line in `audit_log` with the actor. Moderators are accounts; the admin token acts as `operator`. | `moderation` | |
 | G9 | **Age and terms record: done in migration 0008.** `age_confirmed_at`, `terms_version` and `terms_accepted_at` are stored on the account (no birth date); the account web names the age (16 in the EU unless the country sets a lower one) and asks again when `terms_version` changes. Accounts made before the migration have no record; the API's own sign-up records the age only. | `routes/auth.rs` (`create_account`), `web/flow.rs` | Decide whether older accounts are asked once (O-question for the lawyer); the privacy notice should name the cookie and the passkeys. |
 | G10 | **Partly closed** (backup change). `deploy/backup.sh` archives the whole `cloud-data` volume (database, `signing.key`, `ban.key`) before every update and keeps the newest 14 (mode 0600, SHA256 manifest); `deploy/restore.sh` proves an archive in a scratch volume (integrity check, account count) and is the documented restore path ([deploy.md](../deploy.md#backups)). **Open:** no encryption of the archives at rest, no off-machine copy, an erasure period for backups is not decided (a restore brings back accounts deleted since; deletions must be replayed), and processor contracts for a backup provider. | `deploy/backup.sh`, `deploy/restore.sh`, `docs/deploy.md` | Decide the retention period and the off-machine target; see [open-questions.md](open-questions.md). |
