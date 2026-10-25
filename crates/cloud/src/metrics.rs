@@ -11,6 +11,70 @@ use std::time::Duration;
 /// Store errors of the whole process; the error conversion has no state at hand.
 pub static STORE_ERRORS: AtomicU64 = AtomicU64::new(0);
 
+/// Queries that gave up waiting for a store connection, a SQLite write turn or a lock, or were
+/// cancelled by the statement timeout. They are answered as retryable and are not in
+/// [`STORE_ERRORS`].
+pub static STORE_POOL_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
+
+/// Requests the request timeout cut off, and requests shed by the in-flight cap.
+pub static REQUEST_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
+pub static REQUESTS_SHED: AtomicU64 = AtomicU64::new(0);
+
+/// Upper bounds in seconds of the buckets of [`WRITE_WAIT`].
+const WAIT_BUCKETS: [f64; 9] = [0.001, 0.005, 0.025, 0.1, 0.5, 1.0, 2.5, 5.0, 10.0];
+
+/// How long [`crate::db::Writer::begin`] waited for its turn and a connection, which is where
+/// writers pile up when the pool is too small. Reads that take a connection are not in it.
+pub static WRITE_WAIT: WaitHistogram = WaitHistogram::new();
+
+/// A histogram of waits that needs no lock.
+pub struct WaitHistogram {
+    /// Per bucket, not cumulative; the last slot holds what is above the largest bound.
+    buckets: [AtomicU64; WAIT_BUCKETS.len() + 1],
+    micros: AtomicU64,
+}
+
+impl WaitHistogram {
+    const fn new() -> Self {
+        Self {
+            buckets: [const { AtomicU64::new(0) }; WAIT_BUCKETS.len() + 1],
+            micros: AtomicU64::new(0),
+        }
+    }
+
+    pub fn observe(&self, took: Duration) {
+        let seconds = took.as_secs_f64();
+        let slot = WAIT_BUCKETS
+            .iter()
+            .position(|bound| seconds <= *bound)
+            .unwrap_or(WAIT_BUCKETS.len());
+        self.buckets[slot].fetch_add(1, Ordering::Relaxed);
+        self.micros
+            .fetch_add(took.as_micros() as u64, Ordering::Relaxed);
+    }
+
+    fn render(&self, out: &mut String, name: &str, help: &str) {
+        let _ = writeln!(
+            out,
+            "# HELP {name} {help}
+# TYPE {name} histogram"
+        );
+        let mut total = 0;
+        for (bound, bucket) in WAIT_BUCKETS.iter().zip(&self.buckets) {
+            total += bucket.load(Ordering::Relaxed);
+            let _ = writeln!(out, "{name}_bucket{{le=\"{bound}\"}} {total}");
+        }
+        total += self.buckets[WAIT_BUCKETS.len()].load(Ordering::Relaxed);
+        let _ = writeln!(out, "{name}_bucket{{le=\"+Inf\"}} {total}");
+        let _ = writeln!(
+            out,
+            "{name}_sum {}
+{name}_count {total}",
+            self.micros.load(Ordering::Relaxed) as f64 / 1e6
+        );
+    }
+}
+
 #[derive(Default)]
 struct Timed {
     count: u64,
@@ -34,6 +98,8 @@ pub struct Snapshot<'a> {
     pub news_received: u64,
     /// Notifications sent, failed and removed as gone, when the cloud sends them.
     pub push: Option<(u64, u64, u64)>,
+    /// Connections the store pool holds, how many of them are idle, and the most it may hold.
+    pub pool: (u32, usize, u32),
 }
 
 impl Metrics {
@@ -125,6 +191,47 @@ impl Metrics {
             "Queries the store failed.",
             STORE_ERRORS.load(Ordering::Relaxed),
         );
+        counter(
+            &mut out,
+            "anyplay_cloud_store_pool_timeouts_total",
+            "Queries that timed out waiting for a store connection, a write turn or a lock.",
+            STORE_POOL_TIMEOUTS.load(Ordering::Relaxed),
+        );
+        counter(
+            &mut out,
+            "anyplay_cloud_request_timeouts_total",
+            "Requests cut off by the request timeout.",
+            REQUEST_TIMEOUTS.load(Ordering::Relaxed),
+        );
+        counter(
+            &mut out,
+            "anyplay_cloud_requests_shed_total",
+            "Requests turned away because too many were in flight.",
+            REQUESTS_SHED.load(Ordering::Relaxed),
+        );
+        gauge(
+            &mut out,
+            "anyplay_cloud_store_pool_connections",
+            "Connections the store pool holds open.",
+            f64::from(now.pool.0),
+        );
+        gauge(
+            &mut out,
+            "anyplay_cloud_store_pool_idle_connections",
+            "Connections the store pool holds open and idle.",
+            now.pool.1 as f64,
+        );
+        gauge(
+            &mut out,
+            "anyplay_cloud_store_pool_max_connections",
+            "The most connections the store pool may hold.",
+            f64::from(now.pool.2),
+        );
+        WRITE_WAIT.render(
+            &mut out,
+            "anyplay_cloud_store_write_wait_seconds",
+            "How long write transactions waited for their turn and a connection.",
+        );
 
         let requests = self.requests.lock().unwrap_or_else(|e| e.into_inner());
         let _ = writeln!(
@@ -186,6 +293,7 @@ mod tests {
             news_sent: 4,
             news_received: 5,
             push: Some((7, 1, 2)),
+            pool: (3, 1, 16),
         });
         assert!(
             text.contains("anyplay_cloud_http_requests_total{route=\"/v1/me\",status=\"200\"} 2")
@@ -201,6 +309,11 @@ mod tests {
         // Every metric is announced before its samples.
         for line in text.lines().filter(|l| !l.starts_with('#')) {
             let name = line.split(['{', ' ']).next().unwrap();
+            let name = name
+                .strip_suffix("_bucket")
+                .or_else(|| name.strip_suffix("_sum"))
+                .or_else(|| name.strip_suffix("_count"))
+                .unwrap_or(name);
             assert!(text.contains(&format!("# TYPE {name} ")), "{name}");
         }
     }

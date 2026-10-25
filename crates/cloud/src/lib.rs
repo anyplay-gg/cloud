@@ -9,6 +9,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use anyplay_ticket::Signer;
@@ -102,9 +103,16 @@ pub async fn open(
         Some(url) => db::Location::Postgres(url),
         None => db::Location::File(&file),
     };
-    let pool = db::open(location, config.database_connections)
-        .await
-        .context("cannot open the database")?;
+    let pool = db::open_with(
+        location,
+        db::Limits {
+            connections: config.database_connections,
+            acquire_timeout: Duration::from_millis(config.database_acquire_timeout_ms),
+            statement_timeout: Duration::from_millis(config.database_statement_timeout_ms),
+        },
+    )
+    .await
+    .context("cannot open the database")?;
 
     let ban_key = moderation::banhash::BanKey::load(config.ban_secret.as_deref(), &config.data_dir)
         .context("cannot load the key for banned e-mail addresses")?;
@@ -145,7 +153,8 @@ pub async fn open(
         None => None,
     };
     let web = web::Web::new(&config).context("public_url")?;
-    let writer = db::Writer::new(config.database_url.is_none());
+    let writer = db::Writer::new(config.database_url.is_none())
+        .acquire_timeout(Duration::from_millis(config.database_acquire_timeout_ms));
     let state = Arc::new(Inner {
         verifier: signer.verifier(),
         signer,

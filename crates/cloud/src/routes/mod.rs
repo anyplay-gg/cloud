@@ -1,5 +1,6 @@
 //! The HTTP routes. Paths and their `{id}` placeholders come from `anyplay_api::path`.
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -180,8 +181,86 @@ pub fn router(state: AppState) -> Router {
             );
             (axum::http::StatusCode::METHOD_NOT_ALLOWED, axum::Json(body))
         })
+        .layer(middleware::from_fn_with_state(
+            Arc::new(Guard::new(&state.config)),
+            guard,
+        ))
         .layer(middleware::from_fn_with_state(state.clone(), log_requests))
         .with_state(state)
+}
+
+/// What a node does to keep a slow store from piling requests up: it cuts off a request that takes
+/// too long and, when asked to, turns requests away once too many are in flight. Both answer 503
+/// with `Retry-After`, so a client backs off instead of waiting.
+struct Guard {
+    timeout: Option<Duration>,
+    permits: Option<Arc<tokio::sync::Semaphore>>,
+}
+
+impl Guard {
+    fn new(config: &crate::Config) -> Self {
+        Self {
+            timeout: (config.request_timeout_secs > 0)
+                .then(|| Duration::from_secs(config.request_timeout_secs)),
+            permits: (config.max_in_flight_requests > 0).then(|| {
+                Arc::new(tokio::sync::Semaphore::new(
+                    config.max_in_flight_requests as usize,
+                ))
+            }),
+        }
+    }
+}
+
+/// The event connection lives for hours: its handler answers the upgrade at once and the socket
+/// runs on a task of its own, but it is left out of both limits so that stays true.
+fn is_long_lived(route: &str) -> bool {
+    route == path::EVENTS
+}
+
+async fn guard(State(guard): State<Arc<Guard>>, request: Request, next: Next) -> Response {
+    let long_lived = request
+        .extensions()
+        .get::<MatchedPath>()
+        .is_some_and(|m| is_long_lived(m.as_str()));
+    if long_lived || (guard.timeout.is_none() && guard.permits.is_none()) {
+        return next.run(request).await;
+    }
+    // Shed, never queue: a request that waits for a place only adds to the pile.
+    let _permit = match &guard.permits {
+        Some(permits) => match permits.clone().try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                crate::metrics::REQUESTS_SHED.fetch_add(1, Ordering::Relaxed);
+                return busy(1);
+            }
+        },
+        None => None,
+    };
+    match guard.timeout {
+        Some(limit) => match tokio::time::timeout(limit, next.run(request)).await {
+            Ok(response) => response,
+            Err(_) => {
+                crate::metrics::REQUEST_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(
+                    limit_secs = limit.as_secs(),
+                    "a request ran into the request timeout"
+                );
+                busy(2)
+            }
+        },
+        None => next.run(request).await,
+    }
+}
+
+fn busy(retry_after: u64) -> Response {
+    let mut error = AppError::new(
+        anyplay_api::ErrorCode::Internal,
+        "The cloud is busy. Try again in a moment.",
+    );
+    error.retry_after = Some(retry_after);
+    let mut response = error.into_response();
+    *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+    response
 }
 
 /// `/metrics`, for the listener of its own.
@@ -248,6 +327,11 @@ async fn metrics(State(state): State<AppState>) -> Response {
     let text = state.metrics.render(&Snapshot {
         node: &state.node,
         connections,
+        pool: (
+            state.db.size(),
+            state.db.num_idle(),
+            state.db.options().get_max_connections(),
+        ),
         news_sent,
         news_received,
         push: state.push.as_ref().map(|p| {

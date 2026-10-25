@@ -93,9 +93,26 @@ impl AppError {
 
 impl From<sqlx::Error> for AppError {
     fn from(error: sqlx::Error) -> Self {
+        if is_overload(&error) {
+            // The store is saturated, not broken: answer fast and let the client retry.
+            tracing::warn!(%error, "the store is busy");
+            crate::metrics::STORE_POOL_TIMEOUTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // A little jitter keeps the retries of a burst from arriving together.
+            return Self::rate_limited(1 + crate::util::random_id() % 2);
+        }
         tracing::error!(%error, "database error");
         crate::metrics::STORE_ERRORS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Self::internal()
+    }
+}
+
+/// A wait for a connection, a write turn or a lock that ran out, or a statement the timeout
+/// cancelled: PostgreSQL's 55P03 (lock not available) and 57014 (query canceled).
+fn is_overload(error: &sqlx::Error) -> bool {
+    match error {
+        sqlx::Error::PoolTimedOut => true,
+        sqlx::Error::Database(e) => matches!(e.code().as_deref(), Some("55P03" | "57014")),
+        _ => false,
     }
 }
 
@@ -110,5 +127,26 @@ impl IntoResponse for AppError {
             response.headers_mut().insert(header::RETRY_AFTER, value);
         }
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pool_timeout_is_a_retryable_429_not_a_500() {
+        let before = crate::metrics::STORE_ERRORS.load(std::sync::atomic::Ordering::Relaxed);
+        let error = AppError::from(sqlx::Error::PoolTimedOut);
+        assert_eq!(error.body.error, ErrorCode::RateLimited);
+        assert!((1..=2).contains(&error.retry_after.unwrap()));
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(response.headers().contains_key(header::RETRY_AFTER));
+        assert!(crate::metrics::STORE_POOL_TIMEOUTS.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        // A real failure is still a 500 and still counted as one.
+        let error = AppError::from(sqlx::Error::RowNotFound);
+        assert_eq!(error.body.error, ErrorCode::Internal);
+        assert!(crate::metrics::STORE_ERRORS.load(std::sync::atomic::Ordering::Relaxed) > before);
     }
 }
