@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use anyplay_api::{
     AppearOffline, Count, FriendRequest, Grade, Part, Privacy, Profile, ProfileUpdate,
-    RUN_REPORTS_MIN, Verdict, VerdictCounts,
+    RUN_REPORTS_MIN, TrophyLevel, Verdict, VerdictCounts,
 };
 use axum::Json;
 use axum::extract::{Path, Request, State};
@@ -210,6 +210,9 @@ struct TitleSummary {
 #[derive(Serialize)]
 struct TrophySummary {
     counts: Count,
+    /// What the trophies are worth, and the level they make.
+    points: u32,
+    level: TrophyLevel,
     titles: Vec<TitleSummary>,
 }
 
@@ -224,14 +227,14 @@ fn add(count: &mut Count, grade: Grade, n: u32) {
 }
 
 /// The trophy records of an account, counted by grade, in total and per title (the title with
-/// the latest trophy first). The cloud does not know how many trophies a game has, so there is
-/// no percentage.
-async fn summary(state: &AppState, owner: u64) -> Result<TrophySummary, AppError> {
+/// the latest trophy first), as `viewer` may see them. The cloud does not know how many trophies a
+/// game has, so there is no percentage.
+async fn summary(state: &AppState, owner: u64, viewer: u64) -> Result<TrophySummary, AppError> {
     let mut counts = Count::default();
     let mut titles: Vec<TitleSummary> = Vec::new();
     // The store counts: at most one row per title and grade comes back, however many records
     // the player has.
-    for (title_id, grade, n, last) in db::trophy_summary(&state.db, owner).await? {
+    for (title_id, grade, n, last) in db::trophy_summary(&state.db, owner, viewer).await? {
         add(&mut counts, grade, n);
         let index = match titles.iter().position(|t| t.title_id == title_id) {
             Some(index) => index,
@@ -255,12 +258,17 @@ async fn summary(state: &AppState, owner: u64) -> Result<TrophySummary, AppError
             .cmp(&a.last_earned)
             .then_with(|| a.title_id.cmp(&b.title_id))
     });
-    Ok(TrophySummary { counts, titles })
+    Ok(TrophySummary {
+        points: counts.points(),
+        level: TrophyLevel::of(counts.points()),
+        counts,
+        titles,
+    })
 }
 
 /// `GET /me/trophies`
 pub async fn my_trophies(State(state): State<AppState>, member: Member) -> ApiResult {
-    Ok(Json(summary(&state, member.id()).await?).into_response())
+    Ok(Json(summary(&state, member.id(), member.id()).await?).into_response())
 }
 
 // Other players
@@ -290,6 +298,8 @@ struct PublicUser {
     profile: Profile,
     /// The player's trophies by grade, when the viewer may see them.
     trophies: Option<Count>,
+    /// The points and level of those trophies.
+    level: Option<TrophyLevel>,
     /// The connections the viewer may see; empty when there are none or none is shown to them.
     links: Vec<links::PublicLink>,
     /// Absent for a viewer who is not signed in.
@@ -310,10 +320,11 @@ pub async fn user(
     let seen = viewing_as(&state.db, viewer_id, owner.id()).await?;
     let profile = profiles::profile_seen(&state, &seen, owner.id()).await?;
     let trophies = if seen.can(Part::Trophies) {
-        Some(db::trophy_counts(&state.db, owner.id()).await?)
+        Some(db::trophy_counts(&state.db, owner.id(), viewer_id.unwrap_or(0)).await?)
     } else {
         None
     };
+    let level = trophies.map(|count| TrophyLevel::of(count.points()));
     let links = links::public(&state, owner.id(), &seen).await?;
     let viewer = match viewer_id {
         None => None,
@@ -345,6 +356,7 @@ pub async fn user(
     Ok(Json(PublicUser {
         profile,
         trophies,
+        level,
         links,
         viewer,
     })
@@ -365,7 +377,22 @@ pub async fn user_trophies(
     if !seen.can(Part::Trophies) {
         return Err(AppError::not_found().into());
     }
-    Ok(Json(json!(summary(&state, owner.id()).await?)).into_response())
+    Ok(Json(json!(
+        summary(&state, owner.id(), viewer_id.unwrap_or(0)).await?
+    ))
+    .into_response())
+}
+
+/// `GET /users/{name}/compare/{title}`: the signed-in player's trophies in one title next to
+/// another player's, as far as the viewer may see them.
+pub async fn user_compare(
+    State(state): State<AppState>,
+    member: Member,
+    Path((name, title)): Path<(String, String)>,
+) -> ApiResult {
+    let owner = owner_of(&state, &name).await?;
+    let answer = trophies::compare_with(&state, member.id(), owner.id(), &title).await?;
+    Ok(Json(answer).into_response())
 }
 
 /// One verdict count of the public compatibility list, in the portal's spelling.

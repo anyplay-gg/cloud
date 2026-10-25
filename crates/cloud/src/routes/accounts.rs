@@ -76,7 +76,8 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
         crate::moderation::store::reports_by(&mut *state.db.acquire().await?, account_id).await?;
     let actions = crate::moderation::statements(state, account_id).await?;
     let ban = db::ban_of(&state.db, account_id).await?;
-    let trophies = db::trophies_of(&state.db, account_id).await?;
+    let trophies = db::trophies_of(&state.db, account_id, account_id).await?;
+    let secrets = db::trophy_secrets_of(&state.db, account_id).await?;
     let run_reports = db::runs::of_account(&state.db, account_id).await?;
     let privacy = db::privacy_of(&state.db, account_id).await?;
     let (about, favourites) = db::profiles::profile_of(&state.db, account_id).await?;
@@ -138,6 +139,9 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
         "run_reports": run_reports.iter().map(|r| json!({
             "title_id": r.title_id, "version": r.version, "toolkit": r.toolkit,
             "verdict": r.verdict, "os": r.os, "updated": r.updated,
+        })).collect::<Vec<_>>(),
+        "secret_trophies": secrets.iter().map(|(title, number, revealed)| json!({
+            "title_id": title, "number": number, "revealed": revealed,
         })).collect::<Vec<_>>(),
         "privacy": privacy,
         "linked_accounts": linked.iter().map(|l| json!({

@@ -493,7 +493,7 @@ async fn trophies_are_counted_by_the_store_not_read_one_by_one() {
     )
     .await;
     // Two grades in one title and one in the other: three rows, however many records.
-    let rows = anyplay_cloud::db::trophy_summary(&cloud.state.db, alec.id)
+    let rows = anyplay_cloud::db::trophy_summary(&cloud.state.db, alec.id, alec.id)
         .await
         .unwrap();
     assert_eq!(rows.len(), 3, "{rows:?}");
