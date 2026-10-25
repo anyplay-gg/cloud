@@ -15,6 +15,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
 use sqlx::{ConnectOptions as _, Connection as _, Executor as _, FromRow};
 
 pub mod profiles;
+pub mod runs;
 
 pub type Pool = sqlx::AnyPool;
 type Conn = sqlx::AnyConnection;

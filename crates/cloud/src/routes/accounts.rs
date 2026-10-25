@@ -54,6 +54,7 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
     let actions = crate::moderation::statements(state, account_id).await?;
     let ban = db::ban_of(&state.db, account_id).await?;
     let trophies = db::trophies_of(&state.db, account_id).await?;
+    let run_reports = db::runs::of_account(&state.db, account_id).await?;
     let privacy = db::privacy_of(&state.db, account_id).await?;
     let (about, favourites) = db::profiles::profile_of(&state.db, account_id).await?;
     let avatar = db::profiles::avatar_of(&state.db, account_id).await?;
@@ -107,6 +108,10 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
         "sessions": sessions,
         "trophies": trophies.iter().map(|t| json!({
             "title_id": t.title_id, "number": t.number, "grade": t.grade, "earned": t.earned,
+        })).collect::<Vec<_>>(),
+        "run_reports": run_reports.iter().map(|r| json!({
+            "title_id": r.title_id, "version": r.version, "toolkit": r.toolkit,
+            "verdict": r.verdict, "os": r.os, "updated": r.updated,
         })).collect::<Vec<_>>(),
         "privacy": privacy,
         "linked_accounts": linked.iter().map(|l| json!({
