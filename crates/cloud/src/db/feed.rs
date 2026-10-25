@@ -1,5 +1,5 @@
 //! The feed: items, who is in a party item, reactions and the titles an account has played
-//! (migration 0014). What an item says is a kind and some numbers; names are never stored.
+//! (migration 0016). What an item says is a kind and some numbers; names are never stored.
 
 use std::collections::HashMap;
 
