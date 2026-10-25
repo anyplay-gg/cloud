@@ -689,9 +689,9 @@ where
 }
 
 async fn deliver(state: &AppState, account: u64, note: &Note) -> sqlx::Result<()> {
-    let Some(pusher) = &state.push else {
+    if state.push.is_none() {
         return Ok(());
-    };
+    }
     let Some(kind) = Kind::parse(note.kind) else {
         return Ok(());
     };
