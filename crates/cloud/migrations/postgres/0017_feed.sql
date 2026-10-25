@@ -1,4 +1,4 @@
--- The schema of migrations/sqlite/0016_feed.sql for PostgreSQL.
+-- The schema of migrations/sqlite/0017_feed.sql for PostgreSQL.
 ALTER TABLE privacy ADD COLUMN feed TEXT NOT NULL DEFAULT 'friends';
 
 CREATE TABLE feed_items (
