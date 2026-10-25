@@ -22,6 +22,7 @@ pub mod cli;
 pub mod config;
 pub mod db;
 pub mod http;
+pub mod joins;
 pub mod limits;
 pub mod links;
 pub mod live;

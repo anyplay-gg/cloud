@@ -1,11 +1,11 @@
 # The website (anyplay-gg/web) on the cloud's host name: the landing page at the root, the sign-in,
 # sign-up and account pages, the privacy notice and the terms of use (/privacy, /terms), the page
-# the launcher's account button opens, the public profiles and the files they load. Every other
+# the launcher's account button opens, the public profiles, the join pages that the links on a player's Discord profile open, and the files they load. Every other
 # path, the APIs and the older pages under /web included, stays with the cloud; the older account
 # page sends people to the new one. /sw.js (the service worker for notifications),
 # /manifest.webmanifest and /icons/* (the installable app) must stay on the root of this host
 # name: a service worker only controls the paths below its own.
-@website path / /sign-in /create /link /privacy /terms /account /account/* /u/* /compatibility /_next/* /icon.svg /favicon.ico /sw.js /manifest.webmanifest /icons/*
+@website path / /sign-in /create /link /privacy /terms /account /account/* /u/* /compatibility /join/* /_next/* /icon.svg /favicon.ico /sw.js /manifest.webmanifest /icons/*
 handle @website {
 	reverse_proxy web:3000
 }
