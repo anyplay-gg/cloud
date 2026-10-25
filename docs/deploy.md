@@ -58,6 +58,8 @@ The landing page (anyplay-gg/web) can run on the cloud's host name: Caddy sends 
 
 4. Set `ANYPLAY_CLOUD_PORTAL_EXTERNAL=true` (with `ANYPLAY_CLOUD_PUBLIC_URL`) in the cloud's environment, so the launcher's sign-in opens the website's `/sign-in` and `/create` pages instead of the cloud's own.
 
+The website also serves the privacy notice and the terms of use at `/privacy` and `/terms` (`deploy/web.caddy` routes them). Point the cloud at them in `deploy/.env`: `PRIVACY_URL=https://<your host>/privacy`, `TERMS_URL=https://<your host>/terms` and `TERMS_VERSION` equal to the version the terms page shows. The texts name AnyPlay as the operator and its e-mail address; if you run your own cloud, publish your own texts instead.
+
 To take the website down again, remove the `COMPOSE_FILE` line and run `docker compose up -d --remove-orphans`.
 
 ## Linked accounts

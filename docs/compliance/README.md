@@ -1,8 +1,8 @@
 # EU compliance groundwork
 
-Drafts that a lawyer can review, for anyone who runs an AnyPlay cloud in the EU. They cover the GDPR (Regulation (EU) 2016/679) and the Digital Services Act (Regulation (EU) 2022/2065). They are written from what the code stores and logs.
+Groundwork for anyone who runs an AnyPlay cloud in the EU. They cover the GDPR (Regulation (EU) 2016/679) and the Digital Services Act (Regulation (EU) 2022/2065). They are written from what the code stores and logs.
 
-> **These are drafts for legal review. They are not legal advice.** Nobody has checked them against German or EU practice. Do not publish a privacy notice or terms from this folder before a lawyer has read them. The operator's name, legal form, address and contact details are placeholders in `[BRACKETS]`; nobody has decided them yet. Statements marked "inference" are ours, not the law's.
+> **This is not legal advice, and no lawyer has read it.** The notes below (inventory, record, DSA, open questions) are drafts written from the code. The privacy notice and the terms of use are final texts, published on 25 October 2026 at https://anyplaynet.com/privacy and https://anyplaynet.com/terms. The operator decided to publish them without a lawyer's review and under the name "AnyPlay", with no person's name or address. Their one source is the website repository: [privacy.tsx](https://github.com/anyplay-gg/web/blob/main/apps/web/src/components/legal/privacy.tsx) and [terms.tsx](https://github.com/anyplay-gg/web/blob/main/apps/web/src/components/legal/terms.tsx). Change the text there, in the same pull request as any change to the code it describes, and raise the version and date in `meta.ts` and `TERMS_VERSION`. Statements marked "inference" are ours, not the law's.
 
 ## Where the law comes from
 
@@ -14,8 +14,8 @@ The documents cite the article and paragraph and link the text: [GDPR](https://e
 |---|---|---|
 | [data-inventory.md](data-inventory.md) | Every kind of personal data the cloud and relay store or log, where, why, how long, who sees it, and the gaps in the code. | Draft, from the code at the base commit |
 | [records-of-processing.md](records-of-processing.md) | A record of processing activities under GDPR Art. 30. | Draft, operator fills the placeholders |
-| [privacy-notice.md](privacy-notice.md) | A privacy notice for players (Art. 12 to 14). | Draft |
-| [terms.md](terms.md) | Terms of use: clean-line duties, moderation, appeal, age. | Draft |
+| [privacy notice](https://github.com/anyplay-gg/web/blob/main/apps/web/src/components/legal/privacy.tsx) | The privacy notice for players (Art. 12 to 14). | Published, version 1 |
+| [terms of use](https://github.com/anyplay-gg/web/blob/main/apps/web/src/components/legal/terms.tsx) | Terms of use: clean-line duties, moderation, appeal, age. | Published, version 1 |
 | [dsa.md](dsa.md) | The DSA category, the duties of a small provider, and the engineering tasks. | Draft |
 | [open-questions.md](open-questions.md) | What the lawyer must answer, by risk. | Draft |
 
@@ -25,10 +25,10 @@ The documents cite the article and paragraph and link the text: [GDPR](https://e
 
 | # | Needed | Source | Status |
 |---|---|---|---|
-| 1 | Operator identity, legal form, address, contact (imprint if commercial) | GDPR Art. 13(1)(a); DSA Art. 11, 12; DDG § 5 | **Open.** Placeholders only. |
+| 1 | Operator identity, legal form, address, contact (imprint if commercial) | GDPR Art. 13(1)(a); DSA Art. 11, 12; DDG § 5 | **Decided:** the operator is named "AnyPlay"; the contact is one e-mail address; no person or street address is published. Whether that meets DDG § 5 and GDPR Art. 13(1)(a) for this service is not settled. |
 | 2 | Lawyer has read all documents here and answered [open-questions.md](open-questions.md) | | **Open** |
-| 3 | Privacy notice, published at `privacy_url` | GDPR Art. 12 to 14 | Draft |
-| 4 | Terms of use, published at `terms_url`, machine-readable | DSA Art. 14 | Draft |
+| 3 | Privacy notice, published at `privacy_url` | GDPR Art. 12 to 14 | **Published** (anyplaynet.com/privacy) |
+| 4 | Terms of use, published at `terms_url`, machine-readable | DSA Art. 14 | **Published** (anyplaynet.com/terms) |
 | 5 | Record of processing, filled in | GDPR Art. 30 | Draft |
 | 6 | Data protection impact assessment decision, and one if needed | GDPR Art. 35 | **Open.** Question O3. |
 | 7 | Processor contracts: mail provider, hosting, backup, relay host | GDPR Art. 28 | **Open.** Question O6. |

@@ -15,7 +15,7 @@ Texts we read for this pass: GDPR, DSA, the Cyber Resilience Act (CRA), TDDDG §
 
 **Questions.**
 1. Is a contract with a 16-year-old (or any minor) valid without a parent under German civil law? We did not read it. If not, is the core service on Art. 6(1)(b) safe, or should the basis for minors be different?
-2. Is 16 the right minimum age? We propose 16 ([terms.md](terms.md)). Did Germany lower the Art. 8 age? We found no such rule but did not search the German statutes.
+2. Is 16 the right minimum age? We propose 16 ([published terms](https://github.com/anyplay-gg/web/blob/main/apps/web/src/components/legal/terms.tsx)). Did Germany lower the Art. 8 age? We found no such rule but did not search the German statutes.
 3. Is a self-declared age enough? Our basis: DSA Art. 28(3) says a platform need not collect more data to find out an age ([DSA](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32022R2065)), and the research notes quote the EDPB for risk-based, least-intrusive assurance. We did not re-read the EDPB text; the lawyer should check what the EDPB and the German authorities expect.
 4. What do we do when we learn a player is under the age? The terms say: close the account, delete the data, on a parent's request.
 
