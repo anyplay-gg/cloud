@@ -37,7 +37,7 @@ jobs:
           path: network
       - name: Network commits since the pin
         run: |
-          pin=$(tr -d '[:space:]' < network.ref)
+          pin=$(tr -d "[:space:]" < "$GITHUB_WORKSPACE/cloud/network.ref")
           {
             echo "### Network main is $(git -C ../network rev-parse --short HEAD), the cloud is pinned to ${pin:0:7}"
             echo
