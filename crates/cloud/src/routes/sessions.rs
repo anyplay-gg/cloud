@@ -22,8 +22,8 @@ use crate::{addresses, db};
 
 const MAX_SESSIONS_PER_ACCOUNT: i64 = 4;
 /// Invitations one session may have open, and one account may hold.
-const MAX_INVITATIONS_PER_SESSION: i64 = 128;
-const MAX_INVITATIONS_PER_ACCOUNT: i64 = 50;
+pub(crate) const MAX_INVITATIONS_PER_SESSION: i64 = 128;
+pub(crate) const MAX_INVITATIONS_PER_ACCOUNT: i64 = 50;
 /// Accounts one invite request may name.
 const MAX_INVITE_BATCH: usize = 64;
 

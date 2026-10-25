@@ -20,6 +20,7 @@ pub mod admin;
 pub mod auth;
 pub mod events;
 pub mod friends;
+pub mod join_codes;
 pub mod messages;
 pub mod misc;
 pub mod moderation;
@@ -97,6 +98,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(path::PARTY_INVITATION, delete(parties::decline))
         .route(path::PARTY_INVITATION_ACCEPT, post(parties::accept))
+        .route(path::JOIN_CODES, post(join_codes::issue))
+        .route(path::JOIN_CODE_CURRENT, delete(join_codes::revoke))
+        .route(path::JOIN_CODE_REDEEM, post(join_codes::redeem))
         .route(
             path::CONVERSATIONS,
             get(messages::list).post(messages::create),
@@ -166,17 +170,24 @@ pub fn metrics_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Routes whose address holds a secret. The log shows their template, not the address.
+const SECRET_PATHS: [&str; 2] = [path::JOIN_CODE_REDEEM, "/web/api/v1/join/{code}"];
+
 /// Logs each request's method, path, status and time, and counts it by route. Query strings and
 /// bodies are left out.
 async fn log_requests(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let method = request.method().clone();
-    let path = request.uri().path().to_owned();
+    let mut path = request.uri().path().to_owned();
     // The route template, such as `/v1/sessions/{id}`, so the metrics keep few labels.
     let route = request
         .extensions()
         .get::<MatchedPath>()
         .map(|m| m.as_str().to_owned())
         .unwrap_or_else(|| "unmatched".to_owned());
+    // A join code in the address is a secret that stands for a player: the log gets the template.
+    if SECRET_PATHS.contains(&route.as_str()) {
+        path.clone_from(&route);
+    }
     let started = std::time::Instant::now();
     let response = next.run(request).await;
     let took = started.elapsed();
