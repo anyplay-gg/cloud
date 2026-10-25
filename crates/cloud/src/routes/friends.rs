@@ -232,6 +232,7 @@ pub async fn unfriend(
     // Neither sees the other's presence from now on, and invitations between them end.
     let gone = live::take_between(&mut *state.db.acquire().await?, auth.account, them).await?;
     state.invitations_gone(&gone);
+    state.forget_missed_between(auth.account, them).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -262,6 +263,7 @@ pub async fn block(
     let gone =
         crate::party::take_between(&mut *state.db.acquire().await?, auth.account, them).await?;
     state.party_invitations_gone(&gone);
+    state.forget_missed_between(auth.account, them).await?;
     state.news.push(auth.account, &Event::Friends);
     // The blocked account learns only what it would see anyway: a friend or request is gone.
     if had_relation {

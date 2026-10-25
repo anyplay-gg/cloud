@@ -31,6 +31,9 @@ pub struct Rates {
     /// Messages one account may send per `messages_window`.
     pub messages: u32,
     pub messages_window: Duration,
+    /// Calls one account may start per `calls_window`.
+    pub calls: u32,
+    pub calls_window: Duration,
     /// Conversations one account may start with people who are not friends per
     /// `strangers_window`.
     pub strangers: u32,
@@ -80,6 +83,8 @@ impl Default for Rates {
             feed_reaction_window: Duration::from_secs(60),
             messages: 30,
             messages_window: Duration::from_secs(60),
+            calls: 10,
+            calls_window: Duration::from_secs(60),
             strangers: 10,
             strangers_window: Duration::from_secs(60 * 60),
             report_per_account: 5,

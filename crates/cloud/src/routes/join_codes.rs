@@ -208,6 +208,7 @@ pub async fn redeem(
         to_id: auth.account as i64,
         expires: (now() + ttl.as_secs()) as i64,
         deadline_ms: now_ms() + ttl.as_millis() as i64,
+        call: 0,
     };
     if !party::insert_invitation(&mut tx, &invitation).await? {
         return Err(AppError::limit("You hold an invitation to this party."));

@@ -653,6 +653,8 @@ pub struct Tuning {
     /// How long a member may stay disconnected before it leaves its sessions.
     pub session_grace: Duration,
     pub invitation_ttl: Duration,
+    /// How long a call rings.
+    pub call_ttl: Duration,
     pub ping_interval: Duration,
     pub sweep_interval: Duration,
     /// How long a node may miss its heartbeat before its connections count as closed.
@@ -723,6 +725,7 @@ impl Default for Tuning {
             offline_grace: Duration::from_secs(10),
             session_grace: Duration::from_secs(30),
             invitation_ttl: Duration::from_secs(15 * 60),
+            call_ttl: Duration::from_secs(anyplay_api::CALL_RING_SECONDS),
             ping_interval: Duration::from_secs(20),
             sweep_interval: Duration::from_secs(5),
             node_timeout: Duration::from_secs(30),

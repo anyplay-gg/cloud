@@ -1869,3 +1869,24 @@ async fn migration_0005_keeps_the_bans_and_reports_that_exist_and_gives_bans_a_s
         .unwrap();
     assert_eq!(reports, 1);
 }
+
+#[tokio::test]
+async fn a_muted_account_cannot_call() {
+    let cloud = cloud().await;
+    let (sam, kim) = cloud.friends("Sam", "Kim").await;
+    take_action(
+        &cloud,
+        ADMIN,
+        json!({"account": sam.id, "kind": "mute", "rule": "spam", "reason": "Quiet.", "days": 1}),
+    )
+    .await;
+    let refused = cloud
+        .post(
+            "/v1/party/invitations",
+            sam.token(),
+            json!({"to": [kim.id], "call": true}),
+        )
+        .await;
+    refused.is_error("restricted", 403);
+    assert_eq!(refused.body["restriction"], "muted");
+}
