@@ -142,16 +142,40 @@ async fn the_player_edits_their_own_profile_privacy_and_avatar() {
 
     let privacy = portal.get("/me/privacy").await.ok(200);
     assert_eq!(privacy["about"], "friends");
+    assert_eq!(privacy["feed"], "friends");
     let set = portal
         .send(
             Method::PUT,
             "/me/privacy",
             json!({"about": "everyone", "trophies": "nobody", "favourites": "friends",
-                   "avatar": "everyone", "playtime": "friends"}),
+                   "avatar": "everyone", "playtime": "friends", "feed": "nobody"}),
         )
         .await
         .ok(200);
     assert_eq!(set["about"], "everyone");
+    assert_eq!(set["feed"], "nobody");
+    assert_eq!(portal.get("/me/privacy").await.ok(200)["feed"], "nobody");
+    // The /v1 rule: a part left out takes the default, so a client sends all six.
+    let reset = portal
+        .send(Method::PUT, "/me/privacy", json!({"feed": "everyone"}))
+        .await
+        .ok(200);
+    assert_eq!(reset["feed"], "everyone");
+    assert_eq!(reset["about"], "friends");
+    portal
+        .send(Method::PUT, "/me/privacy", json!({"feed": "public"}))
+        .await
+        .error(400, "bad_request");
+    assert_eq!(portal.get("/me/privacy").await.ok(200)["feed"], "everyone");
+    portal
+        .send(
+            Method::PUT,
+            "/me/privacy",
+            json!({"about": "everyone", "trophies": "nobody", "favourites": "friends",
+                   "avatar": "everyone", "playtime": "friends", "feed": "nobody"}),
+        )
+        .await
+        .ok(200);
     assert_eq!(
         portal.get("/me/privacy").await.ok(200)["trophies"],
         "nobody"
