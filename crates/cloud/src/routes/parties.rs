@@ -182,6 +182,11 @@ pub async fn invite(
     tx.commit().await?;
 
     for invitation in new {
+        crate::push::notify(
+            &state,
+            invitation.to(),
+            crate::push::Note::party_invite(&invitation.from_handle),
+        );
         state.news.push(
             invitation.to(),
             &Event::PartyInvitation {

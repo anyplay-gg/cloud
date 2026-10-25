@@ -60,6 +60,8 @@ The landing page (anyplay-gg/web) can run on the cloud's host name: Caddy sends 
 
 The website also serves the privacy notice and the terms of use at `/privacy` and `/terms` (`deploy/web.caddy` routes them). Point the cloud at them in `deploy/.env`: `PRIVACY_URL=https://<your host>/privacy`, `TERMS_URL=https://<your host>/terms` and `TERMS_VERSION` equal to the version the terms page shows. The texts name AnyPlay as the operator and its e-mail address; if you run your own cloud, publish your own texts instead.
 
+Notifications need the website to serve `/sw.js` (the service worker), `/manifest.webmanifest` and `/icons/*` from the root of the host name; `deploy/web.caddy` sends them there. The worker must not be cached for long: the web app sends it with `Cache-Control: no-cache`, so a new version reaches browsers within a day at the latest. Set the VAPID settings of [Notifications](configuration.md#notifications-web-push) in the cloud's environment.
+
 To take the website down again, remove the `COMPOSE_FILE` line and run `docker compose up -d --remove-orphans`.
 
 ## Linked accounts
@@ -68,5 +70,7 @@ The account web lets players link Discord and Steam ([configuration](configurati
 
 - `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET`: the OAuth2 client of the cloud's Discord application, with `https://<CLOUD_DOMAIN>/web/links/discord/callback` as a redirect in the Discord Developer Portal.
 - `STEAM_API_KEY`: a Steam Web API key, for the player's Steam name and picture.
+
+- `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT`: the key of Web Push notifications and a contact (`mailto:...`). Make the key with `docker compose run --rm cloud vapid-keys`; see [Notifications](configuration.md#notifications-web-push). Keep the key: a new one drops every subscription.
 
 Run `deploy/update.sh` after a change so the cloud container picks them up.

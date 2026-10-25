@@ -132,6 +132,29 @@ Notes:
 - A player who changes the application's secret in the Developer Portal breaks new Discord links until the cloud has the new one; existing connections are unaffected, since nothing is refreshed.
 - A start waits 5 minutes for the provider. An account may start 10 links per hour.
 
+### Notifications (Web Push)
+
+Players can turn on notifications in the portal (`/account/notifications`). The cloud then sends a push to their browsers when they get a friend request, a party or game invitation, or a message ([spec](https://github.com/anyplay-gg/network/blob/main/spec/portal-api.md#notifications-web-push)). A push names who wrote and never holds the text of a message. Without the two settings below the cloud sends nothing, `GET /web/api/v1/push` answers `enabled: false`, and the portal hides the switch.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `vapid_private_key` | none | The cloud's VAPID private key: 32 bytes in unpadded base64url. A secret: keep it in the environment or a secret mount, never in a file in a repository. The public key is derived from it. Environment variable `ANYPLAY_CLOUD_VAPID_PRIVATE_KEY`. |
+| `vapid_subject` | none | A contact the push services can use to reach the operator, `mailto:ops@example.com` or `https://example.com/contact`. Set it together with the key. Environment variable `ANYPLAY_CLOUD_VAPID_SUBJECT`. |
+
+To switch it on:
+
+1. Make a key pair: `anyplay-cloud vapid-keys` (in the container: `docker compose run --rm cloud vapid-keys`). It prints the two environment lines and the public key, and stores nothing.
+2. Put `ANYPLAY_CLOUD_VAPID_PRIVATE_KEY` and `ANYPLAY_CLOUD_VAPID_SUBJECT` into the environment of the cloud and restart it. `GET /web/api/v1/push` then answers `enabled: true` with the public key.
+3. **Do not change the key later.** A subscription is bound to the key it was made with; with another key the push services refuse every send, and each subscription is removed after five failures. Players turn notifications on again.
+4. Check it with a test account: turn notifications on in the portal, then send that account a friend request from another one.
+
+Notes:
+
+- The cloud calls the push services of the browsers itself (`fcm.googleapis.com`, `updates.push.services.mozilla.com`, `*.push.apple.com`, `*.notify.windows.com`), so it needs outbound HTTPS to them. A subscription for any other address is refused, so a player cannot aim the cloud at an internal address.
+- A subscription the push service reports as gone (404 or 410) is deleted at once; one that fails five times in a row is deleted too. An account may hold 10. Subscriptions are deleted with the account, and are in the export (`notification_devices`: name, kinds, date; never the keys or the address).
+- Metrics: `anyplay_cloud_push_sent_total`, `anyplay_cloud_push_failed_total` and `anyplay_cloud_push_pruned_total`.
+- The service worker the browser registers is served by the web app, not by the cloud. It must be reachable at `/sw.js` on the cloud's origin (see `deploy.md`).
+
 ### Fixed values
 
 These come from the API specification and are not settings (a party member that stays disconnected for 15 minutes leaves its party; a party has 8 members, a group conversation 32, a message 2,000 characters; an account may send 30 messages a minute and open 10 conversations an hour with people who are not its friends): a sign-in code has 6 digits, lives 10 minutes and allows 5 tries; an access token lives 15 minutes; a proof from a device key is accepted for 60 seconds and once; the one-time code that hands a browser sign-in to the app, and a link from the app to the account web, live 60 seconds and are used once; a passkey ceremony may take 5 minutes; a browser session lives 30 minutes unused and 4 hours at most, and removing a passkey, adding one, signing out everywhere or deleting the account needs a sign-in from the last 15 minutes; an account may have 10 passkeys; a relay ticket 24 hours, and an account may ask for 20 of them per hour; an invitation 15 minutes; an account stays online 10 seconds after its last event connection closes and keeps its sessions for 30 seconds; a virtual address is kept 10 minutes after an account goes offline; the cloud pings every 20 seconds. At most 10 devices stay signed in per account; a new one replaces the one used least recently.

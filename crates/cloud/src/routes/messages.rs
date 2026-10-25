@@ -395,8 +395,10 @@ pub async fn send(
             continue;
         } else if member_state == ACCEPTED {
             state.news.push(account, &pointer);
+            crate::push::notify(&state, account, crate::push::Note::message(&handle, &id));
         } else if member_state == REQUEST && seq == 1 {
             // Told once; the rest wait in the request.
+            crate::push::notify(&state, account, crate::push::Note::message(&handle, &id));
             state.news.push(
                 account,
                 &Event::MessageRequest {

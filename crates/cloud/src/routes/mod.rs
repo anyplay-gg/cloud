@@ -218,6 +218,14 @@ async fn metrics(State(state): State<AppState>) -> Response {
         connections,
         news_sent,
         news_received,
+        push: state.push.as_ref().map(|p| {
+            use std::sync::atomic::Ordering::Relaxed;
+            (
+                p.sent.load(Relaxed),
+                p.failed.load(Relaxed),
+                p.pruned.load(Relaxed),
+            )
+        }),
     });
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], text).into_response()
 }
