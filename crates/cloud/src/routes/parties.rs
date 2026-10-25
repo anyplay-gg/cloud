@@ -62,6 +62,7 @@ async fn make_party(state: &AppState, account: u64, handle: String) -> Result<Pa
         last_seq: 0,
         created,
         updated_ms: now_ms(),
+        rev: 0,
     };
     let mut tx = state.begin_write().await?;
     party::insert_party(&mut tx, &row).await?;

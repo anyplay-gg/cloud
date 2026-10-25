@@ -176,8 +176,9 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
         })).collect::<Vec<_>>(),
         "party": party,
         "conversations": conversations,
-        "messages": messages.iter().map(|(conversation, seq, text, created)| json!({
-            "conversation": conversation, "seq": seq, "text": text, "created": created,
+        "messages": messages.iter().map(|m| json!({
+            "conversation": m.conversation, "seq": m.seq, "text": m.text, "created": m.created,
+            "edited": m.edited, "unsent": m.deleted, "reply": m.reply,
         })).collect::<Vec<_>>(),
     }))
 }

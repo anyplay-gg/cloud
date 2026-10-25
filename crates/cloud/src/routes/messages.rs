@@ -3,12 +3,14 @@
 //! numbered per conversation inside the transaction that stores them (see `chat`). The events
 //! are pointers: a client that hears `message` fetches the messages after the number it has.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use anyplay_api::{
-    AccountId, AddToConversation, Added, Conversation, ConversationKind, Conversations,
-    CreateConversation, ErrorCode, Event, MAX_CONVERSATION_NAME, MAX_GROUP_MEMBERS,
-    MAX_MESSAGES_PAGE, MarkRead, Message, Messages, SendMessage, is_message_text,
+    AccountId, AddToConversation, Added, Conversation, ConversationKind, ConversationSettings,
+    Conversations, CreateConversation, EDIT_WINDOW_SECS, EditMessage, ErrorCode, Event,
+    MAX_CONVERSATION_NAME, MAX_GROUP_MEMBERS, MAX_MESSAGES_PAGE, MAX_PINNED, MarkRead, Message,
+    MessageReaction, Messages, ReactToMessage, SendMessage, TypingSignal, is_message_text,
 };
 use axum::Json;
 use axum::extract::rejection::QueryRejection;
@@ -156,6 +158,7 @@ async fn open_direct(state: &AppState, me: u64, other: u64) -> Result<String> {
         last_seq: 0,
         created: created as i64,
         updated_ms: now_ms(),
+        rev: 0,
     };
     let mut tx = state.begin_write().await?;
     // The insert is the first write: when the pair has a conversation already, it does nothing.
@@ -205,6 +208,7 @@ async fn open_group(
         last_seq: 0,
         created: created as i64,
         updated_ms: now_ms(),
+        rev: 0,
     };
     let mut tx = state.begin_write().await?;
     chat::insert_conversation(&mut tx, &row).await?;
@@ -349,6 +353,31 @@ pub async fn send(
         .find(|m| m.id() == auth.account && m.state != DECLINED)
         .ok_or_else(AppError::not_found)?;
     let mut states: HashMap<u64, i64> = members.iter().map(|m| (m.id(), m.state)).collect();
+    let from_seq = me.from_seq.max(0) as u64;
+    // Who muted the conversation still hears the event, so its numbers stay right, but gets no
+    // notification.
+    let muted: HashSet<u64> = members
+        .iter()
+        .filter(|m| m.muted == 1)
+        .map(|m| m.id())
+        .collect();
+    if let Some(reply) = request.reply {
+        let quoted = chat::stored_message(&mut tx, &id, reply)
+            .await?
+            .filter(|_| reply as i64 > me.from_seq)
+            .ok_or_else(AppError::not_found)?;
+        if chat::hidden_from(&mut tx, &id, reply)
+            .await?
+            .contains(&auth.account)
+        {
+            return Err(AppError::not_found());
+        }
+        if quoted.deleted() {
+            return Err(AppError::bad_request(
+                "An unsent message cannot be answered.",
+            ));
+        }
+    }
     if conversation.kind() == ConversationKind::Direct {
         let other = members
             .iter()
@@ -375,7 +404,16 @@ pub async fn send(
         }
     }
     let seq = chat::next_seq(&mut tx, &id, created_ms).await?;
-    chat::insert_message(&mut tx, &id, seq, auth.account, &request.text, created_ms).await?;
+    chat::insert_message(
+        &mut tx,
+        &id,
+        seq,
+        auth.account,
+        &request.text,
+        created_ms,
+        request.reply,
+    )
+    .await?;
     chat::set_read(&mut tx, &id, auth.account, seq).await?;
     // A block in either direction keeps the message from the other side for good.
     let blocked = chat::blocked_members(&mut tx, &id, auth.account).await?;
@@ -395,10 +433,14 @@ pub async fn send(
             continue;
         } else if member_state == ACCEPTED {
             state.news.push(account, &pointer);
-            crate::push::notify(&state, account, crate::push::Note::message(&handle, &id));
+            if !muted.contains(&account) {
+                crate::push::notify(&state, account, crate::push::Note::message(&handle, &id));
+            }
         } else if member_state == REQUEST && seq == 1 {
             // Told once; the rest wait in the request.
-            crate::push::notify(&state, account, crate::push::Note::message(&handle, &id));
+            if !muted.contains(&account) {
+                crate::push::notify(&state, account, crate::push::Note::message(&handle, &id));
+            }
             state.news.push(
                 account,
                 &Event::MessageRequest {
@@ -407,22 +449,22 @@ pub async fn send(
             );
         }
     }
-    Ok(Json(Message {
-        conversation: id,
-        seq,
-        sender: anyplay_api::Account {
-            id: AccountId(auth.account),
-            handle,
-        },
-        text: request.text,
-        created: (created_ms / 1000) as u64,
-    }))
+    // The message as its writer reads it, with the quote of the message it answers.
+    let mut conn = state.db.acquire().await?;
+    let sent = chat::messages_after(&mut conn, &id, auth.account, from_seq, seq - 1, 1)
+        .await?
+        .into_iter()
+        .next()
+        .filter(|m| m.seq == seq)
+        .ok_or_else(AppError::internal)?;
+    Ok(Json(sent))
 }
 
 #[derive(Deserialize)]
 pub struct MessagesQuery {
     after: Option<u64>,
     before: Option<u64>,
+    changed_after: Option<u64>,
     limit: Option<u32>,
 }
 
@@ -435,33 +477,369 @@ pub async fn messages(
     query: Result<Query<MessagesQuery>, QueryRejection>,
 ) -> Result<Json<Messages>> {
     let Query(query) = query.map_err(|_| AppError::bad_request("The query is not valid."))?;
-    if query.after.is_some() && query.before.is_some() {
-        return Err(AppError::bad_request("Give after or before, not both."));
+    if u8::from(query.after.is_some())
+        + u8::from(query.before.is_some())
+        + u8::from(query.changed_after.is_some())
+        > 1
+    {
+        return Err(AppError::bad_request(
+            "Give after, before or changed_after, one of them.",
+        ));
     }
     let limit = query
         .limit
         .unwrap_or(DEFAULT_PAGE)
         .clamp(1, MAX_MESSAGES_PAGE);
     let mut conn = state.db.acquire().await?;
-    let (conversation, _, me) = membership(&mut conn, &id, auth.account).await?;
+    let (conversation, members, me) = membership(&mut conn, &id, auth.account).await?;
     let floor = me.from_seq.max(0) as u64;
-    let messages = match query.before {
-        Some(before) => {
-            chat::messages_before(&mut conn, &id, auth.account, before, floor, limit).await?
-        }
-        None if query.after.is_some() => {
-            let above = query.after.unwrap_or(0).max(floor);
-            chat::messages_after(&mut conn, &id, auth.account, above, limit).await?
-        }
-        None => {
-            let below = conversation.last().saturating_add(1);
-            chat::messages_before(&mut conn, &id, auth.account, below, floor, limit).await?
-        }
+    let messages = if let Some(rev) = query.changed_after {
+        chat::messages_changed(&mut conn, &id, auth.account, floor, rev, limit).await?
+    } else if let Some(before) = query.before {
+        chat::messages_before(&mut conn, &id, auth.account, floor, before, limit).await?
+    } else if let Some(after) = query.after {
+        chat::messages_after(&mut conn, &id, auth.account, floor, after, limit).await?
+    } else {
+        let below = conversation.last().saturating_add(1);
+        chat::messages_before(&mut conn, &id, auth.account, floor, below, limit).await?
     };
+    // A direct conversation learns that this account's device has the messages, unless a
+    // block lies between the two.
+    let blocked_here = !chat::blocked_members(&mut conn, &id, auth.account)
+        .await?
+        .is_empty();
+    if query.changed_after.is_none()
+        && me.state == ACCEPTED
+        && !blocked_here
+        && conversation.kind() == ConversationKind::Direct
+        && let Some(top) = messages.iter().map(|m| m.seq).max()
+        && chat::set_delivered(&mut conn, &id, auth.account, top.min(conversation.last())).await?
+    {
+        let event = Event::Delivered {
+            conversation: id.clone(),
+            account: AccountId(auth.account),
+            seq: top.min(conversation.last()),
+        };
+        let told = members
+            .iter()
+            .filter(|m| m.state == ACCEPTED && m.id() != auth.account)
+            .map(|m| m.id());
+        push_all(&state, told, &event);
+    }
     Ok(Json(Messages {
         messages,
         last: conversation.last(),
+        rev: conversation.rev(),
     }))
+}
+
+fn changes_limit(state: &AppState, account: u64) -> Result<()> {
+    let rates = &state.tuning.rates;
+    state
+        .limiter
+        .hit(
+            &format!("message_changes:{account}"),
+            rates.message_changes,
+            rates.message_changes_window,
+        )
+        .map_err(AppError::rate_limited)
+}
+
+/// A message the caller may change or react to, read under the conversation's lock.
+struct Target {
+    members: Vec<chat::MemberRow>,
+    me: chat::MemberRow,
+    conversation: ConversationRow,
+    stored: chat::StoredMessage,
+    hidden: Vec<u64>,
+}
+
+async fn lock_target(conn: &mut Conn, id: &str, account: u64, seq: u64) -> Result<Target> {
+    let conversation = chat::lock_conversation(conn, id)
+        .await?
+        .ok_or_else(AppError::not_found)?;
+    let members = chat::members(conn, id).await?;
+    let me = members
+        .iter()
+        .find(|m| m.id() == account && m.state != DECLINED)
+        .cloned()
+        .ok_or_else(AppError::not_found)?;
+    let stored = chat::stored_message(conn, id, seq)
+        .await?
+        .ok_or_else(AppError::not_found)?;
+    let hidden = chat::hidden_from(conn, id, seq).await?;
+    // A message from before the caller joined, or one a block kept from it, does not exist.
+    if (seq as i64) <= me.from_seq || hidden.contains(&account) {
+        return Err(AppError::not_found());
+    }
+    Ok(Target {
+        members,
+        me,
+        conversation,
+        stored,
+        hidden,
+    })
+}
+
+/// Takes the next revision for a message changed inside the transaction.
+async fn revise(conn: &mut Conn, id: &str, seq: u64) -> Result<u64> {
+    let rev = chat::next_rev(conn, id).await?;
+    chat::stamp_message(conn, id, seq, rev).await?;
+    Ok(rev)
+}
+
+/// Tells everyone who may see the message that it changed.
+fn announce(state: &AppState, id: &str, seq: u64, rev: u64, target: &Target) {
+    announce_except(state, id, seq, rev, target, &[]);
+}
+
+/// Like [`announce`], leaving out members for whom the change is invisible.
+fn announce_except(
+    state: &AppState,
+    id: &str,
+    seq: u64,
+    rev: u64,
+    target: &Target,
+    except: &[u64],
+) {
+    let event = Event::MessageUpdate {
+        conversation: id.to_owned(),
+        seq,
+        rev,
+    };
+    let told = target
+        .members
+        .iter()
+        .filter(|m| {
+            m.state != DECLINED && !target.hidden.contains(&m.id()) && !except.contains(&m.id())
+        })
+        .map(|m| m.id());
+    push_all(state, told, &event);
+}
+
+/// The message as the caller reads it now.
+async fn reread(state: &AppState, id: &str, target: &Target, seq: u64) -> Result<Json<Message>> {
+    let mut conn = state.db.acquire().await?;
+    let floor = target.me.from_seq.max(0) as u64;
+    chat::messages_after(
+        &mut conn,
+        id,
+        target.me.id(),
+        floor,
+        seq.saturating_sub(1),
+        1,
+    )
+    .await?
+    .into_iter()
+    .next()
+    .filter(|m| m.seq == seq)
+    .map(Json)
+    .ok_or_else(AppError::not_found)
+}
+
+/// Changes the text of the caller's own message, for 15 minutes.
+pub async fn edit(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path((id, seq)): Path<(String, u64)>,
+    ApiJson(request): ApiJson<EditMessage>,
+) -> Result<Json<Message>> {
+    ensure_not_muted(&state, auth.account).await?;
+    if !is_message_text(&request.text) {
+        return Err(AppError::bad_request(
+            "A message has 1 to 2000 characters and is not only white space.",
+        ));
+    }
+    changes_limit(&state, auth.account)?;
+    let mut tx = state.begin_write().await?;
+    let target = lock_target(&mut tx, &id, auth.account, seq).await?;
+    if target.stored.sender() != auth.account {
+        return Err(AppError::forbidden("You can edit your own messages only."));
+    }
+    if target.stored.deleted() {
+        return Err(AppError::bad_request("An unsent message cannot be edited."));
+    }
+    let now = now_ms();
+    if now - target.stored.created_ms > (EDIT_WINDOW_SECS * 1000) as i64 {
+        return Err(AppError::forbidden(
+            "A message can be edited for 15 minutes after it was sent.",
+        ));
+    }
+    let mut revision = None;
+    if target.stored.body != request.text {
+        chat::hold_text(&mut tx, &id, seq, &target.stored.body, now).await?;
+        chat::edit_message(&mut tx, &id, seq, &request.text, now).await?;
+        revision = Some(revise(&mut tx, &id, seq).await?);
+    }
+    tx.commit().await?;
+    if let Some(rev) = revision {
+        announce(&state, &id, seq, rev, &target);
+    }
+    reread(&state, &id, &target, seq).await
+}
+
+/// Removes the text of the caller's own message for everyone and leaves a marker.
+pub async fn unsend(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path((id, seq)): Path<(String, u64)>,
+) -> Result<Json<Message>> {
+    changes_limit(&state, auth.account)?;
+    let mut tx = state.begin_write().await?;
+    let target = lock_target(&mut tx, &id, auth.account, seq).await?;
+    if target.stored.sender() != auth.account {
+        return Err(AppError::forbidden(
+            "You can unsend your own messages only.",
+        ));
+    }
+    let mut revision = None;
+    if !target.stored.deleted() {
+        chat::hold_text(&mut tx, &id, seq, &target.stored.body, now_ms()).await?;
+        chat::unsend_message(&mut tx, &id, seq, now_ms()).await?;
+        revision = Some(revise(&mut tx, &id, seq).await?);
+    }
+    tx.commit().await?;
+    if let Some(rev) = revision {
+        announce(&state, &id, seq, rev, &target);
+    }
+    reread(&state, &id, &target, seq).await
+}
+
+pub async fn react(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path((id, seq)): Path<(String, u64)>,
+    ApiJson(request): ApiJson<ReactToMessage>,
+) -> Result<Json<Message>> {
+    ensure_not_muted(&state, auth.account).await?;
+    set_reaction(&state, auth.account, &id, seq, Some(request.reaction)).await
+}
+
+pub async fn unreact(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path((id, seq)): Path<(String, u64)>,
+) -> Result<Json<Message>> {
+    set_reaction(&state, auth.account, &id, seq, None).await
+}
+
+async fn set_reaction(
+    state: &AppState,
+    account: u64,
+    id: &str,
+    seq: u64,
+    reaction: Option<MessageReaction>,
+) -> Result<Json<Message>> {
+    changes_limit(state, account)?;
+    let mut tx = state.begin_write().await?;
+    let target = lock_target(&mut tx, id, account, seq).await?;
+    if target.me.state != ACCEPTED {
+        return Err(AppError::forbidden("Accept the conversation first."));
+    }
+    if target.stored.deleted() {
+        return Err(AppError::bad_request(
+            "An unsent message cannot be reacted to.",
+        ));
+    }
+    if target.conversation.kind() == ConversationKind::Direct
+        && let Some(other) = target.members.iter().find(|m| m.id() != account)
+        && chat::has_blocked(&mut tx, account, other.id()).await?
+    {
+        return Err(AppError::forbidden(
+            "You blocked this account. Unblock it first.",
+        ));
+    }
+    let current = chat::reaction_of(&mut tx, id, seq, account).await?;
+    let mut revision = None;
+    if current.as_deref() != reaction.map(MessageReaction::as_str) {
+        chat::set_reaction(&mut tx, id, seq, account, reaction, now_ms()).await?;
+        revision = Some(revise(&mut tx, id, seq).await?);
+    }
+    tx.commit().await?;
+    if let Some(rev) = revision {
+        // Members a block lies between and the reactor do not hear of it.
+        let blocked = chat::blocked_members(&mut *state.db.acquire().await?, id, account).await?;
+        announce_except(state, id, seq, rev, &target, &blocked);
+    }
+    reread(state, id, &target, seq).await
+}
+
+/// Tells the other members that the caller types. Nothing is stored, and a signal that comes
+/// too soon after the last one is dropped with the same answer.
+pub async fn typing(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path(id): Path<String>,
+    ApiJson(signal): ApiJson<TypingSignal>,
+) -> Result<StatusCode> {
+    let mut conn = state.db.acquire().await?;
+    let (_, members, me) = membership(&mut conn, &id, auth.account).await?;
+    if me.state != ACCEPTED || ensure_not_muted(&state, auth.account).await.is_err() {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    if signal.typing {
+        let rates = &state.tuning.rates;
+        let per_conversation = state.limiter.hit(
+            &format!("typing:{}:{id}", auth.account),
+            1,
+            Duration::from_secs(2),
+        );
+        if per_conversation.is_err()
+            || state
+                .limiter
+                .hit(
+                    &format!("typing_all:{}", auth.account),
+                    rates.typing,
+                    rates.typing_window,
+                )
+                .is_err()
+        {
+            return Ok(StatusCode::NO_CONTENT);
+        }
+    }
+    let blocked = chat::blocked_members(&mut conn, &id, auth.account).await?;
+    let event = Event::Typing {
+        conversation: id,
+        account: AccountId(auth.account),
+        typing: signal.typing,
+    };
+    let told = members
+        .iter()
+        .filter(|m| m.state == ACCEPTED && m.id() != auth.account && !blocked.contains(&m.id()))
+        .map(|m| m.id());
+    push_all(&state, told, &event);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Mutes or pins the conversation for the caller only.
+pub async fn settings(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path(id): Path<String>,
+    ApiJson(request): ApiJson<ConversationSettings>,
+) -> Result<Json<Conversation>> {
+    let mut tx = state.begin_write().await?;
+    let members = chat::members(&mut tx, &id).await?;
+    let me = members
+        .iter()
+        .find(|m| m.id() == auth.account && m.state != DECLINED)
+        .ok_or_else(AppError::not_found)?;
+    if request.pinned == Some(true)
+        && me.pinned == 0
+        && chat::count_pinned(&mut tx, auth.account).await? >= MAX_PINNED
+    {
+        return Err(AppError::limit("You can pin 5 conversations."));
+    }
+    chat::set_settings(&mut tx, &id, auth.account, request.muted, request.pinned).await?;
+    tx.commit().await?;
+    // The caller's other devices read the new settings.
+    state
+        .news
+        .push(auth.account, &Event::Conversation { id: id.clone() });
+    let conversation = chat::conversation_of(&mut *state.db.acquire().await?, auth.account, &id)
+        .await?
+        .ok_or_else(AppError::internal)?;
+    Ok(Json(conversation))
 }
 
 pub async fn mark_read(

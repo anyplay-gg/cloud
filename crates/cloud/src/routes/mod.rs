@@ -136,6 +136,16 @@ pub fn router(state: AppState) -> Router {
             path::CONVERSATION_MESSAGES,
             get(messages::messages).post(messages::send),
         )
+        .route(
+            path::CONVERSATION_MESSAGE,
+            patch(messages::edit).delete(messages::unsend),
+        )
+        .route(
+            path::CONVERSATION_REACTION,
+            put(messages::react).delete(messages::unreact),
+        )
+        .route(path::CONVERSATION_TYPING, put(messages::typing))
+        .route(path::CONVERSATION_SETTINGS, patch(messages::settings))
         .route(path::CONVERSATION_READ, put(messages::mark_read));
     // Moderation (docs/moderation.md)
     router = router
