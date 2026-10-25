@@ -1,4 +1,4 @@
-//! Run reports (migration 0014).
+//! Run reports (migration 0015).
 
 use anyplay_api::{Os, RunReport, Verdict, VerdictCounts};
 
@@ -148,4 +148,47 @@ pub async fn of_account(pool: &Pool, account: u64) -> sqlx::Result<Vec<Row>> {
             updated,
         })
         .collect())
+}
+
+/// How many accounts gave each verdict, per title and per title and game version, each account
+/// with its latest report in that scope: `(title_id, version, verdict, accounts)`. A `None`
+/// version is the whole title.
+pub async fn all_counts(pool: &Pool) -> sqlx::Result<Vec<(String, Option<String>, Verdict, u32)>> {
+    let mut rows = Vec::new();
+    for by_version in [false, true] {
+        let (partition, select, group) = if by_version {
+            (
+                "account_id, title_id, version",
+                "title_id, version, verdict",
+                "title_id, version, verdict",
+            )
+        } else {
+            (
+                "account_id, title_id",
+                "title_id, '' AS version, verdict",
+                "title_id, verdict",
+            )
+        };
+        let sql = format!(
+            "SELECT {select}, COUNT(*) FROM (\
+               SELECT title_id, version, verdict, ROW_NUMBER() OVER (\
+                 PARTITION BY {partition} ORDER BY updated DESC, version DESC, toolkit DESC) AS pos \
+               FROM run_reports\
+             ) AS latest WHERE pos = 1 GROUP BY {group}"
+        );
+        let found: Vec<(String, String, String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .fetch_all(pool)
+            .await?;
+        for (title, version, verdict, n) in found {
+            if let Some(verdict) = verdict_of(&verdict) {
+                rows.push((
+                    title,
+                    by_version.then_some(version),
+                    verdict,
+                    u32::try_from(n).unwrap_or(u32::MAX),
+                ));
+            }
+        }
+    }
+    Ok(rows)
 }

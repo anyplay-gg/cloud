@@ -221,3 +221,41 @@ async fn the_export_lists_the_reports_and_deleting_removes_them() {
         .unwrap();
     assert_eq!(left, 0);
 }
+
+#[tokio::test]
+async fn the_public_compatibility_list_needs_no_account_and_holds_only_titles_with_three_players() {
+    let cloud = TestCloud::start().await;
+    let users = players(&cloud, 5).await;
+    for user in &users[..3] {
+        report(&cloud, user, "GAME00001", "01.000", "0.2.0", "playable")
+            .await
+            .ok(204);
+    }
+    report(&cloud, &users[3], "GAME00001", "01.001", "0.2.0", "menus")
+        .await
+        .ok(204);
+    // Two players only: not listed.
+    for user in &users[3..] {
+        report(&cloud, user, "GAME00002", "01.000", "0.2.0", "menus")
+            .await
+            .ok(204);
+    }
+
+    let list = common::portal::Portal::new(&cloud)
+        .get("/compatibility")
+        .await
+        .ok(200);
+    let titles = list["titles"].as_array().unwrap();
+    assert_eq!(titles.len(), 1, "{list}");
+    let title = &titles[0];
+    assert_eq!(title["titleId"], "GAME00001");
+    assert_eq!(title["verdict"], "playable");
+    assert_eq!(title["reports"], 4);
+    assert_eq!(title["counts"]["playable"], 3);
+    assert_eq!(title["counts"]["menus"], 1);
+    // Only the version with three players is named.
+    let versions = title["versions"].as_array().unwrap();
+    assert_eq!(versions.len(), 1);
+    assert_eq!(versions[0]["version"], "01.000");
+    assert_eq!(versions[0]["reports"], 3);
+}

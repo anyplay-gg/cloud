@@ -1,4 +1,4 @@
--- The schema of migrations/sqlite/0014_run_reports.sql for PostgreSQL.
+-- The schema of migrations/sqlite/0015_run_reports.sql for PostgreSQL.
 -- Run reports: a player's answer to "How did it run?" (network spec/cloud-api.md, "Run reports").
 -- One row per account, title, game version and toolkit version; a new answer replaces the old one.
 -- A row holds the verdict ("no_start", "menus", "in_game" or "playable"), the system ("windows",

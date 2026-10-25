@@ -298,6 +298,7 @@ pub fn router() -> Router<AppState> {
         // Other players
         .route("/users/{name}", get(social::user))
         .route("/users/{name}/trophies", get(social::user_trophies))
+        .route("/compatibility", get(social::compatibility))
         .layer(middleware::from_fn(require_json));
     Router::new().nest(BASE, api)
 }
