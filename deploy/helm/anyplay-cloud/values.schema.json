@@ -30,6 +30,7 @@
         "termsUrl": { "type": "string" },
         "publicUrl": { "type": "string" },
         "termsVersion": { "type": "string" },
+        "minLauncherVersion": { "type": "string" },
         "trustProxy": { "type": "boolean" },
         "databaseConnections": { "type": "integer", "minimum": 1 },
         "postgresMaxConnections": { "type": "integer", "minimum": 1 },
