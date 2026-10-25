@@ -58,6 +58,8 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
     let (about, favourites) = db::profiles::profile_of(&state.db, account_id).await?;
     let avatar = db::profiles::avatar_of(&state.db, account_id).await?;
     let playtime = db::profiles::playtime_of(&state.db, account_id).await?;
+    let feed_items = db::feed::items_about(&state.db, account_id).await?;
+    let feed_reactions = db::feed::reactions_by(&state.db, account_id).await?;
     let (conversations, messages, party) = {
         let mut conn = state.db.acquire().await?;
         let conversations = crate::chat::conversations_of(&mut conn, account_id).await?;
@@ -131,6 +133,15 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
             "png": base64::engine::general_purpose::STANDARD.encode(&a.picture),
         })),
         "playtime": playtime,
+        "feed": feed_items.iter().map(|item| json!({
+            "id": item.id(), "kind": item.kind, "title_id": item.title_id,
+            "trophy_number": item.trophy_number, "grade": item.grade,
+            "with": item.other_account, "members": item.member_ids(),
+            "created": item.created,
+        })).collect::<Vec<_>>(),
+        "feed_reactions": feed_reactions.iter().map(|(item, reaction, created)| json!({
+            "item": item, "reaction": reaction, "created": created,
+        })).collect::<Vec<_>>(),
         "party": party,
         "conversations": conversations,
         "messages": messages.iter().map(|(conversation, seq, text, created)| json!({
