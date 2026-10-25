@@ -1,6 +1,6 @@
 # Moderation
 
-For operators of a cloud. It describes what the cloud does when players report each other, how moderators work, what a player sees, and how long the data lives. The API is in the [network spec](https://github.com/anyplay-gg/network/blob/main/spec/cloud-api.md#moderation); the decision behind the model is [network ADR 0015](https://github.com/anyplay-gg/network/blob/main/docs/adr/0015-moderators-are-accounts.md). The legal background is in [compliance/dsa.md](compliance/dsa.md). Whether these settings and periods are right for you is a question for your lawyer.
+For operators of a cloud. It describes what the cloud does when players report each other, how moderators work, what a player sees, and how long the data lives. The API is in the [network spec](https://github.com/anyplaynet/network/blob/main/spec/cloud-api.md#moderation); the decision behind the model is [network ADR 0015](https://github.com/anyplaynet/network/blob/main/docs/adr/0015-moderators-are-accounts.md). The legal background is in [compliance/dsa.md](compliance/dsa.md). Whether these settings and periods are right for you is a question for your lawyer.
 
 ## The model in short
 

@@ -1,8 +1,8 @@
 # AnyPlay Cloud
 
-The services behind the [AnyPlay network](https://github.com/anyplay-gg/network): accounts, friends, presence, sessions, invitations and moderation, plus relays that carry game traffic when two players cannot reach each other directly. One program runs a whole cloud on a home server with `docker compose up`. The same program is being built to run as a cluster that carries a network of millions of players.
+The services behind the [AnyPlay network](https://github.com/anyplaynet/network): accounts, friends, presence, sessions, invitations and moderation, plus relays that carry game traffic when two players cannot reach each other directly. One program runs a whole cloud on a home server with `docker compose up`. The same program is being built to run as a cluster that carries a network of millions of players.
 
-**Status: version 0, open to everyone.** The AnyPlay cloud runs at [anyplaynet.com](https://anyplaynet.com), together with the [website and account web](https://github.com/anyplay-gg/web). Everything in the [cloud API](https://github.com/anyplay-gg/network/blob/main/spec/cloud-api.md) works and is tested end to end; the API may still change while the version is 0. Found a problem? Tell us on Discord. The road from one process to a cluster is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Questions and ideas: the [AnyPlay Discord](https://discord.gg/nSHbHBRdS).
+**Status: version 0, open to everyone.** The AnyPlay cloud runs at [anyplaynet.com](https://anyplaynet.com), together with the [website and account web](https://github.com/anyplaynet/web). Everything in the [cloud API](https://github.com/anyplaynet/network/blob/main/spec/cloud-api.md) works and is tested end to end; the API may still change while the version is 0. Found a problem? Tell us on Discord. The road from one process to a cluster is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Questions and ideas: the [AnyPlay Discord](https://discord.gg/nSHbHBRdS).
 
 ## What it does
 
@@ -64,7 +64,7 @@ The build needs the network repository next to this one, because the cloud uses 
 ```text
 workspace/
   cloud/       this repository
-  network/     anyplay-gg/network
+  network/     anyplaynet/network
 ```
 
 The cloud is built and deployed against one network revision, the commit in [`network.ref`](network.ref). CI, the Docker build in `deploy/update.sh` and the nightly jobs all read that file, so a change on the network's `main` cannot break this repository by itself. Check out that commit in `network/` to build as CI does. A pull request that needs new network code (a new API field, a new crate, a changed `Cargo.lock` entry) bumps `network.ref` in the same pull request; the workflow `network-drift` shows early when `main` of the network has moved on in a way that needs a bump.
@@ -114,7 +114,7 @@ Every pull request runs formatting, Clippy with warnings as errors and all tests
 
 ## What the cloud never does
 
-It never sees game files, never contacts Sony's servers and never stands in for a publisher service that still runs. [The line is drawn at the law](https://github.com/anyplay-gg/network/blob/main/docs/adr/0021-the-line-is-drawn-at-the-law.md) explains where the network's line lies. A game whose online play runs on a live publisher service stays offline on the PlayStation side. Revival servers for services a publisher has shut down are allowed and not built yet.
+It never sees game files, never contacts Sony's servers and never stands in for a publisher service that still runs. [The line is drawn at the law](https://github.com/anyplaynet/network/blob/main/docs/adr/0021-the-line-is-drawn-at-the-law.md) explains where the network's line lies. A game whose online play runs on a live publisher service stays offline on the PlayStation side. Revival servers for services a publisher has shut down are allowed and not built yet.
 
 ## License
 

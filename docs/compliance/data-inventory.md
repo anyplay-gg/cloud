@@ -10,7 +10,7 @@ How to read it:
 - "Operator" means whoever runs the cloud. "Moderator" means a person holding the admin token (`admin_token`); the code has no other staff role.
 - Account, device and session IDs are random numbers (`util::random_id`). They are pseudonyms, not anonymous: the cloud can join them to the e-mail address ([Art. 4(1) and 4(5)](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679)).
 
-Trophy records, profiles, messages and the feed are not in the code yet. Migration 0003 (trophy records, privacy settings) is in flight in another change, per [network ADR 0009](https://github.com/anyplay-gg/network/blob/main/docs/adr/0009-trophy-records-not-trophy-texts.md). That ADR says the cloud keeps only title ID, trophy number, grade and time. [ADR 0011](https://github.com/anyplay-gg/network/blob/main/docs/adr/0011-messages-are-stored-to-be-delivered.md) says messages are stored readable by the cloud for a limited time, and [ADR 0012](https://github.com/anyplay-gg/network/blob/main/docs/adr/0012-private-by-default.md) says profiles start private. The section [In flight](#in-flight-social-layer) lists what to add to this file when they land. (These ADRs are on the network branch `feat/trophies`, not yet on its `main`.)
+Trophy records, profiles, messages and the feed are not in the code yet. Migration 0003 (trophy records, privacy settings) is in flight in another change, per [network ADR 0009](https://github.com/anyplaynet/network/blob/main/docs/adr/0009-trophy-records-not-trophy-texts.md). That ADR says the cloud keeps only title ID, trophy number, grade and time. [ADR 0011](https://github.com/anyplaynet/network/blob/main/docs/adr/0011-messages-are-stored-to-be-delivered.md) says messages are stored readable by the cloud for a limited time, and [ADR 0012](https://github.com/anyplaynet/network/blob/main/docs/adr/0012-private-by-default.md) says profiles start private. The section [In flight](#in-flight-social-layer) lists what to add to this file when they land. (These ADRs are on the network branch `feat/trophies`, not yet on its `main`.)
 
 ## 1. The cloud database
 
@@ -232,7 +232,7 @@ Code: `crates/relay`. It is `iroh-relay` plus ticket checks (`crates/relay/src/l
 | Proposed | Say in the operator guide that a relay must not log IP addresses, or keep such logs no longer than 7 days (suggestion) when needed to stop abuse. Basis for any such log: Art. 6(1)(f). |
 | Who sees it | The relay operator. |
 
-A player who uses the relay-only setting sends all game traffic through the relay, so their direct IP address reaches only the relay and not the other players ([network ADR 0002 and DESIGN](https://github.com/anyplay-gg/network/blob/main/docs/DESIGN.md)).
+A player who uses the relay-only setting sends all game traffic through the relay, so their direct IP address reaches only the relay and not the other players ([network ADR 0002 and DESIGN](https://github.com/anyplaynet/network/blob/main/docs/DESIGN.md)).
 
 ## 5. Hosting, backups and processors
 
@@ -257,7 +257,7 @@ The cloud does not control this data, but the cloud's privacy notice must say wh
 | Activity | Title ID, title, version of the running game | Yes, in presence; friends see it. |
 | Session data | Endpoint ID, relay URL | Yes (see 1.7). |
 | HTTP details | `User-Agent: anyplay-net/<version>`; source IP address | Yes, on every request. The cloud uses the IP for rate limits only. |
-| Observation logs | `observations/<title ID>.jsonl` in the data folder; bridge logs when the player turns on *Record Network Calls* | **No.** "An observation log never leaves the player's PC on its own" ([observation log spec](https://github.com/anyplay-gg/network/blob/main/spec/observation-log.md)). They can hold what a game sends. |
+| Observation logs | `observations/<title ID>.jsonl` in the data folder; bridge logs when the player turns on *Record Network Calls* | **No.** "An observation log never leaves the player's PC on its own" ([observation log spec](https://github.com/anyplaynet/network/blob/main/spec/observation-log.md)). They can hold what a game sends. |
 | Launcher preferences | `preferences.json` in the user's config folder (`launcher/crates/anyps5-core/src/paths.rs`) | No. |
 | Game files, saves | The player's disk | No. Never read by the cloud. |
 

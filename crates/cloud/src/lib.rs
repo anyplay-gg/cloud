@@ -1,6 +1,6 @@
 //! The AnyPlay cloud: accounts, friends, presence, sessions, invitations and relay tickets.
 //!
-//! It implements the API in `spec/cloud-api.md` of anyplay-gg/network, using the types of the
+//! It implements the API in `spec/cloud-api.md` of anyplaynet/network, using the types of the
 //! `anyplay-api` crate for every request, answer and event. Everything that more than one node
 //! needs is in the store: durable data ([`db`]) and live state ([`live`]), in SQLite or
 //! PostgreSQL. A node keeps only its own event connections ([`news`]).
