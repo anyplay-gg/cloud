@@ -88,6 +88,8 @@ pub struct Config {
     pub message_retention_days: u64,
     /// How many days feed items are kept before the sweeps delete them, with their reactions.
     pub feed_retention_days: u64,
+    /// Minutes a join code lives (network `spec/cloud-api.md`, "Join codes").
+    pub join_code_minutes: u64,
     // Moderation (docs/moderation.md)
     /// A secret for the keyed hash of banned e-mail addresses. Without it the cloud makes one in
     /// `data_dir/ban.key`.
@@ -174,6 +176,7 @@ impl Default for Config {
             admin_token: None,
             message_retention_days: 30,
             feed_retention_days: 90,
+            join_code_minutes: 120,
             ban_secret: None,
             new_account_hours: 24,
             new_account_friend_requests_per_day: 10,
@@ -325,6 +328,9 @@ impl Config {
         if let Some(v) = get("FEED_RETENTION_DAYS") {
             self.feed_retention_days = parse("FEED_RETENTION_DAYS", &v)?;
         }
+        if let Some(v) = get("JOIN_CODE_MINUTES") {
+            self.join_code_minutes = parse("JOIN_CODE_MINUTES", &v)?;
+        }
         if let Some(v) = get("BAN_SECRET") {
             self.ban_secret = Some(v);
         }
@@ -387,6 +393,9 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if !(1..=7 * 24 * 60).contains(&self.join_code_minutes) {
+            bail!("join_code_minutes must be 1 to 10080 (a week)");
+        }
         if self.message_retention_days == 0 {
             bail!("message_retention_days must be at least 1");
         }
@@ -817,22 +826,28 @@ mod tests {
     fn messages_are_kept_30_days_and_new_accounts_wait_a_day_by_default() {
         let config = Config::default();
         assert_eq!(config.message_retention_days, 30);
+        assert_eq!(config.join_code_minutes, 120);
         assert_eq!(config.new_account_hours, 24);
         assert_eq!(config.new_account_friend_requests_per_day, 10);
         let mut config = Config::default();
         config
             .apply_env(|name| match name {
                 "MESSAGE_RETENTION_DAYS" => Some("7".into()),
+                "JOIN_CODE_MINUTES" => Some("30".into()),
                 "NEW_ACCOUNT_HOURS" => Some("0".into()),
                 "NEW_ACCOUNT_FRIEND_REQUESTS_PER_DAY" => Some("3".into()),
                 _ => None,
             })
             .unwrap();
         assert_eq!(config.message_retention_days, 7);
+        assert_eq!(config.join_code_minutes, 30);
         assert_eq!(config.new_account_hours, 0);
         assert_eq!(config.new_account_friend_requests_per_day, 3);
         config.validate().unwrap();
         config.message_retention_days = 0;
+        assert!(config.validate().is_err());
+        config.message_retention_days = 7;
+        config.join_code_minutes = 0;
         assert!(config.validate().is_err());
     }
 

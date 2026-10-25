@@ -38,6 +38,7 @@ Without a file, the defaults apply. The cloud runs that way for development: sig
 | `trust_proxy` | `false` | Take a client's address for rate limits from the first hop of `X-Forwarded-For`. Turn it on only behind a proxy that sets the header; otherwise anyone can pick their own address. |
 | `message_retention_days` | `30` | How many days the cloud keeps messages. The sweeps delete older ones, on every node. At least 1. |
 | `feed_retention_days` | `90` | How many days the cloud keeps feed items (trophies earned, new friends, first plays, parties) with their reactions. The sweeps delete older ones, on every node. At least 1. A player's titles played stay remembered, so a first play is not made twice. |
+| `join_code_minutes` | `120` | How long a join code lives. A join code lets a player's Discord friends ask to join their game ([Join codes](https://github.com/anyplay-gg/network/blob/main/spec/cloud-api.md#join-codes)); the launcher asks for a new one before the old one ends. 1 to 10080 (a week). |
 | `admin_token` | none | A secret of at least 16 characters. It switches on the `/admin/v1/...` routes and the `admin` commands, and lets the operator call `/v1/moderation/...` with it. It is the bootstrap for naming the first moderators; whatever it does is logged as `operator`. Without it those routes do not exist. |
 
 The `admin` and `healthcheck` commands read the same settings to find the cloud (`listen`) and the token, so run them with the same environment.
