@@ -98,10 +98,15 @@ jobs:
         with:
           persist-credentials: false
           path: cloud
+      - id: network-pin
+        name: Read the pinned network revision
+        shell: bash
+        run: echo "ref=$(tr -d '[:space:]' < cloud/network.ref)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           repository: anyplay-gg/network
+          ref: ${{ steps.network-pin.outputs.ref }}
           path: network
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:

@@ -67,6 +67,8 @@ workspace/
   network/     anyplay-gg/network
 ```
 
+The cloud is built and deployed against one network revision, the commit in [`network.ref`](network.ref). CI, the Docker build in `deploy/update.sh` and the nightly jobs all read that file, so a change on the network's `main` cannot break this repository by itself. Check out that commit in `network/` to build as CI does. A pull request that needs new network code (a new API field, a new crate, a changed `Cargo.lock` entry) bumps `network.ref` in the same pull request; the workflow `network-drift` shows early when `main` of the network has moved on in a way that needs a bump.
+
 Then:
 
 ```sh

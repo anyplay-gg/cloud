@@ -21,10 +21,15 @@ jobs:
         with:
           persist-credentials: false
           path: repo
+      - id: network-pin
+        name: Read the pinned network revision
+        shell: bash
+        run: echo "ref=$(tr -d '[:space:]' < repo/network.ref)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           repository: anyplay-gg/network
+          ref: ${{ steps.network-pin.outputs.ref }}
           path: network
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:

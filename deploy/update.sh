@@ -5,14 +5,15 @@
 #   cloud/deploy/update.sh [--cloud REF] [--network REF] [--pre-hook CMD] [--timeout SECONDS]
 #                          [--no-rollback] [--dry-run]
 #
-# REF is a commit, tag or branch (a branch means its state on `origin`). Both default to origin/main.
+# REF is a commit, tag or branch (a branch means its state on `origin`). --cloud defaults to
+# origin/main; --network defaults to the commit in `network.ref` of the cloud commit being deployed.
 # Details, what "near-zero downtime" means and how to roll back by hand: docs/deploy.md.
 set -Eeuo pipefail
 
 # Everything lives in a function and runs from the last line: the checkout below replaces this
 # very file, and bash reads a script while it runs.
 main() {
-  local cloud_ref=origin/main network_ref=origin/main hook=${ANYPLAY_UPDATE_HOOK:-} \
+  local cloud_ref=origin/main network_ref='' hook=${ANYPLAY_UPDATE_HOOK:-} \
     timeout=${ANYPLAY_UPDATE_TIMEOUT:-180} rollback=1 dry=0
   while [ $# -gt 0 ]; do
     case $1 in
@@ -60,6 +61,11 @@ main() {
   }
   local cloud_new network_new cloud_old network_old
   cloud_new=$(resolve "$cloud_dir" "${cloud_ref#origin/}")
+  if [ -z "$network_ref" ]; then # the pin that belongs to the cloud commit, not the one checked out now
+    network_ref=$(git -C "$cloud_dir" show "$cloud_new:network.ref" 2>/dev/null | tr -d '[:space:]') \
+      || die "no network.ref in cloud commit ${cloud_new:0:10}; pass --network REF"
+    [ -n "$network_ref" ] || die "network.ref is empty in cloud commit ${cloud_new:0:10}; pass --network REF"
+  fi
   network_new=$(resolve "$network_dir" "${network_ref#origin/}")
   cloud_old=$(git -C "$cloud_dir" rev-parse HEAD)
   network_old=$(git -C "$network_dir" rev-parse HEAD)
