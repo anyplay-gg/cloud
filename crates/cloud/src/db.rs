@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use anyplay_api::handle_skeleton;
 use sqlx::any::{AnyPoolOptions, install_default_drivers};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
 use sqlx::{ConnectOptions as _, Connection as _, Executor as _, FromRow};
@@ -314,6 +315,8 @@ pub enum InsertError {
     Other,
 }
 
+/// Adds an account. `InsertError::Handle` means the handle is taken, by its spelling or by a
+/// look-alike (the same `handle_skeleton`).
 pub async fn insert_account(
     pool: &Pool,
     id: u64,
@@ -322,11 +325,13 @@ pub async fn insert_account(
     created: u64,
 ) -> Result<(), InsertError> {
     let result = sqlx::query(
-        "INSERT INTO accounts (id, handle, handle_key, email, created) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO accounts (id, handle, handle_key, handle_skeleton, email, created) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(i(id))
     .bind(handle)
     .bind(handle.to_ascii_lowercase())
+    .bind(handle_skeleton(handle))
     .bind(email)
     .bind(i(created))
     .execute(pool)
@@ -335,7 +340,8 @@ pub async fn insert_account(
         Ok(_) => Ok(()),
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
             let message = e.message();
-            Err(if message.contains("handle_key") {
+            let handle = message.contains("handle_key") || message.contains("handle_skeleton");
+            Err(if handle {
                 InsertError::Handle
             } else if message.contains("email") {
                 InsertError::Email

@@ -172,6 +172,16 @@ async fn a_new_address_creates_an_account_in_steps() {
         .await
         .error(409, "handle_taken");
     assert_eq!(taken["field"], "handle");
+    // A look-alike of a taken handle is taken, and says the same.
+    cloud.sign_up("Flokzy").await;
+    let lookalike = portal
+        .post(
+            "/sign-up/details",
+            json!({"handle": "FIokzy", "age_confirmed": true, "terms_accepted": true}),
+        )
+        .await
+        .error(409, "handle_taken");
+    assert_eq!(lookalike["field"], "handle");
     // Nothing of that stopped the step.
     assert_eq!(portal.session().await["flow"]["step"], "details");
 
