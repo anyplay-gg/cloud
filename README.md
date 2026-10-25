@@ -2,7 +2,7 @@
 
 The services behind the [AnyPlay network](https://github.com/anyplay-gg/network): accounts, friends, presence, sessions, invitations and moderation, plus relays that carry game traffic when two players cannot reach each other directly. One program runs a whole cloud on a home server with `docker compose up`. The same program is being built to run as a cluster that carries a network of millions of players.
 
-**Status: version 0, open to everyone.** The AnyPlay cloud runs at [anyplaynet.com](https://anyplaynet.com), together with the [website and account web](https://github.com/anyplay-gg/web). Everything in the [cloud API](https://github.com/anyplay-gg/network/blob/main/spec/cloud-api.md) works and is tested end to end; the API may still change while the version is 0. Found a problem? Tell us on Discord. The road from one process to a cluster is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Questions and ideas: the [AnyPlay Discord](https://discord.gg/nSHbHBRdS).
+**Status: version 0, open to everyone.** The AnyPlay cloud runs at [anyplaynet.com](https://anyplaynet.com), together with the [website and account web](https://github.com/anyplay-gg/web). Everything in the [cloud API](https://github.com/anyplay-gg/network/blob/main/spec/cloud-api.md) works and is tested end to end; the API may still change while the version is 0. Found a problem? Tell us on Discord. The road from one process to a cluster is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Questions and ideas: the [AnyPlay Discord](https://discord.gg/9zYqf8fEsh).
 
 ## What it does
 
