@@ -19,6 +19,7 @@ pub mod accounts;
 pub mod admin;
 pub mod auth;
 pub mod events;
+pub mod feed;
 pub mod friends;
 pub mod messages;
 pub mod misc;
@@ -80,6 +81,8 @@ pub fn router(state: AppState) -> Router {
             put(profiles::set_avatar).delete(profiles::remove_avatar),
         )
         .route(path::AVATAR, get(profiles::avatar))
+        .route(path::FEED, get(feed::page))
+        .route(path::FEED_REACTION, put(feed::react).delete(feed::unreact))
         .route(path::MY_PLAYTIME, put(profiles::upload_playtime))
         .route(path::RELAY_TICKETS, post(misc::relay_tickets))
         .route(path::REPORTS, post(misc::report))

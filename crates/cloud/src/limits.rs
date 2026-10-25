@@ -25,6 +25,9 @@ pub struct Rates {
     /// Avatar uploads per account in `avatar_window`.
     pub avatar_uploads: u32,
     pub avatar_window: Duration,
+    /// Feed reactions one account may set or take back per `feed_reaction_window`.
+    pub feed_reactions: u32,
+    pub feed_reaction_window: Duration,
     /// Messages one account may send per `messages_window`.
     pub messages: u32,
     pub messages_window: Duration,
@@ -68,6 +71,8 @@ impl Default for Rates {
             relay_ticket_window: Duration::from_secs(60 * 60),
             avatar_uploads: 5,
             avatar_window: Duration::from_secs(60 * 60),
+            feed_reactions: 60,
+            feed_reaction_window: Duration::from_secs(60),
             messages: 30,
             messages_window: Duration::from_secs(60),
             strangers: 10,

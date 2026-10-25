@@ -2,8 +2,9 @@
 
 use anyplay_api::{
     AboutProblem, AvatarSet, FavouritesProblem, MAX_ABOUT, MAX_AVATAR_UPLOAD, MAX_DAY_MINUTES,
-    MAX_FAVOURITES, MAX_PLAYTIME_UPLOAD, Part, PlaytimeAdded, PlaytimeUpload, Profile,
-    ProfileUpdate, check_about, check_favourites, day_number, is_avatar_hash, is_title_id,
+    MAX_FAVOURITES, MAX_PLAYTIME_UPLOAD, Part, PlaytimeAdded, PlaytimeUpload, Profile, ProfileLink,
+    ProfilePage, ProfileUpdate, check_about, check_favourites, day_number, is_avatar_hash,
+    is_title_id,
 };
 use axum::Json;
 use axum::extract::{Path, Request, State};
@@ -58,13 +59,34 @@ pub(crate) async fn profile_seen(state: &AppState, seen: &Viewing, owner: u64) -
     })
 }
 
+/// `GET /v1/accounts/{id}/profile`: the profile with the trophy counts and the connections the
+/// caller may see.
 pub async fn of_account(
     State(state): State<AppState>,
     auth: Auth,
     Path(id): Path<String>,
-) -> Result<Json<Profile>> {
+) -> Result<Json<ProfilePage>> {
     let id = parse_id(&id)?;
-    Ok(Json(profile_for(&state, auth.account, id).await?))
+    let seen = viewing(&state.db, auth.account, id).await?;
+    let profile = profile_seen(&state, &seen, id).await?;
+    let trophies = if seen.can(Part::Trophies) {
+        Some(db::trophy_counts(&state.db, id).await?)
+    } else {
+        None
+    };
+    let links = crate::links::public(&state, id, &seen)
+        .await?
+        .into_iter()
+        .map(|link| ProfileLink {
+            provider: link.provider,
+            name: link.display_name,
+        })
+        .collect();
+    Ok(Json(ProfilePage {
+        profile,
+        trophies,
+        links,
+    }))
 }
 
 pub async fn update(
