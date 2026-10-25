@@ -59,6 +59,10 @@ pub fn router(state: AppState) -> Router {
         .route(path::FRIEND_REQUEST_ACCEPT, post(friends::accept))
         .route(path::BLOCK, put(friends::block).delete(friends::unblock))
         .route(path::PRESENCE, put(misc::set_presence))
+        .route(
+            path::APPEAR_OFFLINE,
+            get(accounts::get_appear_offline).put(accounts::set_appear_offline),
+        )
         .route(path::SESSIONS, post(sessions::create))
         .route(path::SESSION, get(sessions::get).patch(sessions::update))
         .route(path::SESSION_JOIN, post(sessions::join))

@@ -341,6 +341,7 @@ pub async fn create_account(
                     handle: handle.to_owned(),
                     email: email.clone(),
                     created: created as i64,
+                    appear_offline: 0,
                 };
                 live::delete_signup(&mut *state.db.acquire().await?, signup).await?;
                 return Ok(account);
@@ -446,6 +447,7 @@ pub fn me_of(account: &AccountRow) -> Me {
         handle: account.handle.clone(),
         email: account.email.clone(),
         created: account.created as u64,
+        appear_offline: account.appear_offline != 0,
     }
 }
 

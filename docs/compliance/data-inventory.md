@@ -108,7 +108,7 @@ A block names the blocked person, so it is data about them too. The export lists
 | | |
 |---|---|
 | What | Whether the account is online, which game it plays (title ID, title, version), whether that game is open to join, and when the account was last online. |
-| Where | `presence` (`online`, `activity` JSON, `last_seen_ms`, `sent` JSON, `revision`). Sent to friends as `presence` events on the event connection. |
+| Where | `presence` (`online`, `activity` JSON, `last_seen_ms`, `sent` JSON, `revision`). Sent to friends as `presence` events on the event connection. The account's `appear_offline` flag (`accounts`) makes the cloud send friends an offline presence instead; it is part of the account's own data (`GET /v1/me`). |
 | Why | The presence feature. |
 | Basis (proposed) | Art. 6(1)(b). What a player plays reveals habits, so the lawyer should confirm that no consent is needed (inference: the player starts the feature). |
 | Kept today | One row per account for the life of the account; the content is overwritten. `last_seen_ms` is the time the last connection closed and stays until the next connection. |

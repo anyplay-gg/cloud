@@ -201,6 +201,8 @@ pub struct AccountRow {
     pub handle: String,
     pub email: String,
     pub created: i64,
+    /// 1 when friends see the account as offline.
+    pub appear_offline: i64,
 }
 
 #[derive(Clone, Debug, FromRow)]
@@ -270,10 +272,29 @@ impl Related {
 // Accounts
 
 pub async fn account(pool: &Pool, id: u64) -> sqlx::Result<Option<AccountRow>> {
-    sqlx::query_as("SELECT id, handle, email, created FROM accounts WHERE id = $1")
+    sqlx::query_as("SELECT id, handle, email, created, appear_offline FROM accounts WHERE id = $1")
         .bind(i(id))
         .fetch_optional(pool)
         .await
+}
+
+/// Sets whether the account appears offline to everyone else. Says whether the account exists.
+pub async fn set_appear_offline(pool: &Pool, id: u64, on: bool) -> sqlx::Result<bool> {
+    let done = sqlx::query("UPDATE accounts SET appear_offline = $2 WHERE id = $1")
+        .bind(i(id))
+        .bind(i64::from(on))
+        .execute(pool)
+        .await?;
+    Ok(done.rows_affected() > 0)
+}
+
+/// Whether the account appears offline. False for an account that does not exist.
+pub async fn appear_offline(pool: &Pool, id: u64) -> sqlx::Result<bool> {
+    let row: Option<(i64,)> = sqlx::query_as("SELECT appear_offline FROM accounts WHERE id = $1")
+        .bind(i(id))
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.is_some_and(|(on,)| on != 0))
 }
 
 /// The accounts with these IDs in one query, by ID; an ID without an account is missing.
@@ -285,7 +306,7 @@ pub async fn accounts_by_ids(
         return Ok(HashMap::new());
     }
     let rows: Vec<AccountRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT id, handle, email, created FROM accounts WHERE id IN ({})",
+        "SELECT id, handle, email, created, appear_offline FROM accounts WHERE id IN ({})",
         id_list(ids)
     )))
     .fetch_all(conn)
@@ -295,17 +316,21 @@ pub async fn accounts_by_ids(
 
 /// `key` is the handle in lower case.
 pub async fn account_by_handle(pool: &Pool, key: &str) -> sqlx::Result<Option<AccountRow>> {
-    sqlx::query_as("SELECT id, handle, email, created FROM accounts WHERE handle_key = $1")
-        .bind(key)
-        .fetch_optional(pool)
-        .await
+    sqlx::query_as(
+        "SELECT id, handle, email, created, appear_offline FROM accounts WHERE handle_key = $1",
+    )
+    .bind(key)
+    .fetch_optional(pool)
+    .await
 }
 
 pub async fn account_by_email(pool: &Pool, email: &str) -> sqlx::Result<Option<AccountRow>> {
-    sqlx::query_as("SELECT id, handle, email, created FROM accounts WHERE email = $1")
-        .bind(email)
-        .fetch_optional(pool)
-        .await
+    sqlx::query_as(
+        "SELECT id, handle, email, created, appear_offline FROM accounts WHERE email = $1",
+    )
+    .bind(email)
+    .fetch_optional(pool)
+    .await
 }
 
 /// What stopped an insert.

@@ -73,6 +73,11 @@ impl Inner {
             return;
         }
         let result = async {
+            // Nothing is made or marked while the account appears offline: the item comes the
+            // first time the title is played in plain sight.
+            if db::appear_offline(&self.db, account).await? {
+                return Ok(());
+            }
             if !db::feed::mark_first(&self.db, account, title_id, now()).await? {
                 return Ok(());
             }
