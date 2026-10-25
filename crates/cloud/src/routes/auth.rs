@@ -474,17 +474,17 @@ pub async fn refresh(
         return Err(invalid());
     }
     let old = sha256(request.refresh.as_bytes());
-    let Some(device) = db::device_by_current(&state.db, &old).await? else {
-        if let Some(device) = db::device_by_used(&state.db, &old).await? {
-            // Only a copy of the token can come back after it was replaced. The refresh tokens of
-            // a device form one chain, so signing the device out revokes the whole family.
-            tracing::warn!(
-                device = device.id(),
-                "a replaced refresh token was used again"
-            );
-            state.sign_out_device(device.id()).await?;
+    let (device, replayed) = match db::device_by_current(&state.db, &old).await? {
+        Some(device) => (device, false),
+        None => {
+            let Some(used) = db::device_by_used(&state.db, &old).await? else {
+                return Err(invalid());
+            };
+            (
+                replay_of_used(&state, used, &headers, &request).await?,
+                true,
+            )
         }
-        return Err(invalid());
     };
     let rates = &state.tuning.rates;
     state
@@ -499,23 +499,80 @@ pub async fn refresh(
     if let Some(until) = state.ban_of(account) {
         return Err(crate::moderation::banned_error(&state, account, until).await);
     }
-    check_refresh_proof(&state, &device, &headers, &request).await?;
+    if !replayed {
+        check_refresh_proof(&state, &device, &headers, &request).await?;
+    }
     let refresh = random_token(32);
-    let rotated = db::rotate_refresh(
-        &state.writer,
-        &state.db,
-        device.id(),
-        &old,
-        &sha256(refresh.as_bytes()),
-        now(),
-    )
-    .await?;
+    let new = sha256(refresh.as_bytes());
+    let mut rotated = if replayed {
+        db::rotate_current_refresh(&state.writer, &state.db, device.id(), &new, now()).await?
+    } else {
+        db::rotate_refresh(&state.writer, &state.db, device.id(), &old, &new, now()).await?
+    };
+    if !rotated && !replayed {
+        // Another request with the same token and a valid proof won between our lookup and our
+        // update. That is no theft: read the current token again and rotate from it, once.
+        rotated =
+            db::rotate_current_refresh(&state.writer, &state.db, device.id(), &new, now()).await?;
+    }
     if !rotated {
-        // Another request used the token between our lookup and our update.
-        state.sign_out_device(device.id()).await?;
         return Err(invalid());
     }
     Ok(Json(issue_tokens(&state, account, device.id(), refresh)))
+}
+
+/// Decides what a replaced refresh token that came back means. Returns the device when it is a
+/// lost answer: the proof is valid, the token is the immediate predecessor of the current one and
+/// was replaced within the grace. Anything else is an error. The device is signed out, which ends
+/// the whole chain, unless the request came without a valid proof: a copy of the token must not
+/// be able to sign the real device out.
+async fn replay_of_used(
+    state: &AppState,
+    used: db::UsedRefresh,
+    headers: &HeaderMap,
+    request: &RefreshRequest,
+) -> Result<db::DeviceRow> {
+    let device = used.device;
+    let public = binding::binding_of(&state.db, device.id())
+        .await?
+        .and_then(|b| b.public());
+    let subject = Subject {
+        method: "POST",
+        path: anyplay_api::path::AUTH_REFRESH,
+        credential: &request.refresh,
+    };
+    let proof = match &public {
+        Some(public) => binding::check_proof(state, device.id(), public, headers, &subject).await,
+        // A legacy device has no key to prove anything with.
+        None => Ok(()),
+    };
+    if let Err(refusal) = proof {
+        tracing::warn!(
+            device = device.id(),
+            ?refusal,
+            "replaced refresh token used without proof"
+        );
+        return Err(refusal.error());
+    }
+    let grace = state.config.refresh_replay_grace_secs;
+    let age = now().saturating_sub(used.used.max(0) as u64);
+    if public.is_none() || grace == 0 || used.newest != 1 || age > grace {
+        // The refresh tokens of a device form one chain, so signing the device out revokes the
+        // whole family.
+        tracing::warn!(
+            device = device.id(),
+            "a replaced refresh token was used again"
+        );
+        state.sign_out_device(device.id()).await?;
+        return Err(AppError::unauthorized(
+            "This refresh token is not valid. Sign in again.",
+        ));
+    }
+    tracing::info!(
+        device = device.id(),
+        "a refresh token was replayed after a lost answer"
+    );
+    Ok(device)
 }
 
 /// A refresh token of a bound device needs a proof signed by its key. A legacy device may do

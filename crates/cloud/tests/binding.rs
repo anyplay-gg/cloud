@@ -223,7 +223,7 @@ async fn a_replayed_proof_fails() {
 
 #[tokio::test]
 async fn a_replaced_refresh_token_revokes_the_family() {
-    let cloud = TestCloud::start().await;
+    let cloud = TestCloud::with(|c| c.refresh_replay_grace_secs = 1, |_| {}).await;
     let alec = cloud.sign_up("Alec").await;
     let key = DeviceKey::generate();
     let device = sign_in(&cloud, &alec.email, "pc", Some(&key)).await;
@@ -232,8 +232,9 @@ async fn a_replaced_refresh_token_revokes_the_family() {
     let second = tokens(refresh(&cloud, &first, Some(&proof_for(&key, &first, now())), None).await);
     assert_eq!(me_status(&cloud, &second.access).await, 200);
 
-    // The replaced token comes back, with a perfectly good proof or none: whoever sends it
-    // holds a copy, and the whole chain of the device ends.
+    // The replaced token comes back with a perfectly good proof, but after the grace for a lost
+    // answer: whoever sends it holds a copy, and the whole chain of the device ends.
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     refresh(&cloud, &first, Some(&proof_for(&key, &first, now())), None)
         .await
         .is_error("unauthorized", 401);
@@ -260,6 +261,121 @@ async fn a_replaced_refresh_token_revokes_the_family() {
     )
     .await;
     assert_eq!(me_status(&cloud, &other.tokens.access).await, 200);
+}
+
+/// Rotates `current` once with a valid proof.
+async fn step(cloud: &TestCloud, key: &DeviceKey, current: &str) -> Tokens {
+    tokens(refresh(cloud, current, Some(&proof_for(key, current, now())), None).await)
+}
+
+#[tokio::test]
+async fn a_replaced_refresh_token_with_a_valid_proof_is_a_lost_answer() {
+    let cloud = TestCloud::start().await;
+    let alec = cloud.sign_up("Alec").await;
+    let key = DeviceKey::generate();
+    let device = sign_in(&cloud, &alec.email, "pc", Some(&key)).await;
+    let r0 = device.tokens.refresh.clone();
+
+    // The answer with R1 never arrives; a second later the device asks again with R0.
+    let r1 = step(&cloud, &key, &r0).await;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let r2 = step(&cloud, &key, &r0).await;
+    assert_ne!(r2.refresh, r1.refresh);
+    assert_eq!(me_status(&cloud, &r2.access).await, 200, "the device stays");
+
+    // R1 was never delivered, and is dead: without the key it gets nowhere and cannot sign
+    // the device out.
+    refresh(&cloud, &r1.refresh, None, None)
+        .await
+        .is_error("unauthorized", 401);
+    assert_eq!(me_status(&cloud, &r2.access).await, 200);
+    // R2 works.
+    let r3 = step(&cloud, &key, &r2.refresh).await;
+    assert_eq!(me_status(&cloud, &r3.access).await, 200);
+}
+
+#[tokio::test]
+async fn a_replaced_refresh_token_without_a_valid_proof_does_not_sign_out() {
+    let cloud = TestCloud::start().await;
+    let alec = cloud.sign_up("Alec").await;
+    let key = DeviceKey::generate();
+    let device = sign_in(&cloud, &alec.email, "pc", Some(&key)).await;
+    let r0 = device.tokens.refresh.clone();
+    let r1 = step(&cloud, &key, &r0).await;
+
+    refresh(&cloud, &r0, None, None)
+        .await
+        .is_error("unauthorized", 401);
+    let thief = DeviceKey::generate();
+    refresh(&cloud, &r0, Some(&proof_for(&thief, &r0, now())), None)
+        .await
+        .is_error("unauthorized", 401);
+    assert_eq!(me_status(&cloud, &r1.access).await, 200);
+    let r2 = step(&cloud, &key, &r1.refresh).await;
+    assert_eq!(me_status(&cloud, &r2.access).await, 200);
+}
+
+#[tokio::test]
+async fn a_grace_of_zero_keeps_the_old_contract() {
+    let cloud = TestCloud::with(|c| c.refresh_replay_grace_secs = 0, |_| {}).await;
+    let alec = cloud.sign_up("Alec").await;
+    let key = DeviceKey::generate();
+    let device = sign_in(&cloud, &alec.email, "pc", Some(&key)).await;
+    let r0 = device.tokens.refresh.clone();
+    let r1 = step(&cloud, &key, &r0).await;
+    refresh(&cloud, &r0, Some(&proof_for(&key, &r0, now())), None)
+        .await
+        .is_error("unauthorized", 401);
+    assert_eq!(me_status(&cloud, &r1.access).await, 401);
+}
+
+#[tokio::test]
+async fn a_token_two_steps_back_signs_out_even_with_a_valid_proof() {
+    let cloud = TestCloud::start().await;
+    let alec = cloud.sign_up("Alec").await;
+    let key = DeviceKey::generate();
+    let device = sign_in(&cloud, &alec.email, "pc", Some(&key)).await;
+    let r0 = device.tokens.refresh.clone();
+    let r1 = step(&cloud, &key, &r0).await;
+    // Replacements in the same second cannot be told apart, so let a second pass.
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let r2 = step(&cloud, &key, &r1.refresh).await;
+
+    refresh(&cloud, &r0, Some(&proof_for(&key, &r0, now())), None)
+        .await
+        .is_error("unauthorized", 401);
+    assert_eq!(me_status(&cloud, &r2.access).await, 401);
+}
+
+#[tokio::test]
+async fn a_replaced_token_of_a_legacy_device_signs_out() {
+    let cloud = TestCloud::start().await;
+    let alec = cloud.sign_up("Alec").await;
+    let first = alec.tokens.refresh.clone();
+    let second = tokens(refresh(&cloud, &first, None, None).await);
+    refresh(&cloud, &first, None, None)
+        .await
+        .is_error("unauthorized", 401);
+    assert_eq!(me_status(&cloud, &second.access).await, 401);
+}
+
+#[tokio::test]
+async fn a_proof_that_was_used_for_a_replaced_token_is_refused() {
+    let cloud = TestCloud::start().await;
+    let alec = cloud.sign_up("Alec").await;
+    let key = DeviceKey::generate();
+    let device = sign_in(&cloud, &alec.email, "pc", Some(&key)).await;
+    let r0 = device.tokens.refresh.clone();
+    let proof = proof_for(&key, &r0, now());
+    let r1 = tokens(refresh(&cloud, &r0, Some(&proof), None).await);
+
+    // The very same header again: only the nonce stops it, and the device stays.
+    refresh(&cloud, &r0, Some(&proof), None)
+        .await
+        .is_error("unauthorized", 401);
+    assert_eq!(me_status(&cloud, &r1.access).await, 200);
+    let r2 = step(&cloud, &key, &r1.refresh).await;
+    assert_eq!(me_status(&cloud, &r2.access).await, 200);
 }
 
 #[tokio::test]
