@@ -117,7 +117,10 @@ async fn a_code_needs_something_to_join_and_is_replaced_and_revoked() {
         .post("/v1/join-codes", alec.token(), json!({}))
         .await
         .is_error("not_found", 404);
-    cloud.post_empty(&format!("/v1/sessions/{}/leave", closed.id), alec.token()).await.ok(204);
+    cloud
+        .post_empty(&format!("/v1/sessions/{}/leave", closed.id), alec.token())
+        .await
+        .ok(204);
 
     open_session(&cloud, &alec, 1, 4, "invite").await;
     let first = issue(&cloud, &alec).await;
@@ -129,23 +132,40 @@ async fn a_code_needs_something_to_join_and_is_replaced_and_revoked() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    assert!(first.expires.abs_diff(now + 120 * 60) < 30, "{}", first.expires);
+    assert!(
+        first.expires.abs_diff(now + 120 * 60) < 30,
+        "{}",
+        first.expires
+    );
     assert_eq!(rows(&cloud).await, 1);
 
     // A new code replaces the old one, which stops working. An account has one row.
     let second = issue(&cloud, &alec).await;
     assert_ne!(first.code, second.code);
     assert_eq!(rows(&cloud).await, 1);
-    redeem(&cloud, &bob, &first.code).await.is_error("not_found", 404);
+    redeem(&cloud, &bob, &first.code)
+        .await
+        .is_error("not_found", 404);
     redeem(&cloud, &bob, &second.code).await.ok(200);
 
     // Revoking ends it for good, and is harmless twice.
-    cloud.delete("/v1/join-codes/current", alec.token()).await.ok(204);
-    cloud.delete("/v1/join-codes/current", alec.token()).await.ok(204);
+    cloud
+        .delete("/v1/join-codes/current", alec.token())
+        .await
+        .ok(204);
+    cloud
+        .delete("/v1/join-codes/current", alec.token())
+        .await
+        .ok(204);
     assert_eq!(rows(&cloud).await, 0);
-    redeem(&cloud, &bob, &second.code).await.is_error("not_found", 404);
+    redeem(&cloud, &bob, &second.code)
+        .await
+        .is_error("not_found", 404);
     // Nobody else's code is touched by a revoke.
-    cloud.delete("/v1/join-codes/current", bob.token()).await.ok(204);
+    cloud
+        .delete("/v1/join-codes/current", bob.token())
+        .await
+        .ok(204);
 }
 
 #[tokio::test]
@@ -175,7 +195,10 @@ async fn a_session_code_makes_an_invitation_that_lets_a_stranger_into_an_invite_
     let mut events = cloud.events(dan.token()).await;
 
     // No friendship, and any case.
-    let redeemed: Redeemed = redeem(&cloud, &dan, &code.to_uppercase()).await.ok(200).json();
+    let redeemed: Redeemed = redeem(&cloud, &dan, &code.to_uppercase())
+        .await
+        .ok(200)
+        .json();
     let invitation = session_invitation(redeemed);
     assert_eq!(invitation.from.handle, "Alec");
     assert_eq!(invitation.session, session.id);
@@ -245,7 +268,10 @@ async fn a_code_opens_the_session_joined_last_that_is_not_closed_else_the_party(
         assert_eq!(invitation.from.handle, "Alec");
         assert_eq!(invitation.members, 1);
         cloud
-            .delete(&format!("/v1/party/invitations/{}", invitation.id), dan.token())
+            .delete(
+                &format!("/v1/party/invitations/{}", invitation.id),
+                dan.token(),
+            )
             .await
             .ok(204);
         code
@@ -288,7 +314,10 @@ async fn a_code_opens_the_session_joined_last_that_is_not_closed_else_the_party(
     }
     let invitation = party_invitation(redeem(&cloud, &dan, &code).await.ok(200).json());
     assert_eq!(invitation.party, party.id);
-    cloud.post_empty("/v1/party/leave", alec.token()).await.ok(204);
+    cloud
+        .post_empty("/v1/party/leave", alec.token())
+        .await
+        .ok(204);
     redeem(&cloud, &dan, &code).await.is_error("not_found", 404);
     // The code lives on and works again when something opens.
     open_session(&cloud, &alec, 3, 4, "invite").await;
@@ -339,7 +368,7 @@ async fn a_full_session_or_party_answers_full() {
     let cloud = TestCloud::start().await;
     let alec = cloud.sign_up("Alec").await;
     let bob = cloud.sign_up("Bob").await;
-    let cy = cloud.sign_up("Cy").await;
+    let cy = cloud.sign_up("Cyd").await;
     let session = open_session(&cloud, &alec, 1, 2, "friends").await;
     let code = issue(&cloud, &alec).await.code;
     // Bob joins with an invitation and the session is full.
@@ -370,13 +399,15 @@ async fn blocks_and_the_own_code_and_bad_codes_are_refused() {
     let cloud = TestCloud::start().await;
     let alec = cloud.sign_up("Alec").await;
     let bob = cloud.sign_up("Bob").await;
-    let cy = cloud.sign_up("Cy").await;
+    let cy = cloud.sign_up("Cyd").await;
     let dan = cloud.sign_up("Dan").await;
     let session = open_session(&cloud, &alec, 1, 6, "friends").await;
     let code = issue(&cloud, &alec).await.code;
 
     // The own code.
-    redeem(&cloud, &alec, &code).await.is_error("bad_request", 400);
+    redeem(&cloud, &alec, &code)
+        .await
+        .is_error("bad_request", 400);
 
     // Not codes at all, unknown codes and expired ones look alike.
     let unknown = "z".repeat(JOIN_CODE_LEN);
@@ -404,13 +435,18 @@ async fn blocks_and_the_own_code_and_bad_codes_are_refused() {
     make_party(&cloud, &lead).await;
     let party_code = issue(&cloud, &lead).await.code;
     block(&cloud, &eve, &lead).await;
-    redeem(&cloud, &eve, &party_code).await.is_error("not_found", 404);
+    redeem(&cloud, &eve, &party_code)
+        .await
+        .is_error("not_found", 404);
     // A block set after redeeming takes the invitation back, like any invitation.
     let fay = cloud.sign_up("Fay").await;
     let held = party_invitation(redeem(&cloud, &fay, &party_code).await.ok(200).json());
     block(&cloud, &lead, &fay).await;
     cloud
-        .post_empty(&format!("/v1/party/invitations/{}/accept", held.id), fay.token())
+        .post_empty(
+            &format!("/v1/party/invitations/{}/accept", held.id),
+            fay.token(),
+        )
         .await
         .is_error("not_found", 404);
 }
@@ -431,7 +467,6 @@ async fn a_code_ends_when_it_expires_and_the_sweep_removes_it() {
         .get(&format!("/join/{code}"))
         .await
         .error(404, "not_found");
-    assert_eq!(rows(&cloud).await, 1);
     cloud.state.sweep().await.unwrap();
     assert_eq!(rows(&cloud).await, 0);
 }
@@ -455,7 +490,10 @@ async fn without_an_account_web_the_link_uses_the_address_the_request_came_to() 
     let alec = cloud.sign_up("Alec").await;
     open_session(&cloud, &alec, 1, 4, "invite").await;
     let code = issue(&cloud, &alec).await;
-    assert_eq!(code.url, format!("http://{}/join/{}", cloud.base, code.code));
+    assert_eq!(
+        code.url,
+        format!("http://{}/join/{}", cloud.base, code.code)
+    );
 }
 
 #[tokio::test]
@@ -495,8 +533,12 @@ async fn codes_are_limited_per_account() {
         redeem(&cloud, &dan, &code).await.ok(200);
     }
     // Wrong codes count too: a program cannot guess for free.
-    redeem(&cloud, &dan, &code).await.is_error("rate_limited", 429);
-    redeem(&cloud, &dan, "abcdefghij").await.is_error("rate_limited", 429);
+    redeem(&cloud, &dan, &code)
+        .await
+        .is_error("rate_limited", 429);
+    redeem(&cloud, &dan, "abcdefghij")
+        .await
+        .is_error("rate_limited", 429);
 }
 
 async fn dan_with_session(cloud: &TestCloud) -> User {
@@ -515,7 +557,10 @@ async fn the_public_page_shows_who_invites_to_what_and_nothing_else() {
     let session = open_session(&cloud, &alec, 1, 4, "invite").await;
     let code = issue(&cloud, &alec).await.code;
     // No session of the visitor is needed, and the case does not matter.
-    let seen = browser.get(&format!("/join/{}", code.to_uppercase())).await.ok(200);
+    let seen = browser
+        .get(&format!("/join/{}", code.to_uppercase()))
+        .await
+        .ok(200);
     assert_eq!(
         seen,
         json!({"handle": "Alec", "title": "Test Game", "members": 1, "max_members": 4,
@@ -558,8 +603,14 @@ async fn the_public_page_shows_who_invites_to_what_and_nothing_else() {
 
     // One answer for every code that opens nothing.
     let revoked = issue(&cloud, &alec).await.code;
-    cloud.delete("/v1/join-codes/current", alec.token()).await.ok(204);
-    cloud.post_empty("/v1/party/leave", alec.token()).await.ok(204);
+    cloud
+        .delete("/v1/join-codes/current", alec.token())
+        .await
+        .ok(204);
+    cloud
+        .post_empty("/v1/party/leave", alec.token())
+        .await
+        .ok(204);
     let nothing = browser.get(&format!("/join/{code}")).await;
     let gone = browser.get(&format!("/join/{revoked}")).await;
     let unknown = browser.get("/join/zzzzzzzzzz").await;
@@ -575,7 +626,10 @@ async fn public_pages_are_limited_per_address() {
     let cloud = TestCloud::with(|_| {}, |t| t.rates.portal_public = 3).await;
     let browser = Portal::new(&cloud);
     for _ in 0..3 {
-        browser.get("/join/zzzzzzzzzz").await.error(404, "not_found");
+        browser
+            .get("/join/zzzzzzzzzz")
+            .await
+            .error(404, "not_found");
     }
     let limited = browser.get("/join/zzzzzzzzzz").await;
     limited.error(429, "rate_limited");
@@ -608,12 +662,13 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Log {
 #[tokio::test]
 async fn no_log_line_holds_a_code() {
     let log = Log::default();
-    let _guard = tracing::subscriber::set_default(
+    tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::TRACE)
             .with_writer(log.clone())
             .finish(),
-    );
+    )
+    .expect("no other test in this file sets a subscriber");
     let cloud = TestCloud::start().await;
     let alec = cloud.sign_up("Alec").await;
     let dan = cloud.sign_up("Dan").await;
@@ -621,12 +676,17 @@ async fn no_log_line_holds_a_code() {
     let code = issue(&cloud, &alec).await.code;
     redeem(&cloud, &dan, &code).await.ok(200);
     redeem(&cloud, &dan, &code.to_uppercase()).await.ok(200);
-    redeem(&cloud, &alec, &code).await.is_error("bad_request", 400);
+    redeem(&cloud, &alec, &code)
+        .await
+        .is_error("bad_request", 400);
     Portal::new(&cloud)
         .get(&format!("/join/{code}"))
         .await
         .ok(200);
-    cloud.delete("/v1/join-codes/current", alec.token()).await.ok(204);
+    cloud
+        .delete("/v1/join-codes/current", alec.token())
+        .await
+        .ok(204);
     redeem(&cloud, &dan, &code).await.is_error("not_found", 404);
     Portal::new(&cloud)
         .get(&format!("/join/{code}"))

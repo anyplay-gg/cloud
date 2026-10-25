@@ -147,9 +147,7 @@ pub async fn redeem(
         if open_for_session >= sessions::MAX_INVITATIONS_PER_SESSION
             || held >= sessions::MAX_INVITATIONS_PER_ACCOUNT
         {
-            return Err(AppError::limit(
-                "Too many invitations are open. Try later.",
-            ));
+            return Err(AppError::limit("Too many invitations are open. Try later."));
         }
         let invitation = InvitationRow {
             id: random_uuid(),
@@ -200,9 +198,7 @@ pub async fn redeem(
     if open_for_party >= parties::MAX_INVITATIONS_PER_PARTY
         || held >= parties::MAX_INVITATIONS_PER_ACCOUNT
     {
-        return Err(AppError::limit(
-            "Too many invitations are open. Try later.",
-        ));
+        return Err(AppError::limit("Too many invitations are open. Try later."));
     }
     let invitation = party::InvitationRow {
         id: random_uuid(),
