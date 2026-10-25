@@ -475,6 +475,11 @@ pub(crate) async fn open_invitations(
 /// Tells the recipients of new invitations.
 pub(crate) fn push_invitations(state: &AppState, new: Vec<InvitationRow>) {
     for invitation in new {
+        crate::push::notify(
+            state,
+            invitation.to(),
+            crate::push::Note::game_invite(&invitation.from_handle),
+        );
         state.news.push(
             invitation.to(),
             &Event::Invitation {

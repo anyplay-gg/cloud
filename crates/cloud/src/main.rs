@@ -52,6 +52,17 @@ async fn main() -> Result<()> {
             println!("{}", signer.verifier().to_base64());
             Ok(())
         }
+        Command::VapidKeys => {
+            let (private, public) = anyplay_cloud::push::generate_key()?;
+            eprintln!("Put the private key into the environment of the cloud, with a contact:");
+            println!("ANYPLAY_CLOUD_VAPID_PRIVATE_KEY={private}");
+            println!("ANYPLAY_CLOUD_VAPID_SUBJECT=mailto:you@example.com");
+            eprintln!(
+                "The public key (the cloud derives it; players' browsers get it from the API):"
+            );
+            println!("{public}");
+            Ok(())
+        }
         Command::Healthcheck { url } => anyplay_cloud::cli::healthcheck(&config, url).await,
         Command::Admin { url, action } => anyplay_cloud::cli::admin(&config, url, action).await,
     }

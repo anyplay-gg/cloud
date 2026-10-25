@@ -167,6 +167,7 @@ pub async fn request(
     rules.record(&mut tx).await?;
     tx.commit().await?;
     notify(&state, &[me, them]);
+    crate::push::notify_from(&state, them, me, crate::push::Note::friend_request);
     Ok(requested)
 }
 

@@ -12,6 +12,7 @@
 //! * [`account`]: the account, its passkeys, devices and sessions, step-up, export, deletion.
 //! * [`social`]: friends, the player's own profile and trophies, and public profiles.
 //! * [`links`]: connections, the player's linked Discord and Steam accounts.
+//! * [`notifications`]: the browsers that get Web Push.
 
 use axum::Router;
 use axum::extract::{FromRequestParts, Request};
@@ -34,6 +35,7 @@ pub mod account;
 pub mod flow;
 pub mod link;
 pub mod links;
+pub mod notifications;
 pub mod social;
 
 /// The base path of every route here.
@@ -287,6 +289,12 @@ pub fn router() -> Router<AppState> {
             patch(links::set_visibility).delete(links::unlink),
         )
         .route("/me/links/{provider}/start", post(links::start))
+        // Notifications (Web Push)
+        .route("/push", get(notifications::get))
+        .route(
+            "/push/subscription",
+            put(notifications::subscribe).delete(notifications::unsubscribe),
+        )
         // Other players
         .route("/users/{name}", get(social::user))
         .route("/users/{name}/trophies", get(social::user_trophies))

@@ -30,6 +30,7 @@ pub mod metrics;
 pub mod moderation;
 pub mod news;
 pub mod party;
+pub mod push;
 pub mod routes;
 pub mod social;
 pub mod state;
@@ -134,6 +135,12 @@ pub async fn open(
         }
     }
 
+    let push = match config.vapid() {
+        Some((private, subject)) => Some(push::Pusher::new(
+            push::Vapid::new(private, subject).context("the VAPID key")?,
+        )),
+        None => None,
+    };
     let web = web::Web::new(&config).context("public_url")?;
     let writer = db::Writer::new(config.database_url.is_none());
     let state = Arc::new(Inner {
@@ -153,6 +160,7 @@ pub async fn open(
         ban_key,
         retention_at: std::sync::atomic::AtomicU64::new(0),
         writer,
+        push,
     });
     // The first heartbeat, so that other nodes count this one as alive from the start.
     state

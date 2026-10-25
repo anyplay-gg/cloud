@@ -67,6 +67,17 @@ Since migration 0008 a device also has `device_key` (the public half of a key th
 | Kept today | Until the player removes the passkey or the account is deleted (cascade). Ceremonies and one-time codes for 60 seconds to 5 minutes; the sweep deletes them. |
 | Who sees it | The player on the account page and in the export (names and times, not the credentials). |
 
+### 1.3aa Notification devices (Web Push)
+
+| | |
+|---|---|
+| What | For each browser that turned on notifications: the address of its push service, the browser's public key and authentication secret, a name the player gave the device (up to 60 characters), the kinds wanted (friend request, invitation, message), when it was added and last answered, and a count of failed sends. |
+| Where | `push_subscriptions` (`id`, `account_id`, `endpoint`, `p256dh`, `auth`, `label`, `kinds`, `failures`, `created_at`, `last_ok_at`). The address is the browser maker's (Google, Mozilla, Apple, Microsoft); the push service sees that a notification exists and its size, never its content (end-to-end encrypted). |
+| Why | Tell the player of a friend request, an invitation or a message when the portal is closed. Only when the player turns it on, for each browser. |
+| Basis (proposed) | Art. 6(1)(a), consent through the browser's permission and the switch. |
+| Kept today | Until the player turns it off, the push service reports the subscription gone, five sends fail in a row, or the account is deleted (cascade). |
+| Who sees it | The player on the notifications page and in the export (name, kinds, date; not the keys or the address). The operator with database access. |
+
 ### 1.3b Browser sessions and the cookie
 
 | | |

@@ -63,6 +63,8 @@ pub struct Inner {
     pub retention_at: std::sync::atomic::AtomicU64,
     /// Starts the transactions of [`Inner::begin_write`].
     pub writer: db::Writer,
+    /// Web Push, when the cloud has a VAPID key.
+    pub push: Option<crate::push::Pusher>,
 }
 
 fn ms(duration: Duration) -> i64 {

@@ -34,6 +34,9 @@ pub enum Command {
     Serve,
     /// Create the signing key if it does not exist, and print its public key for relays.
     Keygen,
+    /// Make a VAPID key pair for Web Push and print both halves. Nothing is stored: put the
+    /// private key into `ANYPLAY_CLOUD_VAPID_PRIVATE_KEY`.
+    VapidKeys,
     /// Exit with an error unless a running cloud answers. For container health checks.
     Healthcheck {
         /// Where the cloud listens. Default: the `listen` setting, on this machine.

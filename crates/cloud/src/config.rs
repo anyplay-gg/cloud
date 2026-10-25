@@ -136,6 +136,12 @@ pub struct Config {
     /// A Steam Web API key. Without it a Steam connection holds the SteamID64 only; with it also
     /// the persona name and picture.
     pub steam_api_key: Option<String>,
+    // Web Push (network spec/portal-api.md, "Notifications (Web Push)")
+    /// The cloud's VAPID private key: 32 bytes in unpadded base64url. A secret. Make one with
+    /// `anyplay-cloud vapid-keys`. Without it the cloud sends no notifications.
+    pub vapid_private_key: Option<String>,
+    /// The contact the push services may use (`mailto:` or `https:`). Set with the key.
+    pub vapid_subject: Option<String>,
 }
 
 impl Default for Config {
@@ -182,6 +188,8 @@ impl Default for Config {
             discord_client_id: None,
             discord_client_secret: None,
             steam_api_key: None,
+            vapid_private_key: None,
+            vapid_subject: None,
         }
     }
 }
@@ -363,6 +371,12 @@ impl Config {
         if let Some(v) = get("STEAM_API_KEY") {
             self.steam_api_key = Some(v.trim().to_owned());
         }
+        if let Some(v) = get("VAPID_PRIVATE_KEY") {
+            self.vapid_private_key = Some(v.trim().to_owned());
+        }
+        if let Some(v) = get("VAPID_SUBJECT") {
+            self.vapid_subject = Some(v.trim().to_owned());
+        }
         Ok(())
     }
 
@@ -500,6 +514,17 @@ impl Config {
         {
             bail!("steam_api_key must be the key as Steam shows it (letters and digits)");
         }
+        let key = self.vapid_private_key.as_deref().filter(|v| !v.is_empty());
+        let subject = self.vapid_subject.as_deref().filter(|v| !v.is_empty());
+        if key.is_some() != subject.is_some() {
+            bail!("vapid_private_key and vapid_subject go together");
+        }
+        if let (Some(key), Some(subject)) = (key, subject) {
+            if !(subject.starts_with("mailto:") || subject.starts_with("https://")) {
+                bail!("vapid_subject must start with mailto: or https://");
+            }
+            crate::push::Vapid::new(key, subject).context("vapid_private_key")?;
+        }
         Ok(())
     }
 
@@ -514,6 +539,16 @@ impl Config {
             .as_deref()
             .filter(|v| !v.is_empty())?;
         Some((id, secret))
+    }
+
+    /// The VAPID key and contact for Web Push, when the cloud has them.
+    pub fn vapid(&self) -> Option<(&str, &str)> {
+        let key = self
+            .vapid_private_key
+            .as_deref()
+            .filter(|v| !v.is_empty())?;
+        let subject = self.vapid_subject.as_deref().filter(|v| !v.is_empty())?;
+        Some((key, subject))
     }
 
     /// The Steam Web API key, if the cloud has one.
@@ -625,6 +660,9 @@ pub struct Tuning {
     pub link_pending_ttl: Duration,
     /// Where the providers of connections are. Tests point these at a fake server.
     pub links: LinkEndpoints,
+    /// Whether a push subscription may point at any address (tests run a push service of their
+    /// own on this machine). Off: only the push services of the browsers.
+    pub push_any_host: bool,
 }
 
 /// The addresses of the services behind the connections.
@@ -678,6 +716,7 @@ impl Default for Tuning {
             deletion_grace: Duration::from_secs(30 * 24 * 60 * 60),
             link_pending_ttl: Duration::from_secs(5 * 60),
             links: LinkEndpoints::default(),
+            push_any_host: false,
         }
     }
 }

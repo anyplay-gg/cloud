@@ -32,6 +32,8 @@ pub struct Snapshot<'a> {
     pub connections: usize,
     pub news_sent: u64,
     pub news_received: u64,
+    /// Notifications sent, failed and removed as gone, when the cloud sends them.
+    pub push: Option<(u64, u64, u64)>,
 }
 
 impl Metrics {
@@ -79,6 +81,26 @@ impl Metrics {
             "News this node received from other nodes.",
             now.news_received,
         );
+        if let Some((sent, failed, pruned)) = now.push {
+            counter(
+                &mut out,
+                "anyplay_cloud_push_sent_total",
+                "Web Push notifications a push service accepted.",
+                sent,
+            );
+            counter(
+                &mut out,
+                "anyplay_cloud_push_failed_total",
+                "Web Push notifications that failed.",
+                failed,
+            );
+            counter(
+                &mut out,
+                "anyplay_cloud_push_pruned_total",
+                "Web Push subscriptions removed because they were gone or kept failing.",
+                pruned,
+            );
+        }
         counter(
             &mut out,
             "anyplay_cloud_sweeps_total",
@@ -163,6 +185,7 @@ mod tests {
             connections: 2,
             news_sent: 4,
             news_received: 5,
+            push: Some((7, 1, 2)),
         });
         assert!(
             text.contains("anyplay_cloud_http_requests_total{route=\"/v1/me\",status=\"200\"} 2")
@@ -173,6 +196,7 @@ mod tests {
         assert!(text.contains("anyplay_cloud_event_connections 2"));
         assert!(text.contains("anyplay_cloud_news_received_total 5"));
         assert!(text.contains("anyplay_cloud_sweeps_total 1"));
+        assert!(text.contains("anyplay_cloud_push_sent_total 7"));
         assert!(text.contains("node=\"n1\""));
         // Every metric is announced before its samples.
         for line in text.lines().filter(|l| !l.starts_with('#')) {
