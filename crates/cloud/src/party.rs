@@ -7,7 +7,9 @@
 //! party ([`crate::chat`]). Written once with `$1` parameters for SQLite and Postgres, like
 //! [`crate::live`].
 
-use anyplay_api::{Account, AccountId, MAX_PARTY_MEMBERS, Party, PartyInvitation, PartyMember};
+use anyplay_api::{
+    Account, AccountId, MAX_PARTY_MEMBERS, MissedCall, Party, PartyInvitation, PartyMember,
+};
 use sqlx::FromRow;
 
 use crate::live::Conn;
@@ -26,6 +28,8 @@ pub struct PartyRow {
     pub leader: i64,
     pub created: i64,
     pub revision: i64,
+    /// The party's Discord link, if the leader named one.
+    pub discord: Option<String>,
 }
 
 #[derive(Clone, Debug, FromRow)]
@@ -107,11 +111,12 @@ impl PartyState {
             conversation: self.conversation.clone(),
             created: u(self.row.created),
             revision: u(self.row.revision),
+            discord: self.row.discord.clone(),
         }
     }
 }
 
-const PARTY_COLUMNS: &str = "id, leader, created, revision";
+const PARTY_COLUMNS: &str = "id, leader, created, revision, discord";
 
 async fn members_of(conn: &mut Conn, id: &str) -> sqlx::Result<Vec<MemberRow>> {
     sqlx::query_as(
@@ -237,6 +242,16 @@ pub async fn delete_member(conn: &mut Conn, party: &str, account: u64) -> sqlx::
     Ok(())
 }
 
+/// Sets or removes the party's Discord link. The caller holds the party's lock.
+pub async fn set_discord(conn: &mut Conn, party: &str, link: Option<&str>) -> sqlx::Result<()> {
+    sqlx::query("UPDATE parties SET discord = $2 WHERE id = $1")
+        .bind(party)
+        .bind(link)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 pub async fn set_leader(conn: &mut Conn, party: &str, leader: u64) -> sqlx::Result<()> {
     sqlx::query("UPDATE parties SET leader = $2 WHERE id = $1")
         .bind(party)
@@ -293,6 +308,8 @@ pub struct InvitationRow {
     pub to_id: i64,
     pub expires: i64,
     pub deadline_ms: i64,
+    /// 1 for a call.
+    pub call: i64,
 }
 
 impl InvitationRow {
@@ -310,6 +327,7 @@ impl InvitationRow {
             party: self.party_id.clone(),
             members,
             expires: u(self.expires),
+            call: self.call != 0,
         }
     }
 }
@@ -319,21 +337,34 @@ impl InvitationRow {
 pub struct Gone {
     pub id: String,
     pub to_id: i64,
+    pub from_id: i64,
+    pub from_handle: String,
+    pub call: i64,
 }
 
 impl Gone {
     pub fn to(&self) -> u64 {
         u(self.to_id)
     }
+
+    pub fn from(&self) -> u64 {
+        u(self.from_id)
+    }
+
+    pub fn is_call(&self) -> bool {
+        self.call != 0
+    }
 }
 
-const INVITATION_COLUMNS: &str = "id, party_id, from_id, from_handle, to_id, expires, deadline_ms";
+const INVITATION_COLUMNS: &str =
+    "id, party_id, from_id, from_handle, to_id, expires, deadline_ms, call";
 
 /// Inserts an invitation. False when the account holds one for this party already.
 pub async fn insert_invitation(conn: &mut Conn, row: &InvitationRow) -> sqlx::Result<bool> {
     let result = sqlx::query(
-        "INSERT INTO party_invitations (id, party_id, from_id, from_handle, to_id, expires, deadline_ms) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
+        "INSERT INTO party_invitations \
+         (id, party_id, from_id, from_handle, to_id, expires, deadline_ms, call) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
     )
     .bind(&row.id)
     .bind(&row.party_id)
@@ -342,6 +373,7 @@ pub async fn insert_invitation(conn: &mut Conn, row: &InvitationRow) -> sqlx::Re
     .bind(row.to_id)
     .bind(row.expires)
     .bind(row.deadline_ms)
+    .bind(row.call)
     .execute(conn)
     .await?;
     Ok(result.rows_affected() == 1)
@@ -423,7 +455,7 @@ pub async fn is_invited(conn: &mut Conn, to: u64, party: &str) -> sqlx::Result<b
 
 /// Removes every invitation an account holds: it is in a party now.
 pub async fn take_held(conn: &mut Conn, to: u64) -> sqlx::Result<Vec<Gone>> {
-    sqlx::query_as("DELETE FROM party_invitations WHERE to_id = $1 RETURNING id, to_id")
+    sqlx::query_as("DELETE FROM party_invitations WHERE to_id = $1 RETURNING id, to_id, from_id, from_handle, call")
         .bind(i(to))
         .fetch_all(conn)
         .await
@@ -431,7 +463,9 @@ pub async fn take_held(conn: &mut Conn, to: u64) -> sqlx::Result<Vec<Gone>> {
 
 /// Removes every invitation of a party.
 pub async fn take_of_party(conn: &mut Conn, party: &str) -> sqlx::Result<Vec<Gone>> {
-    sqlx::query_as("DELETE FROM party_invitations WHERE party_id = $1 RETURNING id, to_id")
+    sqlx::query_as(
+        "DELETE FROM party_invitations WHERE party_id = $1 \n         RETURNING id, to_id, from_id, from_handle, call",
+    )
         .bind(party)
         .fetch_all(conn)
         .await
@@ -441,7 +475,7 @@ pub async fn take_of_party(conn: &mut Conn, party: &str) -> sqlx::Result<Vec<Gon
 pub async fn take_between(conn: &mut Conn, a: u64, b: u64) -> sqlx::Result<Vec<Gone>> {
     sqlx::query_as(
         "DELETE FROM party_invitations WHERE (from_id = $1 AND to_id = $2) OR (from_id = $2 AND to_id = $1) \
-         RETURNING id, to_id",
+         RETURNING id, to_id, from_id, from_handle, call",
     )
     .bind(i(a))
     .bind(i(b))
@@ -452,7 +486,7 @@ pub async fn take_between(conn: &mut Conn, a: u64, b: u64) -> sqlx::Result<Vec<G
 /// Removes every invitation an account sent or holds.
 pub async fn take_of_account(conn: &mut Conn, account: u64) -> sqlx::Result<Vec<Gone>> {
     sqlx::query_as(
-        "DELETE FROM party_invitations WHERE from_id = $1 OR to_id = $1 RETURNING id, to_id",
+        "DELETE FROM party_invitations WHERE from_id = $1 OR to_id = $1 RETURNING id, to_id, from_id, from_handle, call",
     )
     .bind(i(account))
     .fetch_all(conn)
@@ -461,7 +495,9 @@ pub async fn take_of_account(conn: &mut Conn, account: u64) -> sqlx::Result<Vec<
 
 /// Removes an invitation its recipient declines. Empty when it is not theirs.
 pub async fn take_declined(conn: &mut Conn, id: &str, to: u64) -> sqlx::Result<Vec<Gone>> {
-    sqlx::query_as("DELETE FROM party_invitations WHERE id = $1 AND to_id = $2 RETURNING id, to_id")
+    sqlx::query_as(
+        "DELETE FROM party_invitations WHERE id = $1 AND to_id = $2 \n         RETURNING id, to_id, from_id, from_handle, call",
+    )
         .bind(id)
         .bind(i(to))
         .fetch_all(conn)
@@ -470,8 +506,103 @@ pub async fn take_declined(conn: &mut Conn, id: &str, to: u64) -> sqlx::Result<V
 
 /// Removes the invitations that ran out.
 pub async fn sweep_expired(conn: &mut Conn, now_ms: i64) -> sqlx::Result<Vec<Gone>> {
-    sqlx::query_as("DELETE FROM party_invitations WHERE deadline_ms <= $1 RETURNING id, to_id")
+    sqlx::query_as(
+        "DELETE FROM party_invitations WHERE deadline_ms <= $1 \n         RETURNING id, to_id, from_id, from_handle, call",
+    )
         .bind(now_ms)
         .fetch_all(conn)
         .await
+}
+
+// Missed calls
+
+#[derive(Clone, Debug, FromRow)]
+pub struct MissedRow {
+    pub from_id: i64,
+    pub from_handle: String,
+    pub at: i64,
+}
+
+impl MissedRow {
+    pub fn view(&self) -> MissedCall {
+        MissedCall {
+            from: Account {
+                id: AccountId(u(self.from_id)),
+                handle: self.from_handle.clone(),
+            },
+            at: u(self.at),
+        }
+    }
+}
+
+/// Keeps a call `to` did not answer. A newer call from the same caller replaces the older.
+pub async fn record_missed(
+    conn: &mut Conn,
+    to: u64,
+    from: u64,
+    handle: &str,
+    at: i64,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO missed_calls (account_id, from_id, from_handle, at) VALUES ($1, $2, $3, $4)          ON CONFLICT (account_id, from_id) DO UPDATE SET from_handle = $3, at = $4",
+    )
+    .bind(i(to))
+    .bind(i(from))
+    .bind(handle)
+    .bind(at)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// The missed calls of an account, newest first.
+pub async fn missed_of(conn: &mut Conn, to: u64) -> sqlx::Result<Vec<MissedRow>> {
+    sqlx::query_as(
+        "SELECT from_id, from_handle, at FROM missed_calls WHERE account_id = $1 ORDER BY at DESC",
+    )
+    .bind(i(to))
+    .fetch_all(conn)
+    .await
+}
+
+/// Marks the missed calls of `to` as seen: those from one caller, or all. Returns the callers.
+pub async fn take_missed(conn: &mut Conn, to: u64, from: Option<u64>) -> sqlx::Result<Vec<u64>> {
+    let rows: Vec<(i64,)> =
+        match from {
+            Some(from) => sqlx::query_as(
+                "DELETE FROM missed_calls WHERE account_id = $1 AND from_id = $2 RETURNING from_id",
+            )
+            .bind(i(to))
+            .bind(i(from))
+            .fetch_all(conn)
+            .await?,
+            None => {
+                sqlx::query_as("DELETE FROM missed_calls WHERE account_id = $1 RETURNING from_id")
+                    .bind(i(to))
+                    .fetch_all(conn)
+                    .await?
+            }
+        };
+    Ok(rows.into_iter().map(|(a,)| u(a)).collect())
+}
+
+/// Removes the missed calls between two accounts, in both directions. Returns `(to, from)`.
+pub async fn take_missed_between(conn: &mut Conn, a: u64, b: u64) -> sqlx::Result<Vec<(u64, u64)>> {
+    let rows: Vec<(i64, i64)> = sqlx::query_as(
+        "DELETE FROM missed_calls WHERE (account_id = $1 AND from_id = $2)          OR (account_id = $2 AND from_id = $1) RETURNING account_id, from_id",
+    )
+    .bind(i(a))
+    .bind(i(b))
+    .fetch_all(conn)
+    .await?;
+    Ok(rows.into_iter().map(|(t, f)| (u(t), u(f))).collect())
+}
+
+/// Removes the missed calls older than `cut` (Unix seconds).
+pub async fn sweep_missed(conn: &mut Conn, cut: i64) -> sqlx::Result<u64> {
+    let result = sqlx::query("DELETE FROM missed_calls WHERE at < $1")
+        .bind(cut)
+        .execute(conn)
+        .await?;
+    Ok(result.rows_affected())
 }

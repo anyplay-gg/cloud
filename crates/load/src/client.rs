@@ -403,6 +403,9 @@ fn on_text(ctx: &Ctx, text: &str) {
         Ok(Event::ConversationGone { .. }) => rec.event("conversation_gone"),
         Ok(Event::Feed) => rec.event("feed"),
         Ok(Event::Action { .. }) => rec.event("action"),
+        Ok(Event::MissedCall { .. }) => rec.event("missed_call"),
+        Ok(Event::MissedCallGone { .. }) => rec.event("missed_call_gone"),
+        Ok(Event::CallEnded { .. }) => rec.event("call_ended"),
         Ok(Event::Unknown) | Err(_) => rec.event("unknown"),
     }
 }

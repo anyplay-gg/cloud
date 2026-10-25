@@ -103,6 +103,11 @@ pub fn router(state: AppState) -> Router {
             get(parties::invitations).post(parties::invite),
         )
         .route(path::PARTY_INVITATION, delete(parties::decline))
+        .route(
+            path::CALLS_MISSED,
+            get(parties::missed_calls).delete(parties::calls_seen),
+        )
+        .route(path::CALLS_MISSED_FROM, delete(parties::calls_seen_from))
         .route(path::PARTY_INVITATION_ACCEPT, post(parties::accept))
         .route(path::JOIN_CODES, post(join_codes::issue))
         .route(path::JOIN_CODE_CURRENT, delete(join_codes::revoke))

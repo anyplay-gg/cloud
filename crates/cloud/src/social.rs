@@ -6,14 +6,30 @@
 //! News is a pointer or a versioned state: a party carries its revision, a message only its
 //! conversation and number, and what a client misses it reads again after `welcome`.
 
-use anyplay_api::Event;
+use anyplay_api::{AccountId, CallEnd, Event};
 
 use crate::chat;
 use crate::error::AppError;
 use crate::party::{self, Gone, PartyState};
 use crate::state::Inner;
+use crate::util::now;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+/// Missed calls are kept this many days.
+const MISSED_CALL_DAYS: i64 = 30;
+
+/// Why party invitations ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ended {
+    /// Joined, a block, or the party ended for another reason: nothing more to tell.
+    Used,
+    /// The callee declined.
+    Declined,
+    /// The time ran out.
+    Expired,
+    /// The caller left the party, or the party ended, before the call was answered.
+    Cancelled,
+}
 
 impl Inner {
     /// Sends a party as it is now to all its members.
@@ -36,6 +52,65 @@ impl Inner {
                 },
             );
         }
+    }
+
+    /// Tells the recipients of party invitations that ended, and settles the calls among them: a
+    /// call that rang out or was hung up becomes a missed call for the callee, and the caller
+    /// hears that a call rang out or was declined.
+    pub async fn end_invitations(&self, gone: &[Gone], why: Ended) -> Result<(), AppError> {
+        self.party_invitations_gone(gone);
+        for invitation in gone.iter().filter(|g| g.call != 0) {
+            let (callee, caller) = (invitation.to(), invitation.from());
+            if matches!(why, Ended::Expired | Ended::Cancelled) {
+                let at = now() as i64;
+                let mut conn = self.db.acquire().await?;
+                party::record_missed(&mut conn, callee, caller, &invitation.from_handle, at)
+                    .await?;
+                drop(conn);
+                self.news.push(
+                    callee,
+                    &Event::MissedCall {
+                        call: anyplay_api::MissedCall {
+                            from: anyplay_api::Account {
+                                id: AccountId(caller),
+                                handle: invitation.from_handle.clone(),
+                            },
+                            at: at as u64,
+                        },
+                    },
+                );
+            }
+            let reason = match why {
+                Ended::Expired => Some(CallEnd::NoAnswer),
+                Ended::Declined => Some(CallEnd::Declined),
+                Ended::Used | Ended::Cancelled => None,
+            };
+            if let Some(reason) = reason {
+                self.news.push(
+                    caller,
+                    &Event::CallEnded {
+                        account: AccountId(callee),
+                        reason,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Forgets the missed calls between two accounts that are no longer friends or blocked one
+    /// another, and tells the ones who held them.
+    pub async fn forget_missed_between(&self, a: u64, b: u64) -> Result<(), AppError> {
+        let gone = party::take_missed_between(&mut *self.db.acquire().await?, a, b).await?;
+        for (to, from) in gone {
+            self.news.push(
+                to,
+                &Event::MissedCallGone {
+                    account: AccountId(from),
+                },
+            );
+        }
+        Ok(())
     }
 
     /// Takes a member out of a party and out of its chat. A leaving leader hands over to the
@@ -70,7 +145,7 @@ impl Inner {
 
         self.news
             .push(account, &Event::PartyGone { id: id.to_owned() });
-        self.party_invitations_gone(&gone);
+        self.end_invitations(&gone, Ended::Cancelled).await?;
         if !party.members.is_empty() {
             self.announce_party(&party);
         }
@@ -85,7 +160,11 @@ impl Inner {
             self.remove_party_member(&id, account).await?;
         }
         let gone = party::take_of_account(&mut *self.db.acquire().await?, account).await?;
-        self.party_invitations_gone(&gone);
+        // What the account sent was hung up; what it held it will not answer.
+        let (sent, held): (Vec<Gone>, Vec<Gone>) =
+            gone.into_iter().partition(|g| g.from() == account);
+        self.end_invitations(&sent, Ended::Cancelled).await?;
+        self.end_invitations(&held, Ended::Used).await?;
         Ok(())
     }
 
@@ -123,7 +202,7 @@ impl Inner {
             .await?;
             (gone, leaving)
         };
-        self.party_invitations_gone(&gone);
+        self.end_invitations(&gone, Ended::Expired).await?;
         for account in leaving {
             self.leave_party(account).await?;
         }
@@ -132,6 +211,11 @@ impl Inner {
             .saturating_mul(DAY_MS);
         let cut = now_ms.saturating_sub(keep);
         let mut conn = self.db.acquire().await?;
+        party::sweep_missed(
+            &mut conn,
+            now_ms.saturating_sub(MISSED_CALL_DAYS * DAY_MS) / 1000,
+        )
+        .await?;
         chat::sweep_retention(&mut conn, cut).await?;
         chat::sweep_empty(&mut conn, cut).await?;
         drop(conn);

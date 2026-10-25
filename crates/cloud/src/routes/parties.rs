@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 
 use anyplay_api::{
-    AccountId, ErrorCode, Event, Invite, Invited, MoveParty, Party, PartyEndpoint,
+    AccountId, ErrorCode, Event, Invite, Invited, MissedCalls, MoveParty, Party, PartyEndpoint,
     PartyInvitations, UpdateParty, Visibility,
 };
 use axum::Json;
@@ -16,8 +16,10 @@ use crate::chat::{self, ACCEPTED, ConversationRow};
 use crate::error::{AppError, Result};
 use crate::http::{ApiJson, Auth, parse_id};
 use crate::live;
+use crate::moderation::ensure_not_muted;
 use crate::party::{self, InvitationRow, MemberRow, PartyRow, PartyState};
 use crate::routes::sessions;
+use crate::social::Ended;
 use crate::state::AppState;
 use crate::util::{is_endpoint, is_http_url, now, now_ms, random_uuid};
 
@@ -47,6 +49,7 @@ async fn make_party(state: &AppState, account: u64, handle: String) -> Result<Pa
         leader: account as i64,
         created,
         revision: 0,
+        discord: None,
     };
     let member = MemberRow::new(account, handle, created);
     let conversation = ConversationRow {
@@ -115,6 +118,20 @@ pub async fn invite(
     if request.to.len() > MAX_INVITE_BATCH {
         return Err(AppError::bad_request("Invite at most 16 accounts at once."));
     }
+    let call = request.call;
+    if call {
+        // The rules of writing to a friend: a mute stops it, and so does too much of it.
+        ensure_not_muted(&state, auth.account).await?;
+        let rates = &state.tuning.rates;
+        state
+            .limiter
+            .hit(
+                &format!("calls:{}", auth.account),
+                rates.calls,
+                rates.calls_window,
+            )
+            .map_err(AppError::rate_limited)?;
+    }
     let handle = handle_of(&state, auth.account).await?;
     let friends: HashSet<u64> = crate::db::friend_ids(&state.db, auth.account)
         .await?
@@ -133,7 +150,11 @@ pub async fn invite(
         },
     };
 
-    let ttl = state.tuning.invitation_ttl;
+    let ttl = if call {
+        state.tuning.call_ttl
+    } else {
+        state.tuning.invitation_ttl
+    };
     let mut tx = state.begin_write().await?;
     let party = party::lock_party(&mut tx, &id)
         .await?
@@ -157,6 +178,10 @@ pub async fn invite(
         if party::blocked_with_member(&mut tx, &id, to_id).await? {
             continue;
         }
+        // A call to someone who is in a party would only fail when answered.
+        if call && party::party_id_of(&mut tx, to_id).await?.is_some() {
+            continue;
+        }
         if party::is_invited(&mut tx, to_id, &id).await? {
             sent.push(to);
             continue;
@@ -173,6 +198,7 @@ pub async fn invite(
             to_id: to_id as i64,
             expires: (now() + ttl.as_secs()) as i64,
             deadline_ms: now_ms() + ttl.as_millis() as i64,
+            call: i64::from(call),
         };
         if party::insert_invitation(&mut tx, &invitation).await? {
             new.push(invitation);
@@ -289,7 +315,7 @@ pub async fn decline(
     if gone.is_empty() {
         return Err(AppError::not_found());
     }
-    state.party_invitations_gone(&gone);
+    state.end_invitations(&gone, Ended::Declined).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -343,12 +369,25 @@ pub async fn update(
     if party.leader() != auth.account {
         return Err(AppError::forbidden("Only the leader can change the party."));
     }
+    if let Some(link) = &request.discord
+        && !link.is_empty()
+        && !anyplay_api::is_discord_link(link)
+    {
+        return Err(AppError::bad_request(
+            "The Discord link is an https://discord.com/channels/... or https://discord.gg/... address.",
+        ));
+    }
     if let Some(leader) = request.leader {
         if !party.is_member(leader.0) {
             return Err(AppError::bad_request("The new leader must be a member."));
         }
         party.row.leader = leader.0 as i64;
         party::set_leader(&mut tx, &id, leader.0).await?;
+    }
+    if let Some(link) = request.discord {
+        let link = (!link.is_empty()).then_some(link);
+        party::set_discord(&mut tx, &id, link.as_deref()).await?;
+        party.row.discord = link;
     }
     tx.commit().await?;
     state.announce_party(&party);
@@ -472,4 +511,47 @@ pub async fn move_to_session(
     tx.commit().await?;
     sessions::push_invitations(&state, new);
     Ok(Json(Invited { sent }))
+}
+
+// Missed calls
+
+/// The calls nobody answered, newest first.
+pub async fn missed_calls(State(state): State<AppState>, auth: Auth) -> Result<Json<MissedCalls>> {
+    let mut conn = state.db.acquire().await?;
+    let rows = party::missed_of(&mut conn, auth.account).await?;
+    Ok(Json(MissedCalls {
+        missed: rows.iter().map(|r| r.view()).collect(),
+    }))
+}
+
+/// All missed calls seen.
+pub async fn calls_seen(State(state): State<AppState>, auth: Auth) -> Result<StatusCode> {
+    let seen = party::take_missed(&mut *state.db.acquire().await?, auth.account, None).await?;
+    tell_seen(&state, auth.account, seen);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The missed calls of one caller seen.
+pub async fn calls_seen_from(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path(account): Path<String>,
+) -> Result<StatusCode> {
+    let from = parse_id(&account)?;
+    let seen =
+        party::take_missed(&mut *state.db.acquire().await?, auth.account, Some(from)).await?;
+    tell_seen(&state, auth.account, seen);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Tells the account's devices, this one included, that missed calls were seen.
+fn tell_seen(state: &AppState, account: u64, seen: Vec<u64>) {
+    for from in seen {
+        state.news.push(
+            account,
+            &Event::MissedCallGone {
+                account: AccountId(from),
+            },
+        );
+    }
 }
