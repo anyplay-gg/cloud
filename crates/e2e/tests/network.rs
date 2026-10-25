@@ -195,6 +195,34 @@ impl Launcher {
         .await
     }
 
+    /// Play Together: starts the game with a `lan` session of its own. Returns the game and the
+    /// session the net service opened for it.
+    async fn start_hosted_game(&mut self, host: anyplay_control::Host) -> (Bridge, String) {
+        let started: GameStarted = self
+            .call(Command::GameStart {
+                title_id: TITLE.into(),
+                title: "Test Game".into(),
+                version: "01.000".into(),
+                build: "0.1.3".into(),
+                join: None,
+                host: Some(host),
+            })
+            .await
+            .expect("hosted game start");
+        let session = started.session.clone().expect("the start opened a session");
+        let bridge = Bridge::connect(
+            &started.env["ANYPS5_NET_ENDPOINT"],
+            &started.env["ANYPS5_NET_TOKEN"],
+        )
+        .await
+        .expect("bridge connects");
+        bridge
+            .wait_state(LIMIT, |state| state.signed_in)
+            .await
+            .expect("the game sees the player signed in");
+        (bridge, session)
+    }
+
     async fn start_game(&mut self, join: Option<String>) -> Bridge {
         let started: GameStarted = self
             .call(Command::GameStart {
@@ -203,6 +231,7 @@ impl Launcher {
                 version: "01.000".into(),
                 build: "0.1.3".into(),
                 join,
+                host: None,
             })
             .await
             .expect("game start");
@@ -605,4 +634,172 @@ async fn meet_and_play(alice_relay: AliceRelay) -> Link {
         .expect("Alice hears that Bobby left");
     assert_eq!(gone.account_id, bobby_id.0);
     alice_link
+}
+
+/// Play Together: Alice starts the game with a session of her own, Bobby joins it from his
+/// presence, and the games find each other by broadcast, as a LAN game does, without either
+/// calling a session function. Then Alice's game ends and Bobby's launcher is told.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn friends_play_together_by_broadcast_and_the_session_ends_with_its_host() {
+    use anyplay_control::anyplay_api::{SessionKind, Visibility};
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let cloud_dir = tempfile::tempdir().unwrap();
+    let (signer, _) = anyplay_cloud::load_signing_key(cloud_dir.path()).unwrap();
+    let (_relay, relay_url, journal) = relay(&signer).await;
+    let mail = Arc::new(MemoryMailer::default());
+    let config = Config {
+        data_dir: cloud_dir.path().to_path_buf(),
+        name: "End-to-end cloud".into(),
+        relays: vec![relay_url],
+        new_account_hours: 0,
+        ..Config::default()
+    };
+    let state = open(config, Tuning::default(), mail.clone()).await.unwrap();
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let cloud_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(serve(listener, state, std::future::pending()));
+
+    let mut alice = Launcher::start("Alice", false, journal.clone()).await;
+    let mut bobby = Launcher::start("Bobby", false, journal.clone()).await;
+    let alice_id = alice
+        .sign_up(&cloud_url, &mail, "alice@example.org", "Alice")
+        .await;
+    let bobby_id = bobby
+        .sign_up(&cloud_url, &mail, "bobby@example.org", "Bobby")
+        .await;
+    alice
+        .ok(Command::AddFriend {
+            handle: "bobby".into(),
+        })
+        .await;
+    bobby
+        .friends("the request", |l| {
+            l.incoming.iter().any(|r| r.account.id == alice_id)
+        })
+        .await;
+    bobby.ok(Command::Accept { account: alice_id }).await;
+    alice
+        .friends("the new friend", |l| {
+            l.friends.iter().any(|f| f.account.id == bobby_id)
+        })
+        .await;
+
+    // Alice presses Play Together. Her game never calls a session function.
+    let (game_a, session) = alice
+        .start_hosted_game(anyplay_control::Host {
+            max_members: 4,
+            visibility: Visibility::Friends,
+            party: false,
+        })
+        .await;
+    let shown = alice
+        .wait("her own LAN session", |event| match event {
+            Event::Session { session: Some(s) } if s.id == session => Some(s.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(shown.kind, SessionKind::Lan);
+
+    // Bobby sees her playing together, and his Join starts his game in the session.
+    let lists = bobby
+        .friends("Alice playing together", |l| {
+            l.friends.iter().any(|f| {
+                f.account.id == alice_id
+                    && f.presence
+                        .activity
+                        .as_ref()
+                        .and_then(|a| a.session.as_ref())
+                        .is_some_and(|s| s.joinable && s.kind == SessionKind::Lan)
+            })
+        })
+        .await;
+    let reference = lists
+        .friends
+        .iter()
+        .find(|f| f.account.id == alice_id)
+        .and_then(|f| f.presence.activity.clone())
+        .and_then(|a| a.session)
+        .unwrap();
+    assert_eq!(reference.id, session);
+    assert_eq!((reference.members, reference.max_members), (1, 4));
+    bobby
+        .ok(Command::CheckJoin {
+            session: session.clone(),
+            title_id: TITLE.into(),
+            version: "01.000".into(),
+            build: "0.1.3".into(),
+        })
+        .await;
+    let game_b = bobby.start_game(Some(session.clone())).await;
+    let joined = alice
+        .wait("Bobby in the session", |event| match event {
+            Event::Session { session: Some(s) } if s.members.len() == 2 => Some(s.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(joined.kind, SessionKind::Lan);
+
+    // The games listen on the LAN discovery port and broadcast to it, as Minecraft does. A copy
+    // reaches the other member, from the sender's virtual address.
+    let socket_a = game_a.socket(19132).await.unwrap();
+    let socket_b = game_b.socket(19132).await.unwrap();
+    let ping = b"\x01looking for a world";
+    let mut heard = None;
+    for _ in 0..60 {
+        socket_b
+            .send_to(Ipv4Addr::BROADCAST, 19132, ping)
+            .await
+            .unwrap();
+        if let Ok(Ok(got)) = tokio::time::timeout(Duration::from_millis(300), socket_a.recv()).await
+        {
+            heard = Some(got);
+            break;
+        }
+    }
+    let (from, from_port, bytes) = heard.expect("Alice's game never heard Bobby's broadcast");
+    assert_eq!(
+        (from, from_port, bytes.as_slice()),
+        (game_b.state().address, 19132, &ping[..])
+    );
+    // Alice's world answers by unicast and Bobby hears it. Her own broadcast reaches him as well.
+    socket_a.send_to(from, from_port, b"a world").await.unwrap();
+    let (answer_from, _, answer) = tokio::time::timeout(Duration::from_secs(5), socket_b.recv())
+        .await
+        .expect("no answer")
+        .unwrap();
+    assert_eq!(answer_from, game_a.state().address);
+    assert_eq!(answer, b"a world");
+    socket_a
+        .send_to(Ipv4Addr::new(198, 19, 255, 255), 19132, b"hosting")
+        .await
+        .unwrap();
+    let (_, _, hosting) = tokio::time::timeout(Duration::from_secs(5), socket_b.recv())
+        .await
+        .expect("Bobby never heard the world announce itself")
+        .unwrap();
+    assert_eq!(hosting, b"hosting");
+
+    // Alice's game ends: the world goes with her, and Bobby's launcher says the session ended.
+    alice.ok(Command::GameEnd).await;
+    drop(socket_a);
+    drop(game_a);
+    let ended = bobby
+        .wait("the end of the session", |event| match event {
+            Event::SessionEnded {
+                session: id, host, ..
+            } if *id == session => Some(host.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(ended.id, alice_id);
+    assert_eq!(ended.handle, "Alice");
+    bobby
+        .wait("no session in Bobby's launcher", |event| match event {
+            Event::Session { session: None } => Some(()),
+            _ => None,
+        })
+        .await;
 }
