@@ -223,10 +223,11 @@ async fn dump(pool: &anyplay_cloud::db::Pool) -> String {
             }
         }
     } else {
-        let tables = sqlx::query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
-            .fetch_all(pool)
-            .await
-            .unwrap();
+        let tables =
+            sqlx::query("SELECT tablename::text FROM pg_tables WHERE schemaname = 'public'")
+                .fetch_all(pool)
+                .await
+                .unwrap();
         for table in tables {
             let table: String = table.get(0);
             for row in sqlx::query(sqlx::AssertSqlSafe(format!(

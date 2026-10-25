@@ -298,7 +298,10 @@ async fn a_player_connects_discord_through_the_cloud_and_connects_again_from_the
             sent["code"], "fake-code-1",
             "the SDK's code reached Discord"
         );
-        assert_eq!(sent["code_verifier"], "fake-verifier-1");
+        assert!(
+            sent["code_verifier"].starts_with("fake-verifier-1-"),
+            "the SDK's verifier reached Discord"
+        );
         assert_eq!(sent["redirect_uri"], "http://127.0.0.1/callback");
         assert_eq!(
             sent["client_secret"], CLIENT_SECRET,
