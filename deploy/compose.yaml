@@ -44,6 +44,10 @@ services:
       # The account web and passkeys live on this address.
       ANYPLAY_CLOUD_PUBLIC_URL: https://${CLOUD_DOMAIN:?set CLOUD_DOMAIN in .env}
       ANYPLAY_CLOUD_ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      # Linked accounts (docs/configuration.md): a service stays off while its setting is empty.
+      ANYPLAY_CLOUD_DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
+      ANYPLAY_CLOUD_DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-}
+      ANYPLAY_CLOUD_STEAM_API_KEY: ${STEAM_API_KEY:-}
     volumes:
       - cloud-data:/data
 
