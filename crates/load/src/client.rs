@@ -402,6 +402,7 @@ fn on_text(ctx: &Ctx, text: &str) {
         Ok(Event::Conversation { .. }) => rec.event("conversation"),
         Ok(Event::ConversationGone { .. }) => rec.event("conversation_gone"),
         Ok(Event::Feed) => rec.event("feed"),
+        Ok(Event::AppearOffline { .. }) => rec.event("appear_offline"),
         Ok(Event::Action { .. }) => rec.event("action"),
         Ok(Event::MissedCall { .. }) => rec.event("missed_call"),
         Ok(Event::MissedCallGone { .. }) => rec.event("missed_call_gone"),

@@ -9,8 +9,8 @@
 use std::collections::BTreeMap;
 
 use anyplay_api::{
-    Count, FriendRequest, Grade, Part, Privacy, Profile, ProfileUpdate, RUN_REPORTS_MIN, Verdict,
-    VerdictCounts,
+    AppearOffline, Count, FriendRequest, Grade, Part, Privacy, Profile, ProfileUpdate,
+    RUN_REPORTS_MIN, Verdict, VerdictCounts,
 };
 use axum::Json;
 use axum::extract::{Path, Request, State};
@@ -24,7 +24,7 @@ use crate::db;
 use crate::error::AppError;
 use crate::http::{ApiJson, Auth, ClientIp};
 use crate::links;
-use crate::routes::{friends, profiles, trophies};
+use crate::routes::{accounts, friends, profiles, trophies};
 use crate::state::AppState;
 use crate::visibility::{Relation, viewing_as};
 use crate::web::existing;
@@ -150,6 +150,26 @@ pub async fn set_privacy(
 ) -> ApiResult {
     Ok(
         trophies::set_privacy(State(state), auth_of(&member), ApiJson(privacy))
+            .await?
+            .into_response(),
+    )
+}
+
+/// `GET /me/appear-offline`
+pub async fn my_appear_offline(State(state): State<AppState>, member: Member) -> ApiResult {
+    Ok(accounts::get_appear_offline(State(state), auth_of(&member))
+        .await?
+        .into_response())
+}
+
+/// `PUT /me/appear-offline`
+pub async fn set_appear_offline(
+    State(state): State<AppState>,
+    member: Member,
+    ApiJson(body): ApiJson<AppearOffline>,
+) -> ApiResult {
+    Ok(
+        accounts::set_appear_offline(State(state), auth_of(&member), ApiJson(body))
             .await?
             .into_response(),
     )

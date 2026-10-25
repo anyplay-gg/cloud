@@ -45,7 +45,7 @@ Each activity lists the items required by Art. 30(1)(b) to (g): purposes, catego
 | Recipients | Other players: friends see presence. Hosting provider. |
 | Transfers | None. |
 | Erasure | Until removed by a player or until the account is deleted. Presence: overwritten, one row per account. |
-| Security | Access only through the signed-in API; presence goes only to friends; blocks are never shown to the blocked person. |
+| Security | Access only through the signed-in API; presence goes only to friends, and not at all while the player appears offline; blocks are never shown to the blocked person. |
 
 ### P3. Sessions, invitations and tunnels
 

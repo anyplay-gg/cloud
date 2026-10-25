@@ -245,6 +245,18 @@ impl Inner {
         }
     }
 
+    /// Sets whether `account` appears offline, tells its friends their view changed and its own
+    /// devices the new setting.
+    pub async fn set_appear_offline(&self, account: u64, on: bool) -> Result<(), AppError> {
+        if !db::set_appear_offline(&self.db, account, on).await? {
+            return Err(AppError::not_found());
+        }
+        self.refresh_presence([account]).await;
+        self.news
+            .push(account, &Event::AppearOffline { appear_offline: on });
+        Ok(())
+    }
+
     /// Reads what the friends of `account` see and marks it sent in one write transaction that
     /// holds the account's presence: two refreshes at once (the game sets its activity while its
     /// session opens) then run one after the other, and the later one reads what the earlier one

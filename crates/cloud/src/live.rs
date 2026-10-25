@@ -332,6 +332,8 @@ struct PresenceRow {
     online: i64,
     activity: Option<String>,
     revision: i64,
+    /// 1 when the account appears offline: friends see none of it.
+    appear_offline: i64,
 }
 
 #[derive(FromRow)]
@@ -345,7 +347,7 @@ struct JoinableRow {
 
 fn presence(row: &PresenceRow, joinable: &[JoinableRow]) -> Presence {
     let revision = u(row.revision);
-    if row.online == 0 {
+    if row.online == 0 || row.appear_offline != 0 {
         return Presence {
             revision,
             ..Presence::default()
@@ -384,7 +386,7 @@ const JOINABLE: &str = "SELECT m.account_id AS account_id, s.id AS id, s.title_i
 /// What the friends of an account see of it now, with the revision they were last told.
 pub async fn presence_of(conn: &mut Conn, account: u64) -> sqlx::Result<Presence> {
     let row: Option<PresenceRow> = sqlx::query_as(
-        "SELECT account_id, online, activity, revision FROM presence WHERE account_id = $1",
+        "SELECT p.account_id, p.online, p.activity, p.revision, a.appear_offline FROM presence p          JOIN accounts a ON a.id = p.account_id WHERE p.account_id = $1",
     )
     .bind(i(account))
     .fetch_optional(&mut *conn)
@@ -392,7 +394,7 @@ pub async fn presence_of(conn: &mut Conn, account: u64) -> sqlx::Result<Presence
     let Some(row) = row else {
         return Ok(Presence::default());
     };
-    if row.online == 0 {
+    if row.online == 0 || row.appear_offline != 0 {
         return Ok(presence(&row, &[]));
     }
     let joinable: Vec<JoinableRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -412,7 +414,7 @@ pub async fn presence_of_friends(
     let friend = "(SELECT CASE WHEN f.low = $1 THEN f.high ELSE f.low END FROM friends f \
                   WHERE f.low = $1 OR f.high = $1)";
     let rows: Vec<PresenceRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT account_id, online, activity, revision FROM presence WHERE account_id IN {friend}"
+        "SELECT p.account_id, p.online, p.activity, p.revision, a.appear_offline FROM presence p          JOIN accounts a ON a.id = p.account_id WHERE p.account_id IN {friend}"
     )))
     .bind(i(account))
     .fetch_all(&mut *conn)

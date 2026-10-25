@@ -1,6 +1,6 @@
 //! The signed-in account and lookups of other accounts.
 
-use anyplay_api::{Account, AccountId, Me};
+use anyplay_api::{Account, AccountId, AppearOffline, Me};
 use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::error::{AppError, Result};
-use crate::http::{Auth, parse_id};
+use crate::http::{ApiJson, Auth, parse_id};
 use crate::routes::auth::me_of;
 use crate::state::AppState;
 use crate::util::now;
@@ -20,6 +20,29 @@ pub async fn me(State(state): State<AppState>, auth: Auth) -> Result<Json<Me>> {
         .await?
         .ok_or_else(AppError::not_found)?;
     Ok(Json(me_of(&account)))
+}
+
+/// `GET /v1/me/appear-offline`
+pub async fn get_appear_offline(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> Result<Json<AppearOffline>> {
+    Ok(Json(AppearOffline {
+        appear_offline: db::appear_offline(&state.db, auth.account).await?,
+    }))
+}
+
+/// `PUT /v1/me/appear-offline`: friends see the account as offline, or as it is again. The
+/// friends and the account's other devices hear of it at once.
+pub async fn set_appear_offline(
+    State(state): State<AppState>,
+    auth: Auth,
+    ApiJson(body): ApiJson<AppearOffline>,
+) -> Result<Json<AppearOffline>> {
+    state
+        .set_appear_offline(auth.account, body.appear_offline)
+        .await?;
+    Ok(Json(body))
 }
 
 /// Schedules the deletion of the account for the end of the grace period and signs every device
