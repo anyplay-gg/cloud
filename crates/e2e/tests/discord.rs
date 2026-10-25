@@ -103,6 +103,7 @@ impl Launcher {
             device_name: "Test PC".into(),
             audio: anyplay_net::voice::Audio::system(),
             discord,
+            workers: anyplay_net::screen::WorkerSet::none(),
         };
         tokio::spawn(anyplay_net::run(
             config,
