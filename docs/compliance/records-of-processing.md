@@ -27,7 +27,7 @@ Each activity lists the items required by Art. 30(1)(b) to (g): purposes, catego
 |---|---|
 | Purpose (b) | Create and run a player's account; sign players in with an e-mail code; keep devices signed in. |
 | Legal basis | Art. 6(1)(b) (contract). Theft check on refresh tokens: Art. 6(1)(f). |
-| People (c) | Players, including minors who meet the age rule in the [terms](https://github.com/anyplay-gg/web/blob/main/apps/web/src/components/legal/terms.tsx). |
+| People (c) | Players, including minors who meet the age rule in the [terms](https://github.com/anyplaynet/web/blob/main/apps/web/src/components/legal/terms.tsx). |
 | Data (c) | E-mail address, handle, account ID, creation time; device name, platform, refresh token hash, creation and last use; pending sign-in codes (hashed) with the address. |
 | Recipients (d) | The mail provider (processor) gets the address and the code. The hosting provider (processor) holds the database. `[PROCESSORS]` |
 | Transfers (e) | None planned. All servers in the EU. `[CONFIRM FOR EACH PROCESSOR AND SUB-PROCESSOR]` |

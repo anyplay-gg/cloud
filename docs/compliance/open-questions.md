@@ -6,7 +6,7 @@ Texts we read for this pass: GDPR, DSA, the Cyber Resilience Act (CRA), TDDDG §
 
 ## O1. Minors: the age rule, contract capacity and parents
 
-**Why it matters.** Many players are teenagers ([network ADR 0012](https://github.com/anyplay-gg/network/blob/main/docs/adr/0012-private-by-default.md)). The cloud asks players to confirm they are old enough and stores nothing (gap G9).
+**Why it matters.** Many players are teenagers ([network ADR 0012](https://github.com/anyplaynet/network/blob/main/docs/adr/0012-private-by-default.md)). The cloud asks players to confirm they are old enough and stores nothing (gap G9).
 
 **What the law says.**
 - [GDPR Art. 8(1)](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679): where consent is the basis for an information society service offered directly to a child, the child must be at least 16, below that a parent must give or authorise it. Member States may lower the age, not below 13.
@@ -15,7 +15,7 @@ Texts we read for this pass: GDPR, DSA, the Cyber Resilience Act (CRA), TDDDG §
 
 **Questions.**
 1. Is a contract with a 16-year-old (or any minor) valid without a parent under German civil law? We did not read it. If not, is the core service on Art. 6(1)(b) safe, or should the basis for minors be different?
-2. Is 16 the right minimum age? We propose 16 ([published terms](https://github.com/anyplay-gg/web/blob/main/apps/web/src/components/legal/terms.tsx)). Did Germany lower the Art. 8 age? We found no such rule but did not search the German statutes.
+2. Is 16 the right minimum age? We propose 16 ([published terms](https://github.com/anyplaynet/web/blob/main/apps/web/src/components/legal/terms.tsx)). Did Germany lower the Art. 8 age? We found no such rule but did not search the German statutes.
 3. Is a self-declared age enough? Our basis: DSA Art. 28(3) says a platform need not collect more data to find out an age ([DSA](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32022R2065)), and the research notes quote the EDPB for risk-based, least-intrusive assurance. We did not re-read the EDPB text; the lawyer should check what the EDPB and the German authorities expect.
 4. What do we do when we learn a player is under the age? The terms say: close the account, delete the data, on a parent's request.
 
@@ -39,7 +39,7 @@ Texts we read for this pass: GDPR, DSA, the Cyber Resilience Act (CRA), TDDDG §
 
 **Why it matters.** [Art. 35(1)](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679) asks for a DPIA before processing likely to result in a high risk, especially with new technology. Art. 35(3) lists three cases (systematic extensive profiling with significant effects, large-scale special-category data, large-scale systematic monitoring of public areas). None applies clearly, but the list is not closed. Art. 35(7) gives the contents: description, necessity and proportionality, risk assessment, measures.
 
-**Why we think one is likely needed (inference).** A network used by children, with presence (what they play), friends, messages stored readable by the operator ([ADR 0011](https://github.com/anyplay-gg/network/blob/main/docs/adr/0011-messages-are-stored-to-be-delivered.md)) and voice, is a service where children are a vulnerable group. We did not read the German supervisory authorities' DPIA lists; that is the next step.
+**Why we think one is likely needed (inference).** A network used by children, with presence (what they play), friends, messages stored readable by the operator ([ADR 0011](https://github.com/anyplaynet/network/blob/main/docs/adr/0011-messages-are-stored-to-be-delivered.md)) and voice, is a service where children are a vulnerable group. We did not read the German supervisory authorities' DPIA lists; that is the next step.
 
 **Questions.** Is a DPIA required today, before messages exist? Required before messages? Who signs it? Must it be done by each operator, or can one shared DPIA be a template? We propose a DPIA for the child-facing parts when messages and voice are specified, and a short "no DPIA needed" note for the current core, with the reasons.
 

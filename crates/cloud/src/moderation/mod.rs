@@ -1,7 +1,7 @@
 //! Moderation: reports and their queue, actions with a reason the player reads, appeals, the
 //! audit log, the moderator role, the rules for new and muted accounts, and the retention of all
 //! of it. `docs/moderation.md` describes it for operators and the Moderation section of
-//! `spec/cloud-api.md` in anyplay-gg/network for clients.
+//! `spec/cloud-api.md` in anyplaynet/network for clients.
 //!
 //! The interface is a handful of functions on [`AppState`]. Each checks who may call it, writes
 //! its change and its audit line in one transaction, and only then tells the player and the other

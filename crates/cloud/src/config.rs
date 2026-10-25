@@ -127,7 +127,7 @@ pub struct Config {
     /// With it the cloud serves the portal from its own origin. Needs `public_url`.
     pub portal_dir: Option<PathBuf>,
     /// The account web is served by another service on the cloud's origin (for example
-    /// anyplay-gg/web behind Caddy, `deploy/compose.web.yaml`). The cloud then sends the browser
+    /// anyplaynet/web behind Caddy, `deploy/compose.web.yaml`). The cloud then sends the browser
     /// to `/sign-in`, `/create` and `/account` but serves none of those paths itself. Needs
     /// `public_url`; not together with `portal_dir`.
     pub portal_external: bool,

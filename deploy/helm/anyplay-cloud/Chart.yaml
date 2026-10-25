@@ -5,9 +5,9 @@ type: application
 version: 0.1.0
 appVersion: "0.1.0"
 kubeVersion: ">=1.29.0-0"
-home: https://github.com/anyplay-gg/cloud
+home: https://github.com/anyplaynet/cloud
 sources:
-  - https://github.com/anyplay-gg/cloud
+  - https://github.com/anyplaynet/cloud
 keywords:
   - anyplay
   - cloud

@@ -7,7 +7,7 @@ replicas: 2
 image:
   # No public image exists yet: build deploy/Dockerfile (--target cloud) and push it to your
   # registry; see docs/kubernetes.md.
-  repository: ghcr.io/anyplay-gg/anyplay-cloud
+  repository: ghcr.io/anyplaynet/anyplay-cloud
   # Defaults to the chart's appVersion.
   tag: ""
   pullPolicy: IfNotPresent
