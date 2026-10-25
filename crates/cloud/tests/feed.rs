@@ -228,7 +228,7 @@ async fn the_migration_gives_existing_rows_the_default_and_remembers_played_titl
     let (before, from) = files.split_at(
         files
             .iter()
-            .position(|f| f.file_name().unwrap().to_string_lossy().starts_with("0014"))
+            .position(|f| f.file_name().unwrap().to_string_lossy().starts_with("0016"))
             .expect("the feed migration exists"),
     );
     for file in before {
