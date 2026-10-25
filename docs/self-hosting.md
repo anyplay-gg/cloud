@@ -26,7 +26,7 @@ For a first try on your own machine, set `MAIL=log` in `.env`: sign-in codes the
 
 ## Operate it
 
-- **Update.** Use [`deploy/update.sh`](../deploy/update.sh) ([deploy.md](deploy.md)): it builds first, replaces the containers, checks the public address and rolls back on failure.
+- **Update.** Use [`deploy/update.sh`](../deploy/update.sh) ([deploy.md](deploy.md)): it backs up the data volume, builds, replaces the containers, checks the public address and rolls back on failure. Restoring a backup: [deploy.md](deploy.md#backups).
 - **Back up** the `cloud-data` volume. It holds the database and the signing key. Losing the key signs everybody out and makes every relay refuse its players until it is given the new public key.
 - **Moderate.** With `ADMIN_TOKEN` set in `.env`, `docker compose exec cloud anyplay-cloud admin reports` lists reports, and `admin ban` and `admin unban` act on a handle. All commands are in [moderation.md](moderation.md).
 - **Check the mail.** `docker compose exec cloud anyplay-cloud admin mail-test someone@example.com` sends one test mail through the running cloud. It prints `sent`, or `failed: <class> (SMTP <status>)`; the classes are listed in [configuration.md](configuration.md#sign-in-mails).
