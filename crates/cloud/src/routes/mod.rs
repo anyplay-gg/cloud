@@ -25,6 +25,7 @@ pub mod misc;
 pub mod moderation;
 pub mod parties;
 pub mod profiles;
+pub mod runs;
 pub mod sessions;
 pub mod trophies;
 
@@ -65,6 +66,8 @@ pub fn router(state: AppState) -> Router {
         .route(path::MY_TROPHIES, put(trophies::upload))
         .route(path::ACCOUNT_TROPHIES, get(trophies::of_account))
         .route(path::RARITY, get(trophies::rarity))
+        .route(path::MY_RUN_REPORTS, put(runs::put))
+        .route(path::RUNS, get(runs::summary))
         .route(path::CARDS, get(trophies::cards))
         .route(
             path::PRIVACY,

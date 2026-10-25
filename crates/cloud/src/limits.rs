@@ -47,6 +47,9 @@ pub struct Rates {
     /// Connections one account may start per `link_start_window`.
     pub link_starts: u32,
     pub link_start_window: Duration,
+    /// Run reports one account may send per `run_report_window`.
+    pub run_reports: u32,
+    pub run_report_window: Duration,
 }
 
 impl Default for Rates {
@@ -78,6 +81,8 @@ impl Default for Rates {
             portal_sessions_per_ip: 300,
             link_starts: 10,
             link_start_window: Duration::from_secs(60 * 60),
+            run_reports: 30,
+            run_report_window: Duration::from_secs(60 * 60),
         }
     }
 }

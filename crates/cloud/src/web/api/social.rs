@@ -6,7 +6,12 @@
 //! may do what and see what ([`crate::visibility`]). Trophies are what the cloud stores: counts
 //! by grade, per title. Their names, texts and art never reach the cloud (network ADR 0009).
 
-use anyplay_api::{Count, FriendRequest, Grade, Part, Privacy, Profile, ProfileUpdate};
+use std::collections::BTreeMap;
+
+use anyplay_api::{
+    Count, FriendRequest, Grade, Part, Privacy, Profile, ProfileUpdate, RUN_REPORTS_MIN, Verdict,
+    VerdictCounts,
+};
 use axum::Json;
 use axum::extract::{Path, Request, State};
 use axum::http::HeaderMap;
@@ -341,4 +346,85 @@ pub async fn user_trophies(
         return Err(AppError::not_found().into());
     }
     Ok(Json(json!(summary(&state, owner.id()).await?)).into_response())
+}
+
+/// One verdict count of the public compatibility list, in the portal's spelling.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompatCounts {
+    no_start: u32,
+    menus: u32,
+    in_game: u32,
+    playable: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompatVersion {
+    version: String,
+    reports: u32,
+    verdict: Verdict,
+    counts: CompatCounts,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompatTitle {
+    title_id: String,
+    verdict: Verdict,
+    reports: u32,
+    counts: CompatCounts,
+    versions: Vec<CompatVersion>,
+}
+
+/// The most titles the compatibility list holds, the best reported first.
+const COMPAT_MAX_TITLES: usize = 1000;
+
+/// `GET /compatibility`: what players found per title, public. Only titles with
+/// [`RUN_REPORTS_MIN`] players are listed, and a version only with as many; no account is named.
+pub async fn compatibility(State(state): State<AppState>, ClientIp(ip): ClientIp) -> ApiResult {
+    limit_public(&state, ip)?;
+    let mut titles: BTreeMap<String, (VerdictCounts, BTreeMap<String, VerdictCounts>)> =
+        BTreeMap::new();
+    for (title, version, verdict, n) in db::runs::all_counts(&state.db).await? {
+        let entry = titles.entry(title).or_default();
+        match version {
+            None => entry.0.add(verdict, n),
+            Some(version) => entry.1.entry(version).or_default().add(verdict, n),
+        }
+    }
+    let counts_of = |c: &VerdictCounts| CompatCounts {
+        no_start: c.no_start,
+        menus: c.menus,
+        in_game: c.in_game,
+        playable: c.playable,
+    };
+    let mut list: Vec<CompatTitle> = titles
+        .into_iter()
+        .filter(|(_, (all, _))| all.total() >= RUN_REPORTS_MIN)
+        .filter_map(|(title_id, (all, versions))| {
+            let versions = versions
+                .into_iter()
+                .filter(|(_, c)| c.total() >= RUN_REPORTS_MIN)
+                .filter_map(|(version, c)| {
+                    Some(CompatVersion {
+                        version,
+                        reports: c.total(),
+                        verdict: c.top()?,
+                        counts: counts_of(&c),
+                    })
+                })
+                .collect();
+            Some(CompatTitle {
+                title_id,
+                verdict: all.top()?,
+                reports: all.total(),
+                counts: counts_of(&all),
+                versions,
+            })
+        })
+        .collect();
+    list.sort_by(|a, b| b.reports.cmp(&a.reports).then(a.title_id.cmp(&b.title_id)));
+    list.truncate(COMPAT_MAX_TITLES);
+    Ok(Json(json!({"titles": list})).into_response())
 }
