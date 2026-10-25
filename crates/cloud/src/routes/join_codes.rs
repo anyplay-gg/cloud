@@ -155,6 +155,7 @@ pub async fn redeem(
             from_handle: from,
             to_id: auth.account as i64,
             session_id: id,
+            kind: session.row.kind.clone(),
             title_id: session.row.title_id.clone(),
             title: session.row.title.clone(),
             version: session.row.version.clone(),

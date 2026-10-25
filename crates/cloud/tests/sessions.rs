@@ -2,7 +2,7 @@ mod common;
 
 use std::time::Duration;
 
-use anyplay_api::{AccountId, Event, Invitation, Invited, Session, Visibility};
+use anyplay_api::{AccountId, Event, Invitation, Invited, Session, SessionKind, Visibility};
 use base64::Engine as _;
 use common::{Events, TestCloud, User};
 use serde_json::{Value, json};
@@ -1069,4 +1069,227 @@ async fn members_joining_at_the_same_moment_all_get_different_addresses() {
     let distinct: std::collections::HashSet<_> =
         session.members.iter().map(|m| m.address.clone()).collect();
     assert_eq!(distinct.len(), 11);
+}
+
+// Play Together (network ADR 0030): a `lan` session is its host's world.
+
+fn lan_body(owner_endpoint: u8, max: u16) -> Value {
+    let mut body = create_body(owner_endpoint, max, "friends");
+    body["kind"] = json!("lan");
+    body
+}
+
+#[tokio::test]
+async fn a_game_session_is_the_default_and_a_lan_session_says_what_it_is() {
+    let cloud = TestCloud::start().await;
+    let (a, b) = cloud.friends("Alec", "Sam").await;
+    let plain = create(&cloud, &a, 1, 4, "friends").await;
+    assert_eq!(plain.kind, SessionKind::Game);
+    let lan: Session = cloud
+        .post("/v1/sessions", b.token(), lan_body(2, 4))
+        .await
+        .ok(200)
+        .json();
+    assert_eq!(lan.kind, SessionKind::Lan);
+    let read: Session = cloud
+        .get(&format!("/v1/sessions/{}", lan.id), b.token())
+        .await
+        .ok(200)
+        .json();
+    assert_eq!(read.kind, SessionKind::Lan);
+    // A kind nobody knows is a game session, so a later kind never breaks an earlier client.
+    let mut odd = create_body(3, 4, "friends");
+    odd["kind"] = json!("arena");
+    let other: Session = cloud
+        .post("/v1/sessions", a.token(), odd)
+        .await
+        .ok(200)
+        .json();
+    assert_eq!(other.kind, SessionKind::Game);
+}
+
+#[tokio::test]
+async fn a_lan_session_ends_for_everyone_when_its_host_leaves() {
+    let cloud = TestCloud::start().await;
+    let a = cloud.sign_up("Alec").await;
+    let b = cloud.sign_up("Sam").await;
+    let c = cloud.sign_up("Kim").await;
+    for y in [&b, &c] {
+        befriend(&cloud, &a, y).await;
+    }
+    let mut ea = cloud.events(a.token()).await;
+    let mut eb = cloud.events(b.token()).await;
+    let mut ec = cloud.events(c.token()).await;
+    let session: Session = cloud
+        .post("/v1/sessions", a.token(), lan_body(1, 4))
+        .await
+        .ok(200)
+        .json();
+    join(&cloud, &b, &session.id, 2).await;
+    join(&cloud, &c, &session.id, 3).await;
+    // An invitation that is still open ends with the session too.
+    let d = cloud.sign_up("Lee").await;
+    befriend(&cloud, &a, &d).await;
+    let mut ed = cloud.events(d.token()).await;
+    cloud
+        .post(
+            &format!("/v1/sessions/{}/invitations", session.id),
+            a.token(),
+            json!({"to": [d.id]}),
+        )
+        .await
+        .ok(200);
+    let invitation = match ed.until(|e| matches!(e, Event::Invitation { .. })).await {
+        Event::Invitation { invitation } => invitation,
+        _ => unreachable!(),
+    };
+    assert_eq!(invitation.kind, SessionKind::Lan);
+
+    // A member leaving is only that member leaving.
+    cloud
+        .post_empty(&format!("/v1/sessions/{}/leave", session.id), c.token())
+        .await
+        .ok(204);
+    assert_eq!(next_session(&mut ea).await.members.len(), 2);
+
+    // The host leaving closes the session; nobody inherits the world.
+    cloud
+        .post_empty(&format!("/v1/sessions/{}/leave", session.id), a.token())
+        .await
+        .ok(204);
+    let gone = |e: &Event| matches!(e, Event::SessionGone { id } if *id == session.id);
+    eb.until(gone).await;
+    ea.until(gone).await;
+    ed.until(|e| matches!(e, Event::InvitationGone { id } if *id == invitation.id))
+        .await;
+    cloud
+        .get(&format!("/v1/sessions/{}", session.id), b.token())
+        .await
+        .is_error("not_found", 404);
+    let _ = &mut ec;
+}
+
+#[tokio::test]
+async fn a_lan_session_ends_when_its_host_stays_disconnected() {
+    let cloud = TestCloud::with(|_| {}, |t| t.session_grace = Duration::from_millis(900)).await;
+    let (a, b) = cloud.friends("Alec", "Sam").await;
+    let host_events = cloud.events(a.token()).await;
+    let mut eb = cloud.events(b.token()).await;
+    let session: Session = cloud
+        .post("/v1/sessions", a.token(), lan_body(1, 4))
+        .await
+        .ok(200)
+        .json();
+    join(&cloud, &b, &session.id, 2).await;
+    drop(host_events);
+    eb.until(|e| matches!(e, Event::SessionGone { id } if *id == session.id))
+        .await;
+}
+
+#[tokio::test]
+async fn the_host_of_a_lan_session_cannot_hand_it_on() {
+    let cloud = TestCloud::start().await;
+    let (a, b) = cloud.friends("Alec", "Sam").await;
+    let session: Session = cloud
+        .post("/v1/sessions", a.token(), lan_body(1, 4))
+        .await
+        .ok(200)
+        .json();
+    join(&cloud, &b, &session.id, 2).await;
+    cloud
+        .patch(
+            &format!("/v1/sessions/{}", session.id),
+            a.token(),
+            json!({"leader": b.id}),
+        )
+        .await
+        .is_error("bad_request", 400);
+    // Naming itself changes nothing and is allowed, and the rest stays the leader's to change.
+    let same: Session = cloud
+        .patch(
+            &format!("/v1/sessions/{}", session.id),
+            a.token(),
+            json!({"leader": a.id, "max_members": 6}),
+        )
+        .await
+        .ok(200)
+        .json();
+    assert_eq!((same.leader, same.max_members), (AccountId(a.id), 6));
+}
+
+#[tokio::test]
+async fn friends_see_a_lan_session_as_playing_together() {
+    let cloud = TestCloud::start().await;
+    let (a, b) = cloud.friends("Alec", "Sam").await;
+    let mut eb = cloud.events(b.token()).await;
+    let _ea = cloud.events(a.token()).await;
+    let _ = eb
+        .until(|e| matches!(e, Event::Presence { presence, .. } if presence.online))
+        .await;
+    cloud
+        .put("/v1/presence", a.token(), Some(json!({"activity": {"title_id": "GAME00001", "title": "Test Game", "version": "01.000"}})))
+        .await
+        .ok(204);
+    let _ = eb.until(|e| matches!(e, Event::Presence { .. })).await;
+    let _: Session = cloud
+        .post("/v1/sessions", a.token(), lan_body(1, 4))
+        .await
+        .ok(200)
+        .json();
+    let Event::Presence { presence, .. } = eb.until(|e| matches!(e, Event::Presence { .. })).await
+    else {
+        unreachable!()
+    };
+    let reference = presence.activity.unwrap().session.expect("a reference");
+    assert_eq!(reference.kind, SessionKind::Lan);
+    assert!(reference.joinable);
+    assert_eq!((reference.members, reference.max_members), (1, 4));
+}
+
+#[tokio::test]
+async fn a_party_moved_into_a_lan_session_gets_lan_invitations() {
+    let cloud = TestCloud::start().await;
+    let (lead, bea) = cloud.friends("Alec", "Sam").await;
+    let mut eb = cloud.events(bea.token()).await;
+    cloud
+        .post(
+            "/v1/party/invitations",
+            lead.token(),
+            json!({"to": [bea.id]}),
+        )
+        .await
+        .ok(200);
+    let party_invite = match eb
+        .until(|e| matches!(e, Event::PartyInvitation { .. }))
+        .await
+    {
+        Event::PartyInvitation { invitation } => invitation,
+        _ => unreachable!(),
+    };
+    cloud
+        .post_empty(
+            &format!("/v1/party/invitations/{}/accept", party_invite.id),
+            bea.token(),
+        )
+        .await
+        .ok(200);
+    let session: Session = cloud
+        .post("/v1/sessions", lead.token(), lan_body(1, 4))
+        .await
+        .ok(200)
+        .json();
+    cloud
+        .post(
+            "/v1/party/session",
+            lead.token(),
+            json!({"session": session.id}),
+        )
+        .await
+        .ok(200);
+    let invitation = match eb.until(|e| matches!(e, Event::Invitation { .. })).await {
+        Event::Invitation { invitation } => invitation,
+        _ => unreachable!(),
+    };
+    assert_eq!(invitation.kind, SessionKind::Lan);
+    assert_eq!(invitation.session, session.id);
 }
