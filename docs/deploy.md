@@ -71,4 +71,6 @@ The account web lets players link Discord and Steam ([configuration](configurati
 - `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET`: the OAuth2 client of the cloud's Discord application, with `https://<CLOUD_DOMAIN>/web/links/discord/callback` as a redirect in the Discord Developer Portal.
 - `STEAM_API_KEY`: a Steam Web API key, for the player's Steam name and picture.
 
+- `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT`: the key of Web Push notifications and a contact (`mailto:...`). Make the key with `docker compose run --rm cloud vapid-keys`; see [Notifications](configuration.md#notifications-web-push). Keep the key: a new one drops every subscription.
+
 Run `deploy/update.sh` after a change so the cloud container picks them up.

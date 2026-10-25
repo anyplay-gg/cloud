@@ -48,6 +48,9 @@ services:
       ANYPLAY_CLOUD_DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
       ANYPLAY_CLOUD_DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-}
       ANYPLAY_CLOUD_STEAM_API_KEY: ${STEAM_API_KEY:-}
+      # Web Push (docs/configuration.md, "Notifications"): off while these are empty.
+      ANYPLAY_CLOUD_VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      ANYPLAY_CLOUD_VAPID_SUBJECT: ${VAPID_SUBJECT:-}
     volumes:
       - cloud-data:/data
 
