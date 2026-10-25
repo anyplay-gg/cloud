@@ -8,7 +8,7 @@
 //! else (a proof, another version) is never a token. A token is valid while `now < expires`.
 //!
 //! Tokens of the first version, `v1.<payload>.<signature>`, without `i`, `kid` and `aud`, are still
-//! read (with issue time 0) and never made. See `spec/cloud-api.md` in anyplay-gg/network.
+//! read (with issue time 0) and never made. See `spec/cloud-api.md` in anyplaynet/network.
 //!
 //! There are two kinds. An *access* token lets one device of an account call the cloud. A *relay*
 //! token lets one endpoint use a relay. The cloud signs both; the relay only needs the public key.

@@ -2,7 +2,7 @@
 
 Groundwork for anyone who runs an AnyPlay cloud in the EU. They cover the GDPR (Regulation (EU) 2016/679) and the Digital Services Act (Regulation (EU) 2022/2065). They are written from what the code stores and logs.
 
-> **This is not legal advice, and no lawyer has read it.** The notes below (inventory, record, DSA, open questions) are drafts written from the code. The privacy notice and the terms of use are final texts, published on 25 October 2026 at https://anyplaynet.com/privacy and https://anyplaynet.com/terms. The operator decided to publish them without a lawyer's review and under the name "AnyPlay", with no person's name or address. Their one source is the website repository: [privacy.tsx](https://github.com/anyplay-gg/web/blob/main/apps/web/src/components/legal/privacy.tsx) and [terms.tsx](https://github.com/anyplay-gg/web/blob/main/apps/web/src/components/legal/terms.tsx). Change the text there, in the same pull request as any change to the code it describes, and raise the version and date in `meta.ts` and `TERMS_VERSION`. Statements marked "inference" are ours, not the law's.
+> **This is not legal advice, and no lawyer has read it.** The notes below (inventory, record, DSA, open questions) are drafts written from the code. The privacy notice and the terms of use are final texts, published on 25 October 2026 at https://anyplaynet.com/privacy and https://anyplaynet.com/terms. The operator decided to publish them without a lawyer's review and under the name "AnyPlay", with no person's name or address. Their one source is the website repository: [privacy.tsx](https://github.com/anyplaynet/web/blob/main/apps/web/src/components/legal/privacy.tsx) and [terms.tsx](https://github.com/anyplaynet/web/blob/main/apps/web/src/components/legal/terms.tsx). Change the text there, in the same pull request as any change to the code it describes, and raise the version and date in `meta.ts` and `TERMS_VERSION`. Statements marked "inference" are ours, not the law's.
 
 ## Where the law comes from
 
@@ -14,8 +14,8 @@ The documents cite the article and paragraph and link the text: [GDPR](https://e
 |---|---|---|
 | [data-inventory.md](data-inventory.md) | Every kind of personal data the cloud and relay store or log, where, why, how long, who sees it, and the gaps in the code. | Draft, from the code at the base commit |
 | [records-of-processing.md](records-of-processing.md) | A record of processing activities under GDPR Art. 30. | Draft, operator fills the placeholders |
-| [privacy notice](https://github.com/anyplay-gg/web/blob/main/apps/web/src/components/legal/privacy.tsx) | The privacy notice for players (Art. 12 to 14). | Published, version 1 |
-| [terms of use](https://github.com/anyplay-gg/web/blob/main/apps/web/src/components/legal/terms.tsx) | Terms of use: clean-line duties, moderation, appeal, age. | Published, version 1 |
+| [privacy notice](https://github.com/anyplaynet/web/blob/main/apps/web/src/components/legal/privacy.tsx) | The privacy notice for players (Art. 12 to 14). | Published, version 1 |
+| [terms of use](https://github.com/anyplaynet/web/blob/main/apps/web/src/components/legal/terms.tsx) | Terms of use: clean-line duties, moderation, appeal, age. | Published, version 1 |
 | [dsa.md](dsa.md) | The DSA category, the duties of a small provider, and the engineering tasks. | Draft |
 | [open-questions.md](open-questions.md) | What the lawyer must answer, by risk. | Draft |
 
@@ -54,7 +54,7 @@ The inventory is the base. The record, the privacy notice and the terms are buil
 
 ## Status of the social layer
 
-Trophy records (migration 0003), profiles, messages and the feed are not in the code at the base commit. The inventory lists what to add when they land, following the network decisions ([ADR 0009 to 0012](https://github.com/anyplay-gg/network/tree/main/docs/adr)). Messages change the risk picture most.
+Trophy records (migration 0003), profiles, messages and the feed are not in the code at the base commit. The inventory lists what to add when they land, following the network decisions ([ADR 0009 to 0012](https://github.com/anyplaynet/network/tree/main/docs/adr)). Messages change the risk picture most.
 
 ## For contributors
 

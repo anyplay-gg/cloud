@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          repository: anyplay-gg/network
+          repository: anyplaynet/network
           ref: ${{ steps.network-pin.outputs.ref }}
           path: network
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
@@ -107,7 +107,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          repository: anyplay-gg/network
+          repository: anyplaynet/network
           ref: ${{ steps.network-pin.outputs.ref }}
           path: network
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
@@ -136,7 +136,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          repository: anyplay-gg/network
+          repository: anyplaynet/network
           ref: ${{ steps.network-pin.outputs.ref }}
           path: network
       - name: Build the cloud image
@@ -226,6 +226,6 @@ jobs:
 
   # Links, title IDs in code, licences and advisories: the rules every AnyPlay repository shares.
   rules:
-    uses: anyplay-gg/.github/.github/workflows/rules.yml@main
+    uses: anyplaynet/.github/.github/workflows/rules.yml@main
     with:
       network: true

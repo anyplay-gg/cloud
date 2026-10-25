@@ -1,4 +1,4 @@
-# The website (anyplay-gg/web) on the cloud's host name: the landing page at the root, the sign-in,
+# The website (anyplaynet/web) on the cloud's host name: the landing page at the root, the sign-in,
 # sign-up and account pages, the privacy notice and the terms of use (/privacy, /terms), the page
 # the launcher's account button opens, the public profiles, the join pages that the links on a player's Discord profile open, and the files they load. Every other
 # path, the APIs and the older pages under /web included, stays with the cloud; the older account

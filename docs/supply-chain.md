@@ -13,7 +13,7 @@ What is pinned in this repository, how updates arrive, what CI says about the co
 | Tools downloaded in CI | `helm`, `kubeconform` and Trivy are installed at an exact version; kubeconform and Trivy are checked against a SHA-256 in the workflow before they run. `cargo-fuzz` is installed with `--locked` at an exact version. |
 | Licences, advisories, sources | `cargo deny` with [deny.toml](../deny.toml) on every pull request (the shared `rules` workflow) and every Monday (`advisories.yml`). The licences must allow use under AGPL-3.0; unknown registries and git sources are refused. |
 
-The shared `rules` workflow comes from `anyplay-gg/.github@main`, which is the organisation's own code and is not pinned to a commit. The Helm chart's test fixtures under `deploy/helm` (a plain PostgreSQL and the NATS chart) are not digest-pinned yet.
+The shared `rules` workflow comes from `anyplaynet/.github@main`, which is the organisation's own code and is not pinned to a commit. The Helm chart's test fixtures under `deploy/helm` (a plain PostgreSQL and the NATS chart) are not digest-pinned yet.
 
 ## How updates arrive
 
@@ -30,7 +30,7 @@ CI builds the three images (`cloud`, `relay`, `caddy`) and does not push them, s
 
 **The scan does not block, on purpose.** Nobody has seen yet what the baseline of three Debian-based images looks like, and a new CVE in a Debian package would turn every unrelated pull request red until someone updated the base image. Look at the first reports, update the base images (Dependabot does), and accept what remains with a reason. Then make it block: in `.github/workflows/ci.yml` set `TRIVY_EXIT_CODE` of the step "SBOM and vulnerability report of the images" to `"1"`, remove its `continue-on-error`, and put the findings you accept in a `.trivyignore` file with a comment for each.
 
-**When a workflow starts to push an image**, it should build with `docker/build-push-action` with `sbom: true` and `provenance: mode=max`, so the registry holds the SBOM and a SLSA provenance next to the image, and attest the pushed digest with `actions/attest-build-provenance` (`subject-name` the image name, `subject-digest` the build's digest, `push-to-registry: true`). That job needs `packages: write`, `id-token: write` and `attestations: write`, and nothing else. Pin those actions like all others. Operators then verify with `gh attestation verify oci://<image> --repo anyplay-gg/cloud`.
+**When a workflow starts to push an image**, it should build with `docker/build-push-action` with `sbom: true` and `provenance: mode=max`, so the registry holds the SBOM and a SLSA provenance next to the image, and attest the pushed digest with `actions/attest-build-provenance` (`subject-name` the image name, `subject-digest` the build's digest, `push-to-registry: true`). That job needs `packages: write`, `id-token: write` and `attestations: write`, and nothing else. Pin those actions like all others. Operators then verify with `gh attestation verify oci://<image> --repo anyplaynet/cloud`.
 
 ## Verify
 
