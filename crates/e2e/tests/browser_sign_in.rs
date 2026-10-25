@@ -42,6 +42,7 @@ impl Launcher {
             relay_only: false,
             device_name: "Test PC".into(),
             audio: anyplay_net::voice::Audio::system(),
+            workers: anyplay_net::screen::WorkerSet::none(),
         };
         tokio::spawn(anyplay_net::run(
             config,
