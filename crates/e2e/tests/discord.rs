@@ -204,8 +204,10 @@ fn discord_files(data: &Path) -> Vec<std::path::PathBuf> {
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| {
-            p.file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with("discord-"))
+            p.file_name().is_some_and(|n| {
+                let n = n.to_string_lossy();
+                n.starts_with("discord-") && n.ends_with(".json")
+            })
         })
         .collect()
 }
