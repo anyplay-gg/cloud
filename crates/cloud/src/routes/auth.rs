@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyplay_api::{
     CodeAnswer, CodeRequest, Device, EmailAnswer, EmailRequest, ErrorCode, HandleProblem, Me,
-    Platform, RefreshRequest, SignedIn, SignupRequest, Tokens, check_handle,
+    Platform, RefreshRequest, SignedIn, SignupRequest, Tokens, check_handle, handle_skeleton,
 };
 use anyplay_proof::Subject;
 use anyplay_ticket::Claims;
@@ -49,10 +49,17 @@ const RESERVED_PREFIXES: &[&str] = &[
     "steam",
 ];
 
-/// True when nobody may take the handle.
+/// True when nobody may take the handle. The names are matched by spelling and by skeleton, so
+/// `AnyPIay`, `any_play` and `PIaystation_fan` are reserved as well.
 pub fn is_reserved(handle: &str) -> bool {
     let lower = handle.to_ascii_lowercase();
-    RESERVED.contains(&lower.as_str()) || RESERVED_PREFIXES.iter().any(|p| lower.starts_with(p))
+    let skeleton = handle_skeleton(handle);
+    RESERVED
+        .iter()
+        .any(|name| lower == *name || skeleton == handle_skeleton(name))
+        || RESERVED_PREFIXES
+            .iter()
+            .any(|p| lower.starts_with(p) || skeleton.starts_with(&handle_skeleton(p)))
 }
 
 fn platform_name(platform: Platform) -> &'static str {
@@ -589,7 +596,20 @@ mod tests {
         ] {
             assert!(is_reserved(handle), "{handle}");
         }
-        for handle in ["alec", "moderate", "adminton", "play", "any_play", "psx"] {
+        for handle in [
+            "AnyPIay",
+            "any_play",
+            "adm1n",
+            "M0derator",
+            "r00t",
+            "PIaystation_fan",
+            "p1aystation",
+            "Nintend0",
+            "Xb0x_fan",
+        ] {
+            assert!(is_reserved(handle), "{handle}");
+        }
+        for handle in ["alec", "moderate", "adminton", "play", "any_pla", "psx"] {
             assert!(!is_reserved(handle), "{handle}");
         }
     }
