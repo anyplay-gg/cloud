@@ -3,9 +3,10 @@
 use std::collections::BTreeSet;
 
 use anyplay_api::{
-    AccountTrophies, Card, Cards, MAX_CARDS, MAX_TROPHY_NUMBER, MAX_TROPHY_UPLOAD, Part, Privacy,
-    RARITY_MIN_PLAYERS, Rarity, TitleTrophies, TrophiesAdded, TrophyRarity, TrophyUpload,
-    is_title_id,
+    AccountTrophies, Card, Cards, CompareSide, Count, Grade, MAX_CARDS, MAX_TROPHY_NUMBER,
+    MAX_TROPHY_UPLOAD, Part, Privacy, RARITY_MIN_PLAYERS, Rarity, SecretsChanged, Tally,
+    TitleTrophies, TrophiesAdded, TrophyCompare, TrophyLevel, TrophyNumbers, TrophyRarity,
+    TrophyUpload, is_title_id,
 };
 use axum::Json;
 use axum::extract::rejection::QueryRejection;
@@ -64,7 +65,13 @@ pub async fn upload(
         &upload.trophies,
     )
     .await?;
-    // The feed hears of trophies that are new and fresh; it never fails the upload.
+    // The feed hears of trophies that are new and fresh, but not of secret ones; it never fails
+    // the upload.
+    let secret = db::secret_numbers(&state.db, auth.account, title).await?;
+    let added: Vec<_> = added
+        .into_iter()
+        .filter(|t| !secret.contains(&i64::from(t.number)))
+        .collect();
     state.record_trophies(auth.account, title, &added).await;
     Ok(Json(TrophiesAdded {
         added: u32::try_from(added.len()).unwrap_or(u32::MAX),
@@ -83,7 +90,7 @@ pub async fn of_account(
         return Err(AppError::not_found());
     }
     let mut titles: Vec<TitleTrophies> = Vec::new();
-    for row in db::trophies_of(&state.db, id).await? {
+    for row in db::trophies_of(&state.db, id, auth.account).await? {
         let Some(trophy) = row.trophy() else { continue };
         match titles.last_mut() {
             Some(last) if last.title_id == row.title_id => last.trophies.push(trophy),
@@ -94,6 +101,116 @@ pub async fn of_account(
         }
     }
     Ok(Json(AccountTrophies { titles }))
+}
+
+fn check_numbers(numbers: &[u16]) -> Result<()> {
+    if numbers.len() > MAX_TROPHY_UPLOAD {
+        return Err(AppError::too_large(format!(
+            "One request carries at most {MAX_TROPHY_UPLOAD} trophy numbers."
+        )));
+    }
+    if numbers.iter().any(|n| *n >= MAX_TROPHY_NUMBER) {
+        return Err(AppError::bad_request(format!(
+            "Trophy numbers are below {MAX_TROPHY_NUMBER}."
+        )));
+    }
+    Ok(())
+}
+
+/// `PUT /v1/me/trophies/{id}/secret`: the game keeps these trophies secret, so no one else sees
+/// them until the player reveals them.
+pub async fn mark_secret(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path(title): Path<String>,
+    ApiJson(body): ApiJson<TrophyNumbers>,
+) -> Result<Json<SecretsChanged>> {
+    let title = title_id(&title)?;
+    check_numbers(&body.numbers)?;
+    let changed =
+        db::mark_secret(&state.writer, &state.db, auth.account, title, &body.numbers).await?;
+    Ok(Json(SecretsChanged { changed }))
+}
+
+/// `PUT /v1/me/trophies/{id}/reveal`: shows secret trophies to everyone who may see the player's
+/// trophies.
+pub async fn reveal_secret(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path(title): Path<String>,
+    ApiJson(body): ApiJson<TrophyNumbers>,
+) -> Result<Json<SecretsChanged>> {
+    let title = title_id(&title)?;
+    check_numbers(&body.numbers)?;
+    let changed =
+        db::reveal_secret(&state.writer, &state.db, auth.account, title, &body.numbers).await?;
+    Ok(Json(SecretsChanged { changed }))
+}
+
+/// Trophies counted by grade.
+pub fn count_of(trophies: &[anyplay_api::Trophy]) -> Count {
+    let mut count = Count::default();
+    for trophy in trophies {
+        let slot = match trophy.grade {
+            Grade::Bronze => &mut count.bronze,
+            Grade::Silver => &mut count.silver,
+            Grade::Gold => &mut count.gold,
+            Grade::Platinum => &mut count.platinum,
+        };
+        *slot = slot.saturating_add(1);
+    }
+    count
+}
+
+/// One side of a comparison: what `viewer` sees of `account`.
+async fn side(state: &AppState, account: u64, viewer: u64, title: &str) -> Result<CompareSide> {
+    let trophies: Vec<_> = db::trophies_in_title(&state.db, account, viewer, title)
+        .await?
+        .iter()
+        .filter_map(db::TrophyRow::trophy)
+        .collect();
+    let total = db::trophy_counts(&state.db, account, viewer).await?;
+    Ok(CompareSide {
+        account,
+        title: Tally::of(count_of(&trophies)),
+        trophies,
+        total: Tally::of(total),
+        level: TrophyLevel::of(total.points()),
+    })
+}
+
+/// The trophies of `viewer` and `other` in one title, side by side. `not_found` when the other
+/// account does not exist or its trophies are hidden from the viewer.
+pub async fn compare_with(
+    state: &AppState,
+    viewer: u64,
+    other: u64,
+    title: &str,
+) -> Result<TrophyCompare> {
+    let title = title_id(title)?;
+    if viewer == other {
+        return Err(AppError::bad_request("Compare with another account."));
+    }
+    if db::account(&state.db, other).await?.is_none()
+        || !may_see(&state.db, viewer, other, Part::Trophies).await?
+    {
+        return Err(AppError::not_found());
+    }
+    Ok(TrophyCompare {
+        title_id: title.to_owned(),
+        you: side(state, viewer, viewer, title).await?,
+        them: side(state, other, viewer, title).await?,
+    })
+}
+
+/// `GET /v1/accounts/{id}/compare/{title}`
+pub async fn compare(
+    State(state): State<AppState>,
+    auth: Auth,
+    Path((id, title)): Path<(String, String)>,
+) -> Result<Json<TrophyCompare>> {
+    let id = parse_id(&id)?;
+    Ok(Json(compare_with(&state, auth.account, id, &title).await?))
 }
 
 pub async fn rarity(
@@ -167,7 +284,7 @@ pub async fn cards(
             .filter(|id| seen[id].can(part))
             .collect()
     };
-    let mut counts = db::trophy_counts_of(&mut conn, &of(Part::Trophies)).await?;
+    let mut counts = db::trophy_counts_of(&mut conn, &of(Part::Trophies), auth.account).await?;
     let mut avatars = db::profiles::avatar_hashes_of(&mut conn, &of(Part::Avatar)).await?;
     let mut cards = Vec::with_capacity(ids.len());
     for id in ids {
