@@ -24,8 +24,8 @@ use crate::util::{is_endpoint, is_http_url, now, now_ms, random_uuid};
 /// Accounts one invite request may name.
 const MAX_INVITE_BATCH: usize = 16;
 /// Invitations one party may have open, and one account may hold.
-const MAX_INVITATIONS_PER_PARTY: i64 = 16;
-const MAX_INVITATIONS_PER_ACCOUNT: i64 = 20;
+pub(crate) const MAX_INVITATIONS_PER_PARTY: i64 = 16;
+pub(crate) const MAX_INVITATIONS_PER_ACCOUNT: i64 = 20;
 
 async fn handle_of(state: &AppState, account: u64) -> Result<String> {
     Ok(crate::db::account(&state.db, account)

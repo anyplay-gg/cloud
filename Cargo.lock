@@ -255,6 +255,7 @@ dependencies = [
  "anyplay-bridge-protocol",
  "anyplay-control",
  "anyplay-proof",
+ "anyplay-share",
  "anyplay-voice",
  "bytes",
  "data-encoding",
@@ -303,6 +304,14 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "anyplay-share"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

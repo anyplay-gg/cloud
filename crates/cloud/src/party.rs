@@ -365,6 +365,23 @@ pub async fn invitation(
     .await
 }
 
+/// The invitation `to` holds to the party, if it has not run out at `now_ms`.
+pub async fn invitation_to_party(
+    conn: &mut Conn,
+    to: u64,
+    party: &str,
+    now_ms: i64,
+) -> sqlx::Result<Option<InvitationRow>> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {INVITATION_COLUMNS} FROM party_invitations          WHERE to_id = $1 AND party_id = $2 AND deadline_ms > $3"
+    )))
+    .bind(i(to))
+    .bind(party)
+    .bind(now_ms)
+    .fetch_optional(conn)
+    .await
+}
+
 /// The invitations an account holds, newest first.
 pub async fn invitations_of(
     conn: &mut Conn,

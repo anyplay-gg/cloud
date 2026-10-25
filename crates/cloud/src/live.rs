@@ -856,6 +856,25 @@ pub async fn is_invited(
     Ok(row.is_some())
 }
 
+/// The invitation `to` holds to the session from `from`, if it has not run out at `now_ms`.
+pub async fn invitation_from(
+    conn: &mut Conn,
+    to: u64,
+    session: &str,
+    from: u64,
+    now_ms: i64,
+) -> sqlx::Result<Option<InvitationRow>> {
+    sqlx::query_as(
+        "SELECT id, from_id, from_handle, to_id, session_id, title_id, title, version, expires          FROM invitations WHERE to_id = $1 AND session_id = $2 AND from_id = $3          AND deadline_ms > $4 ORDER BY deadline_ms DESC LIMIT 1",
+    )
+    .bind(i(to))
+    .bind(session)
+    .bind(i(from))
+    .bind(now_ms)
+    .fetch_optional(conn)
+    .await
+}
+
 /// Open invitations of a session, and those an account holds.
 pub async fn count_invitations(
     conn: &mut Conn,
@@ -931,6 +950,8 @@ pub async fn sweep_expired(conn: &mut Conn, now_ms: i64) -> sqlx::Result<Vec<Gon
             .bind(now_ms)
             .fetch_all(&mut *conn)
             .await?;
+    // Join codes keep Unix seconds, like the times the API shows.
+    crate::joins::sweep_expired(&mut *conn, (now_ms / 1000) as u64).await?;
     for table in [
         "challenges",
         "signups",
