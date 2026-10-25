@@ -11,10 +11,13 @@ use std::time::Duration;
 /// Store errors of the whole process; the error conversion has no state at hand.
 pub static STORE_ERRORS: AtomicU64 = AtomicU64::new(0);
 
-/// Queries that gave up waiting for a store connection, a SQLite write turn or a lock, or were
-/// cancelled by the statement timeout. They are answered as retryable and are not in
-/// [`STORE_ERRORS`].
+/// Queries that gave up waiting for a store connection, a SQLite write turn or a lock. They are
+/// answered as retryable and are not in [`STORE_ERRORS`].
 pub static STORE_POOL_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
+
+/// Queries the statement timeout cancelled. They are not pool pressure: the store had a
+/// connection for them and the statement itself ran too long. Answered as retryable as well.
+pub static STORE_STATEMENT_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
 
 /// Requests the request timeout cut off, and requests shed by the in-flight cap.
 pub static REQUEST_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
@@ -51,6 +54,19 @@ impl WaitHistogram {
         self.buckets[slot].fetch_add(1, Ordering::Relaxed);
         self.micros
             .fetch_add(took.as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// How many observations were longer than `seconds` (rounded up to a bucket bound).
+    #[cfg(test)]
+    pub fn count_above(&self, seconds: f64) -> u64 {
+        let first = WAIT_BUCKETS
+            .iter()
+            .position(|bound| *bound > seconds)
+            .unwrap_or(WAIT_BUCKETS.len());
+        self.buckets[first..]
+            .iter()
+            .map(|b| b.load(Ordering::Relaxed))
+            .sum()
     }
 
     fn render(&self, out: &mut String, name: &str, help: &str) {
@@ -196,6 +212,12 @@ impl Metrics {
             "anyplay_cloud_store_pool_timeouts_total",
             "Queries that timed out waiting for a store connection, a write turn or a lock.",
             STORE_POOL_TIMEOUTS.load(Ordering::Relaxed),
+        );
+        counter(
+            &mut out,
+            "anyplay_cloud_store_statement_timeouts_total",
+            "Queries the statement timeout cancelled.",
+            STORE_STATEMENT_TIMEOUTS.load(Ordering::Relaxed),
         );
         counter(
             &mut out,

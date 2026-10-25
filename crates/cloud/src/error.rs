@@ -96,7 +96,12 @@ impl From<sqlx::Error> for AppError {
         if is_overload(&error) {
             // The store is saturated, not broken: answer fast and let the client retry.
             tracing::warn!(%error, "the store is busy");
-            crate::metrics::STORE_POOL_TIMEOUTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let counter = if is_statement_timeout(&error) {
+                &crate::metrics::STORE_STATEMENT_TIMEOUTS
+            } else {
+                &crate::metrics::STORE_POOL_TIMEOUTS
+            };
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             // A little jitter keeps the retries of a burst from arriving together.
             return Self::rate_limited(1 + crate::util::random_id() % 2);
         }
@@ -114,6 +119,12 @@ fn is_overload(error: &sqlx::Error) -> bool {
         sqlx::Error::Database(e) => matches!(e.code().as_deref(), Some("55P03" | "57014")),
         _ => false,
     }
+}
+
+/// PostgreSQL's 57014 (query canceled): the statement ran longer than the statement timeout, which
+/// is a slow query and not a full pool.
+fn is_statement_timeout(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(e) if e.code().as_deref() == Some("57014"))
 }
 
 impl IntoResponse for AppError {
@@ -148,5 +159,52 @@ mod tests {
         let error = AppError::from(sqlx::Error::RowNotFound);
         assert_eq!(error.body.error, ErrorCode::Internal);
         assert!(crate::metrics::STORE_ERRORS.load(std::sync::atomic::Ordering::Relaxed) > before);
+    }
+
+    #[derive(Debug)]
+    struct Cancelled;
+
+    impl std::fmt::Display for Cancelled {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("canceling statement due to statement timeout")
+        }
+    }
+
+    impl std::error::Error for Cancelled {}
+
+    impl sqlx::error::DatabaseError for Cancelled {
+        fn message(&self) -> &str {
+            "canceling statement due to statement timeout"
+        }
+        fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+            Some("57014".into())
+        }
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+    }
+
+    #[test]
+    fn a_cancelled_statement_is_retryable_but_not_counted_as_pool_pressure() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let pool = crate::metrics::STORE_POOL_TIMEOUTS.load(Relaxed);
+        let statement = crate::metrics::STORE_STATEMENT_TIMEOUTS.load(Relaxed);
+        let error = AppError::from(sqlx::Error::Database(Box::new(Cancelled)));
+        assert_eq!(error.body.error, ErrorCode::RateLimited);
+        assert!(crate::metrics::STORE_STATEMENT_TIMEOUTS.load(Relaxed) > statement);
+        // Other tests may count pool timeouts at the same moment, so this only checks the one
+        // above did not: a single error moves exactly one counter.
+        let after = crate::metrics::STORE_POOL_TIMEOUTS.load(Relaxed);
+        let _ = AppError::from(sqlx::Error::PoolTimedOut);
+        assert!(crate::metrics::STORE_POOL_TIMEOUTS.load(Relaxed) > after.min(pool));
     }
 }

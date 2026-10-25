@@ -72,7 +72,25 @@ impl Writer {
     /// the acquire timeout, instead of queueing for as long as the writers ahead take.
     pub async fn begin(&self, pool: &Pool) -> sqlx::Result<WriteTx> {
         let started = std::time::Instant::now();
-        let tx = match &self.queue {
+        let result = self.begin_inner(pool).await;
+        // The waits that ran into the timeout are the saturated case, so they count too.
+        crate::metrics::WRITE_WAIT.observe(started.elapsed());
+        result
+    }
+
+    /// Like [`Writer::begin`] for the transactions of maintenance (deletion), whose statements may
+    /// run longer than a request may: on PostgreSQL the statement timeout is off for this
+    /// transaction only.
+    pub async fn begin_maintenance(&self, pool: &Pool) -> sqlx::Result<WriteTx> {
+        let mut tx = self.begin(pool).await?;
+        if tx.backend_name() == "PostgreSQL" {
+            tx.execute("SET LOCAL statement_timeout = 0").await?;
+        }
+        Ok(tx)
+    }
+
+    async fn begin_inner(&self, pool: &Pool) -> sqlx::Result<WriteTx> {
+        Ok(match &self.queue {
             Some(queue) => {
                 let turn = tokio::time::timeout(self.acquire_timeout, queue.clone().lock_owned())
                     .await
@@ -86,9 +104,7 @@ impl Writer {
                 tx: Some(pool.begin().await?),
                 turn: None,
             },
-        };
-        crate::metrics::WRITE_WAIT.observe(started.elapsed());
-        Ok(tx)
+        })
     }
 }
 
@@ -160,6 +176,17 @@ impl Default for Limits {
             statement_timeout: Duration::from_millis(15000),
         }
     }
+}
+
+/// A connection for maintenance that runs longer than a request may (the retention sweeps). On
+/// PostgreSQL it comes without the statement timeout. It leaves the pool and is closed when
+/// dropped, so no request ever inherits the missing limit.
+pub async fn acquire_maintenance(pool: &Pool) -> sqlx::Result<Conn> {
+    let mut conn = pool.acquire().await?;
+    if conn.backend_name() == "PostgreSQL" {
+        conn.execute("SET statement_timeout = 0").await?;
+    }
+    Ok(conn.detach())
 }
 
 /// Opens the store with at most `connections` connections and the other limits at their defaults.
@@ -463,7 +490,7 @@ pub async fn insert_account(
 /// Deletes an account and everything that hangs on it. Bans, the actions against the account
 /// and reports about it stay until their retention ends; reports it filed lose their link to it.
 pub async fn delete_account(writer: &Writer, pool: &Pool, id: u64) -> sqlx::Result<()> {
-    let mut tx = writer.begin(pool).await?;
+    let mut tx = writer.begin_maintenance(pool).await?;
     crate::moderation::store::forget_reporter(&mut tx, id).await?;
     // Foreign keys cascade to devices, friends, requests and blocks.
     sqlx::query("DELETE FROM accounts WHERE id = $1")
@@ -1627,10 +1654,13 @@ mod tests {
             .unwrap();
         let writer = Writer::new(true).acquire_timeout(Duration::from_millis(200));
         let first = writer.begin(&pool).await.unwrap();
+        // The wait that ends in the timeout is in the histogram as well: it is the saturated case.
+        let slow = crate::metrics::WRITE_WAIT.count_above(0.1);
         let started = std::time::Instant::now();
         let second = writer.begin(&pool).await;
         assert!(matches!(second, Err(sqlx::Error::PoolTimedOut)));
         assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(crate::metrics::WRITE_WAIT.count_above(0.1) > slow);
         // The one ahead is not disturbed and the queue works again after it.
         first.commit().await.unwrap();
         writer.begin(&pool).await.unwrap().commit().await.unwrap();
