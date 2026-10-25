@@ -1,8 +1,9 @@
 # The website (anyplay-gg/web) on the cloud's host name: the landing page at the root, the sign-in,
-# sign-up and account pages, the page the launcher's account button opens, the public profiles and
-# the files they load. Every other path, the APIs and the older pages under /web included, stays
-# with the cloud; the older account page sends people to the new one.
-@website path / /sign-in /create /link /account /account/* /u/* /_next/* /icon.svg /favicon.ico
+# sign-up and account pages, the privacy notice and the terms of use (/privacy, /terms), the page
+# the launcher's account button opens, the public profiles and the files they load. Every other
+# path, the APIs and the older pages under /web included, stays with the cloud; the older account
+# page sends people to the new one.
+@website path / /sign-in /create /link /privacy /terms /account /account/* /u/* /_next/* /icon.svg /favicon.ico
 handle @website {
 	reverse_proxy web:3000
 }
