@@ -43,7 +43,7 @@ main() {
   command -v docker >/dev/null || die "docker is not installed"
   command -v git >/dev/null || die "git is not installed"
   command -v curl >/dev/null || die "curl is not installed"
-  [ -d "$cloud_dir/.git" ] && [ -d "$network_dir/.git" ] || die "expected git checkouts at $cloud_dir and $network_dir"
+  { [ -d "$cloud_dir/.git" ] && [ -d "$network_dir/.git" ]; } || die "expected git checkouts at $cloud_dir and $network_dir"
   [ -f "$deploy/.env" ] || die "$deploy/.env is missing (copy .env.example)"
 
   # One update at a time.
