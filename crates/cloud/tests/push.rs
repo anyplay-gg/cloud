@@ -360,7 +360,7 @@ async fn friend_requests_messages_and_invitations_reach_the_browser() {
         assert!(authorization.ends_with(&format!(", k={public}")));
         let note = browser.open(first);
         assert_eq!(note["kind"], "friend_request");
-        assert_eq!(note["body"], "alec sent you a friend request");
+        assert_eq!(note["body"], "Alec sent you a friend request");
         assert_eq!(note["url"], "/account/friends");
     }
 
@@ -397,7 +397,7 @@ async fn friend_requests_messages_and_invitations_reach_the_browser() {
         let service = service.lock().unwrap();
         let note = browser.open(&service.received[1]);
         assert_eq!(note["kind"], "message");
-        assert_eq!(note["body"], "alec sent you a message");
+        assert_eq!(note["body"], "Alec sent you a message");
         assert!(!note.to_string().contains("secret"));
         assert_eq!(service.received[1].headers["urgency"], "high");
     }
@@ -434,7 +434,7 @@ async fn friend_requests_messages_and_invitations_reach_the_browser() {
     arrived(&service, 4).await;
     let note = browser.open(&service.lock().unwrap().received[3]);
     assert_eq!(note["kind"], "party_invite");
-    assert_eq!(note["body"], "alec invited you to a party");
+    assert_eq!(note["body"], "Alec invited you to a party");
 }
 
 #[tokio::test]
@@ -519,7 +519,15 @@ async fn a_subscription_the_push_service_reports_gone_is_removed_and_a_broken_on
         "410 removes at once"
     );
 
-    // Four more sends to the broken one make five failures in a row.
+    // Four more sends to the broken one make five failures in a row. As friends, every message of
+    // the conversation is told, not only the first of a request.
+    cloud
+        .post_empty(
+            &format!("/v1/friends/requests/{}/accept", alec.id),
+            bob.token(),
+        )
+        .await
+        .ok(204);
     let conversation: anyplay_api::Conversation = cloud
         .post(
             "/v1/conversations",
