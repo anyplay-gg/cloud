@@ -21,6 +21,7 @@ pub mod chat;
 pub mod cli;
 pub mod config;
 pub mod db;
+pub mod feed;
 pub mod http;
 pub mod limits;
 pub mod links;

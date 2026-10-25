@@ -86,6 +86,8 @@ pub struct Config {
     pub admin_token: Option<String>,
     /// How many days messages are kept before the sweeps delete them.
     pub message_retention_days: u64,
+    /// How many days feed items are kept before the sweeps delete them, with their reactions.
+    pub feed_retention_days: u64,
     // Moderation (docs/moderation.md)
     /// A secret for the keyed hash of banned e-mail addresses. Without it the cloud makes one in
     /// `data_dir/ban.key`.
@@ -171,6 +173,7 @@ impl Default for Config {
             trust_proxy: false,
             admin_token: None,
             message_retention_days: 30,
+            feed_retention_days: 90,
             ban_secret: None,
             new_account_hours: 24,
             new_account_friend_requests_per_day: 10,
@@ -319,6 +322,9 @@ impl Config {
         if let Some(v) = get("MESSAGE_RETENTION_DAYS") {
             self.message_retention_days = parse("MESSAGE_RETENTION_DAYS", &v)?;
         }
+        if let Some(v) = get("FEED_RETENTION_DAYS") {
+            self.feed_retention_days = parse("FEED_RETENTION_DAYS", &v)?;
+        }
         if let Some(v) = get("BAN_SECRET") {
             self.ban_secret = Some(v);
         }
@@ -383,6 +389,9 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         if self.message_retention_days == 0 {
             bail!("message_retention_days must be at least 1");
+        }
+        if self.feed_retention_days == 0 {
+            bail!("feed_retention_days must be at least 1");
         }
         if let Some(url) = &self.database_url
             && !(url.starts_with("postgres://") || url.starts_with("postgresql://"))
@@ -640,6 +649,8 @@ pub struct Tuning {
     /// How long a node may miss its heartbeat before its connections count as closed.
     pub node_timeout: Duration,
     pub rates: Rates,
+    /// The most feed items one account gets per UTC day; later events are not recorded.
+    pub feed_items_per_day: u32,
     /// How long a party member may stay disconnected before it leaves the party.
     pub party_grace: Duration,
     /// How long a browser session on the account web may sit unused.
@@ -707,6 +718,7 @@ impl Default for Tuning {
             sweep_interval: Duration::from_secs(5),
             node_timeout: Duration::from_secs(30),
             rates: Rates::default(),
+            feed_items_per_day: 100,
             party_grace: Duration::from_secs(15 * 60),
             web_idle: Duration::from_secs(30 * 60),
             web_max: Duration::from_secs(4 * 60 * 60),
@@ -783,6 +795,22 @@ mod tests {
         assert!(config.trust_proxy);
         assert_eq!(config.signup, Signup::Closed);
         assert_eq!(config.admin_token, None);
+    }
+
+    #[test]
+    fn feed_items_are_kept_90_days_unless_set() {
+        let mut config = Config::default();
+        assert_eq!(config.feed_retention_days, 90);
+        config
+            .apply_env(|name| match name {
+                "FEED_RETENTION_DAYS" => Some("7".into()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(config.feed_retention_days, 7);
+        config.validate().unwrap();
+        config.feed_retention_days = 0;
+        assert!(config.validate().is_err());
     }
 
     #[test]

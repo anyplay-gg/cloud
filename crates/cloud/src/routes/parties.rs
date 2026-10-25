@@ -274,6 +274,9 @@ pub async fn accept(
     state.party_invitations_gone(&used);
     arm_grace(&state, auth.account).await?;
     state.announce_party(&party);
+    if party.members.len() == 2 {
+        state.record_party(&party).await;
+    }
     Ok(Json(party.view()))
 }
 

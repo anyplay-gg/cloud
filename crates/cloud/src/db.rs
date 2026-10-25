@@ -15,6 +15,7 @@ use sqlx::any::{AnyPoolOptions, install_default_drivers};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
 use sqlx::{ConnectOptions as _, Connection as _, Executor as _, FromRow};
 
+pub mod feed;
 pub mod profiles;
 pub mod runs;
 
@@ -921,7 +922,7 @@ pub fn grade_name(grade: anyplay_api::Grade) -> &'static str {
     }
 }
 
-fn grade_of(name: &str) -> Option<anyplay_api::Grade> {
+pub(crate) fn grade_of(name: &str) -> Option<anyplay_api::Grade> {
     use anyplay_api::Grade::*;
     Some(match name {
         "bronze" => Bronze,
@@ -951,18 +952,18 @@ pub(crate) fn audience_of(name: &str) -> anyplay_api::Audience {
 }
 
 /// Records the trophies in one step. A trophy recorded already keeps its first time and grade.
-/// Returns how many records are new.
+/// Returns the records that are new, in the order given.
 pub async fn add_trophies(
     writer: &Writer,
     pool: &Pool,
     account: u64,
     title_id: &str,
     trophies: &[anyplay_api::Trophy],
-) -> sqlx::Result<u64> {
+) -> sqlx::Result<Vec<anyplay_api::Trophy>> {
     let mut tx = writer.begin(pool).await?;
-    let mut added = 0;
+    let mut added = Vec::new();
     for trophy in trophies {
-        added += sqlx::query(
+        let new = sqlx::query(
             "INSERT INTO trophies (account_id, title_id, number, grade, earned) \
              VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
         )
@@ -974,6 +975,9 @@ pub async fn add_trophies(
         .execute(&mut *tx)
         .await?
         .rows_affected();
+        if new > 0 {
+            added.push(*trophy);
+        }
     }
     tx.commit().await?;
     Ok(added)
@@ -1090,8 +1094,9 @@ pub async fn title_rarity(pool: &Pool, title_id: &str) -> sqlx::Result<Vec<(i64,
 
 /// Who sees each part of the account's profile; the default without a setting.
 pub async fn privacy_of(pool: &Pool, account: u64) -> sqlx::Result<anyplay_api::Privacy> {
-    let row: Option<(String, String, String, String, String)> = sqlx::query_as(
-        "SELECT trophies, about, favourites, avatar, playtime FROM privacy WHERE account_id = $1",
+    let row: Option<PrivacyRow> = sqlx::query_as(
+        "SELECT trophies, about, favourites, avatar, playtime, feed FROM privacy \
+         WHERE account_id = $1",
     )
     .bind(i(account))
     .fetch_optional(pool)
@@ -1099,10 +1104,10 @@ pub async fn privacy_of(pool: &Pool, account: u64) -> sqlx::Result<anyplay_api::
     Ok(row.map_or_else(anyplay_api::Privacy::default, privacy_from_row))
 }
 
-type PrivacyRow = (String, String, String, String, String);
+type PrivacyRow = (String, String, String, String, String, String);
 
 fn privacy_from_row(
-    (trophies, about, favourites, avatar, playtime): PrivacyRow,
+    (trophies, about, favourites, avatar, playtime, feed): PrivacyRow,
 ) -> anyplay_api::Privacy {
     anyplay_api::Privacy {
         trophies: audience_of(&trophies),
@@ -1110,6 +1115,7 @@ fn privacy_from_row(
         favourites: audience_of(&favourites),
         avatar: audience_of(&avatar),
         playtime: audience_of(&playtime),
+        feed: audience_of(&feed),
     }
 }
 
@@ -1121,9 +1127,9 @@ pub async fn privacies_of(
     if accounts.is_empty() {
         return Ok(HashMap::new());
     }
-    let rows: Vec<(i64, String, String, String, String, String)> =
+    let rows: Vec<(i64, String, String, String, String, String, String)> =
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "SELECT account_id, trophies, about, favourites, avatar, playtime FROM privacy \
+            "SELECT account_id, trophies, about, favourites, avatar, playtime, feed FROM privacy \
              WHERE account_id IN ({})",
             id_list(accounts)
         )))
@@ -1131,12 +1137,14 @@ pub async fn privacies_of(
         .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, trophies, about, favourites, avatar, playtime)| {
-            (
-                u(id),
-                privacy_from_row((trophies, about, favourites, avatar, playtime)),
-            )
-        })
+        .map(
+            |(id, trophies, about, favourites, avatar, playtime, feed)| {
+                (
+                    u(id),
+                    privacy_from_row((trophies, about, favourites, avatar, playtime, feed)),
+                )
+            },
+        )
         .collect())
 }
 
@@ -1198,10 +1206,10 @@ pub async fn set_privacy(
     privacy: anyplay_api::Privacy,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT INTO privacy (account_id, trophies, about, favourites, avatar, playtime) \
-         VALUES ($1, $2, $3, $4, $5, $6) \
+        "INSERT INTO privacy (account_id, trophies, about, favourites, avatar, playtime, feed) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
          ON CONFLICT (account_id) DO UPDATE SET trophies = $2, about = $3, favourites = $4, \
-         avatar = $5, playtime = $6",
+         avatar = $5, playtime = $6, feed = $7",
     )
     .bind(i(account))
     .bind(audience_name(privacy.trophies))
@@ -1209,6 +1217,7 @@ pub async fn set_privacy(
     .bind(audience_name(privacy.favourites))
     .bind(audience_name(privacy.avatar))
     .bind(audience_name(privacy.playtime))
+    .bind(audience_name(privacy.feed))
     .execute(pool)
     .await?;
     Ok(())

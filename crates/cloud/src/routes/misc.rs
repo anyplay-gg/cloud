@@ -51,6 +51,11 @@ pub async fn set_presence(
     )
     .await?;
     state.refresh_presence([auth.account]).await;
+    if let Some(activity) = &activity {
+        state
+            .record_first_played(auth.account, &activity.title_id)
+            .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
