@@ -59,3 +59,12 @@ The landing page (anyplay-gg/web) can run on the cloud's host name: Caddy sends 
 4. Set `ANYPLAY_CLOUD_PORTAL_EXTERNAL=true` (with `ANYPLAY_CLOUD_PUBLIC_URL`) in the cloud's environment, so the launcher's sign-in opens the website's `/sign-in` and `/create` pages instead of the cloud's own.
 
 To take the website down again, remove the `COMPOSE_FILE` line and run `docker compose up -d --remove-orphans`.
+
+## Linked accounts
+
+The account web lets players link Discord and Steam ([configuration](configuration.md)). A service stays off until its setting is in `deploy/.env`:
+
+- `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET`: the OAuth2 client of the cloud's Discord application, with `https://<CLOUD_DOMAIN>/web/links/discord/callback` as a redirect in the Discord Developer Portal.
+- `STEAM_API_KEY`: a Steam Web API key, for the player's Steam name and picture.
+
+Run `deploy/update.sh` after a change so the cloud container picks them up.
