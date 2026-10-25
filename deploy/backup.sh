@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# Backs up the cloud-data volume (the SQLite database, signing.key and ban.key) into one archive.
+#
+#   cloud/deploy/backup.sh [--dir DIR] [--keep N] [--volume NAME] [--no-stop]
+#
+# The cloud container stops for the copy, so the SQLite write-ahead log is checkpointed and the
+# archive is consistent, and starts again afterwards, also when the copy failed. The archive is
+# written under a temporary name, synced and then renamed, so a partial file never looks like a
+# backup. Next to it goes <archive>.sha256. Both are mode 0600. Afterwards only the newest N
+# archives (default 14) stay. Exit status is non-zero when anything went wrong.
+# Restoring and the restore drill: restore.sh. Details: docs/deploy.md.
+#
+#   --dir DIR       where the archives go (default $ANYPLAY_BACKUP_DIR, else deploy/backups)
+#   --keep N        archives to keep (default $ANYPLAY_BACKUP_KEEP, else 14)
+#   --volume NAME   the volume to copy (default $ANYPLAY_CLOUD_VOLUME, else anyplay_cloud-data)
+#   --no-stop       do not stop the cloud; only for a volume that nothing writes to (tests)
+#
+# The copy runs in a throwaway container of $ANYPLAY_BACKUP_IMAGE (default python:3.13-alpine,
+# which has tar and sha256sum); the cloud image needs no extra tool.
+set -Eeuo pipefail
+
+main() {
+  local here dir=${ANYPLAY_BACKUP_DIR:-} keep=${ANYPLAY_BACKUP_KEEP:-14} \
+    volume=${ANYPLAY_CLOUD_VOLUME:-anyplay_cloud-data} stop=1 \
+    image=${ANYPLAY_BACKUP_IMAGE:-python:3.13-alpine}
+  wait=${ANYPLAY_BACKUP_TIMEOUT:-120} # wait, tmp, stopped: global, the EXIT trap runs after main has returned
+  here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  # shellcheck source=backup-env.sh
+  . "$here/backup-env.sh"
+  anyplay_backup_env "$here"
+  dir=${dir:-${ANYPLAY_BACKUP_DIR:-}} keep=${ANYPLAY_BACKUP_KEEP:-$keep} volume=${ANYPLAY_CLOUD_VOLUME:-$volume} \
+    image=${ANYPLAY_BACKUP_IMAGE:-$image}
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --dir) dir=${2:?--dir needs a folder}; shift 2 ;;
+      --keep) keep=${2:?--keep needs a number}; shift 2 ;;
+      --volume) volume=${2:?--volume needs a name}; shift 2 ;;
+      --no-stop) stop=0; shift ;;
+      -h|--help) sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
+      *) echo "unknown argument: $1 (see --help)" >&2; return 2 ;;
+    esac
+  done
+  [ -n "$dir" ] || dir=$here/backups
+  case $keep in '' | *[!0-9]* | 0) echo "--keep must be a number of at least 1" >&2; return 2 ;; esac
+
+  log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*"; }
+  die() { log "ERROR: $*" >&2; exit 1; }
+
+  command -v docker >/dev/null || die "docker is not installed"
+  command -v sha256sum >/dev/null || die "sha256sum is not installed"
+  docker volume inspect "$volume" >/dev/null 2>&1 || die "volume $volume does not exist"
+
+  # Everything that can fail cheaply fails before the cloud stops.
+  umask 077
+  mkdir -p "$dir" || die "cannot create $dir"
+  dir=$(cd "$dir" && { pwd -W 2>/dev/null || pwd; }) # -W: a Windows path for Docker Desktop (Git Bash)
+  local probe=$dir/.write-test.$$
+  { : >"$probe" && rm -f "${probe:?}"; } 2>/dev/null || die "$dir is not writable"
+
+  local stamp name
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  name=anyplay-cloud-$stamp.tar.gz
+  tmp=$dir/.$name.partial
+  [ ! -e "$dir/$name" ] || die "$dir/$name exists; wait a second and run again"
+
+  cd "$here"
+  stopped=0
+  restart_cloud() {
+    [ "$stopped" = 1 ] || return 0
+    stopped=0
+    log "starting the cloud"
+    docker compose start cloud >/dev/null || return 1
+    local cid
+    cid=$(docker compose ps -q cloud)
+    local i status=''
+    for ((i = 0; i < wait; i++)); do
+      status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || true)
+      case $status in healthy | running) log "the cloud is $status again"; return 0 ;; esac
+      sleep 1
+    done
+    log "the cloud is not healthy after ${wait}s (status: ${status:-unknown})" >&2
+    return 1
+  }
+  finish() { # runs on every exit, so the cloud comes back whatever happened
+    local rc=$?
+    trap - EXIT
+    rm -f "${tmp:?}"
+    restart_cloud || rc=1
+    exit "$rc"
+  }
+  trap finish EXIT
+  trap 'exit 130' INT TERM
+
+  local t0=$SECONDS
+  if [ "$stop" = 1 ]; then
+    if [ -n "$(docker compose ps -q --status running cloud 2>/dev/null)" ]; then
+      log "stopping the cloud for a consistent copy"
+      stopped=1
+      docker compose stop cloud >/dev/null || die "cannot stop the cloud"
+    else
+      log "the cloud is not running; copying as it is and leaving it stopped"
+    fi
+  fi
+
+  log "copying volume $volume"
+  docker run --rm --network none -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+    -v "$volume":/data:ro -v "$dir":/backup "$image" sh -c '
+      set -e
+      tar -czf "/backup/$1" -C /data .
+      chown "$HOST_UID:$HOST_GID" "/backup/$1"
+      chmod 0600 "/backup/$1"
+      sync
+    ' sh ".$name.partial" || die "the copy failed; nothing was kept"
+  [ -s "$tmp" ] || die "the archive is empty"
+  mv "$tmp" "$dir/$name"
+  local down=$((SECONDS - t0))
+  restart_cloud || die "the cloud did not come back; look at 'docker compose logs cloud'"
+  log "the cloud was stopped for about ${down}s"
+
+  # The manifest: standard sha256sum format, so `sha256sum -c` verifies it.
+  (cd "$dir" && sha256sum "$name" >"$name.sha256") || die "cannot write the manifest"
+  chmod 0600 "$dir/$name.sha256"
+  log "wrote $dir/$name ($(du -h "$dir/$name" | cut -f1))"
+
+  # Retention: the newest $keep archives stay; the names sort by time.
+  local old
+  while IFS= read -r old; do
+    [ -n "$old" ] || continue
+    log "removing old backup $old"
+    rm -f "${dir:?}/${old:?}" "${dir:?}/${old:?}.sha256"
+  done < <(find "$dir" -maxdepth 1 -type f -printf '%f\n' | grep -E '^anyplay-cloud-[0-9]{8}T[0-9]{6}Z\.tar\.gz$' | sort -r | tail -n +"$((keep + 1))")
+  printf '%s\n' "$dir/$name"
+}
+
+main "$@"

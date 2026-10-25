@@ -3,10 +3,11 @@
 # the cloud and network repositories, checks that it came up, and rolls back when it did not.
 #
 #   cloud/deploy/update.sh [--cloud REF] [--network REF] [--pre-hook CMD] [--timeout SECONDS]
-#                          [--no-rollback] [--dry-run]
+#                          [--no-rollback] [--no-backup] [--dry-run]
 #
 # REF is a commit, tag or branch (a branch means its state on `origin`). --cloud defaults to
 # origin/main; --network defaults to the commit in `network.ref` of the cloud commit being deployed.
+# Before the first change it runs backup.sh and stops if that fails (--no-backup skips it).
 # Details, what "near-zero downtime" means and how to roll back by hand: docs/deploy.md.
 set -Eeuo pipefail
 
@@ -14,7 +15,7 @@ set -Eeuo pipefail
 # very file, and bash reads a script while it runs.
 main() {
   local cloud_ref=origin/main network_ref='' hook=${ANYPLAY_UPDATE_HOOK:-} \
-    timeout=${ANYPLAY_UPDATE_TIMEOUT:-180} rollback=1 dry=0
+    timeout=${ANYPLAY_UPDATE_TIMEOUT:-180} rollback=1 dry=0 backup=1
   while [ $# -gt 0 ]; do
     case $1 in
       --cloud) cloud_ref=${2:?--cloud needs a ref}; shift 2 ;;
@@ -22,8 +23,9 @@ main() {
       --pre-hook) hook=${2:?--pre-hook needs a command}; shift 2 ;;
       --timeout) timeout=${2:?--timeout needs seconds}; shift 2 ;;
       --no-rollback) rollback=0; shift ;;
+      --no-backup) backup=0; shift ;;
       --dry-run) dry=1; shift ;;
-      -h|--help) sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
+      -h|--help) sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
       *) echo "unknown argument: $1 (see --help)" >&2; return 2 ;;
     esac
   done
@@ -48,6 +50,9 @@ main() {
   flock -n 9 || die "another update is running"
 
   cd "$deploy"
+  # shellcheck source=backup-env.sh
+  . "$deploy/backup-env.sh"
+  anyplay_backup_env "$deploy"
   for d in "$cloud_dir" "$network_dir"; do
     git -C "$d" diff --quiet HEAD -- || die "$d has uncommitted changes to tracked files; commit or stash them"
   done
@@ -77,7 +82,28 @@ main() {
   free_gb=$(df -BG --output=avail "$root" | tail -1 | tr -dc 0-9)
   [ "${free_gb:-0}" -ge 5 ] || die "less than 5 GB free on $root"
 
-  # 2. Backup (or any check) the operator wants before the first change.
+  # 2. Back up before the first change: a new version may migrate the database, and the old one does
+  # not undo that. backup.sh stops the cloud for a few seconds, copies the data volume and starts it.
+  local volume=${ANYPLAY_CLOUD_VOLUME:-anyplay_cloud-data} backup_dir backup_path='' max_age=${ANYPLAY_BACKUP_MAX_AGE:-900}
+  backup_dir=${ANYPLAY_BACKUP_DIR:-$deploy/backups}
+  case $max_age in '' | *[!0-9]*) die "ANYPLAY_BACKUP_MAX_AGE must be a number of seconds" ;; esac
+  if [ "$backup" = 0 ]; then
+    log "WARNING: --no-backup: no backup before this update; a migration cannot be undone"
+  elif ! docker volume inspect "$volume" >/dev/null 2>&1; then
+    log "no volume $volume yet (first install): nothing to back up"
+  else
+    log "backing up"
+    "$deploy/backup.sh" --dir "$backup_dir" || die "the backup failed; nothing was changed (--no-backup skips it)"
+    local newest age
+    newest=$(find "$backup_dir" -maxdepth 1 -type f -printf '%f\n' | grep -E '^anyplay-cloud-[0-9]{8}T[0-9]{6}Z[.]tar[.]gz$' | sort | tail -n 1) || true
+    [ -n "$newest" ] || die "no backup archive found in $backup_dir; nothing was changed"
+    age=$(( $(date +%s) - $(stat -c %Y "$backup_dir/$newest") ))
+    [ "$age" -le "$max_age" ] || die "the newest backup ($newest) is ${age}s old, more than ${max_age}s; nothing was changed"
+    backup_path=$backup_dir/$newest
+    log "backup ok: $newest, ${age}s old; restore with deploy/restore.sh $backup_path"
+  fi
+
+  # Anything else the operator wants checked or done before the first change.
   if [ -n "$hook" ]; then
     log "pre-update hook"
     bash -c "$hook" || die "the pre-update hook failed; nothing was changed"
@@ -149,7 +175,12 @@ main() {
   else
     log "ROLLBACK FAILED: look at 'docker compose ps' and 'docker compose logs'"
   fi
-  log "data changes of a newer version (database migrations) are not undone; restore a backup for that"
+  log "data changes of a newer version (database migrations) are not undone; restore the backup for that:"
+  if [ -n "$backup_path" ]; then
+    log "  restore with deploy/restore.sh $backup_path --really   (without --really it only checks the archive)"
+  else
+    log "  restore with deploy/restore.sh <archive>; no backup was taken in this run"
+  fi
   return 1
 }
 
