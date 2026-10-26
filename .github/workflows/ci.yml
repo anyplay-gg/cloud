@@ -34,7 +34,7 @@ jobs:
             runner: blacksmith-8vcpu-windows-2025
           - os: ubuntu-latest
             runner: blacksmith-8vcpu-ubuntu-2404
-    name: ${{ github.job }} (${{ matrix.os }})
+    name: check (${{ matrix.os }})
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
