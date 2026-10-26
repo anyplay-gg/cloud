@@ -208,7 +208,22 @@ pub async fn join(
             build: session.row.build.clone(),
         })
     };
-    let matches = session.row.version == request.version && session.row.build == request.build;
+    // The build must always be the same. The version must fit under the rule the joiner's
+    // launcher sent (the cloud knows no games), unless the player chose to try anyway.
+    let matches = session.row.build == request.build
+        && (request.override_version
+            || request
+                .version_rule
+                .allows(&session.row.version, &request.version));
+    if request.override_version && session.row.version != request.version {
+        tracing::info!(
+            session = %id,
+            account = auth.account,
+            host_version = %session.row.version,
+            version = %request.version,
+            "join with the version check overridden"
+        );
+    }
 
     // A member joining again only moves its endpoint and relay.
     if session.is_member(auth.account) {

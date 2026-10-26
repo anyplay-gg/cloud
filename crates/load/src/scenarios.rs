@@ -615,6 +615,8 @@ async fn one_session(ctx: &Arc<Ctx>, leader: &Arc<Shared>, size: usize, hold: Du
             endpoint: endpoint(m),
             relay: None,
             invitation: None,
+            version_rule: Default::default(),
+            override_version: false,
         });
         ctx.call_as(m, "session_join", Method::POST, &join_path, Some(body))
     });
