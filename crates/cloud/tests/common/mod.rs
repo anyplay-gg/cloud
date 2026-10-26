@@ -36,6 +36,8 @@ pub struct TestCloud {
     pub http: reqwest::Client,
     _dir: Arc<tempfile::TempDir>,
     _server: JoinHandle<std::io::Result<()>>,
+    /// Dropped with the last node that uses it, which drops the database from the server.
+    _database: Option<Arc<TestDatabase>>,
 }
 
 /// An answer of the cloud.
@@ -99,8 +101,125 @@ fn read_answer(bytes: &[u8]) -> Option<Reply> {
     })
 }
 
+/// A database on the server of `ANYPLAY_TEST_DATABASE_URL`, made for one test. It is dropped from the
+/// server when this value is, also when the test panics (a test that dies by `abort` or a kill
+/// leaves it behind; `tools/rb` sweeps those).
+pub struct TestDatabase {
+    /// The address of the database.
+    pub url: String,
+    server: String,
+    name: String,
+}
+
+impl Drop for TestDatabase {
+    fn drop(&mut self) {
+        reaper::finished(self.server.clone(), self.name.clone());
+    }
+}
+
+impl std::ops::Deref for TestDatabase {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.url
+    }
+}
+
+/// Drops the databases of finished tests, a few at a time on threads of their own.
+///
+/// `DROP DATABASE` is slow on a busy server (a forced checkpoint each), and dozens of tests
+/// dropping at once made a suite of seconds take minutes. A test that only hands over the name
+/// does not wait; the test that ends the last live database waits until the queue is empty, so
+/// when a test binary ends nothing is left behind. Everything is on plain threads: the dropping
+/// test may be on a runtime that must not block, or unwinding from a panic.
+mod reaper {
+    use std::collections::VecDeque;
+    use std::sync::{Condvar, Mutex, MutexGuard};
+
+    struct State {
+        /// Databases made and not yet handed over.
+        live: usize,
+        queue: VecDeque<(String, String)>,
+        /// Threads working through the queue.
+        workers: usize,
+    }
+
+    /// A few at a time: a lone thread is slow on a long queue, dozens at once wait on each other.
+    const WORKERS: usize = 4;
+
+    static STATE: Mutex<State> = Mutex::new(State {
+        live: 0,
+        queue: VecDeque::new(),
+        workers: 0,
+    });
+    static IDLE: Condvar = Condvar::new();
+
+    fn state() -> MutexGuard<'static, State> {
+        STATE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn created() {
+        state().live += 1;
+    }
+
+    pub fn finished(server: String, name: String) {
+        let mut state = state();
+        state.live -= 1;
+        state.queue.push_back((server, name));
+        if state.workers < WORKERS {
+            state.workers += 1;
+            std::thread::spawn(work);
+        }
+        if state.live == 0 {
+            while state.workers > 0 {
+                state = IDLE.wait(state).unwrap_or_else(|e| e.into_inner());
+            }
+        }
+    }
+
+    fn work() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
+        loop {
+            let next = {
+                let mut state = state();
+                let next = state.queue.pop_front();
+                if next.is_none() {
+                    state.workers -= 1;
+                    IDLE.notify_all();
+                }
+                next
+            };
+            let Some((server, name)) = next else { return };
+            let dropped = match &runtime {
+                Ok(runtime) => runtime.block_on(drop_database(&server, &name)),
+                Err(error) => Err(error.to_string()),
+            };
+            if let Err(error) = dropped {
+                eprintln!("could not drop the test database {name}: {error}");
+            }
+        }
+    }
+
+    /// `FORCE` ends the connections of a cloud that is still open.
+    async fn drop_database(server: &str, name: &str) -> Result<(), String> {
+        use sqlx::{Connection as _, Executor as _};
+        let mut admin = sqlx::PgConnection::connect(server)
+            .await
+            .map_err(|e| e.to_string())?;
+        admin
+            .execute(sqlx::AssertSqlSafe(format!(
+                "DROP DATABASE IF EXISTS {name} WITH (FORCE)"
+            )))
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
 /// A new, empty database on the server of `ANYPLAY_TEST_DATABASE_URL`, or `None` without it.
-pub async fn postgres_database() -> Option<String> {
+pub async fn postgres_database() -> Option<TestDatabase> {
     use sqlx::{Connection as _, Executor as _};
     let server = std::env::var("ANYPLAY_TEST_DATABASE_URL")
         .ok()
@@ -116,7 +235,9 @@ pub async fn postgres_database() -> Option<String> {
         .execute(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
         .await
         .unwrap();
-    Some(format!("{base}/{name}"))
+    let url = format!("{base}/{name}");
+    reaper::created();
+    Some(TestDatabase { url, server, name })
 }
 
 /// Timings short enough for tests and limits high enough not to get in the way.
@@ -150,8 +271,8 @@ impl TestCloud {
 
     pub async fn with(config: impl FnOnce(&mut Config), tuning: impl FnOnce(&mut Tuning)) -> Self {
         let dir = Arc::new(tempfile::tempdir().unwrap());
-        let database_url = postgres_database().await;
-        Self::node(dir, database_url, None, config, tuning).await
+        let database = postgres_database().await.map(Arc::new);
+        Self::node(dir, database, None, config, tuning).await
     }
 
     /// `n` nodes of one cloud: one database, one NATS server and one signing key, each node on
@@ -161,7 +282,7 @@ impl TestCloud {
         let nats = std::env::var("ANYPLAY_TEST_NATS_URL")
             .ok()
             .filter(|url| !url.trim().is_empty())?;
-        let database_url = postgres_database().await?;
+        let database = Arc::new(postgres_database().await?);
         // The nodes share the data folder, so the first creates the signing key and the others
         // read it.
         let dir = Arc::new(tempfile::tempdir().unwrap());
@@ -170,7 +291,7 @@ impl TestCloud {
             nodes.push(
                 Self::node(
                     dir.clone(),
-                    Some(database_url.clone()),
+                    Some(database.clone()),
                     Some(nats.clone()),
                     &config,
                     |_| {},
@@ -183,7 +304,7 @@ impl TestCloud {
 
     async fn node(
         dir: Arc<tempfile::TempDir>,
-        database_url: Option<String>,
+        database: Option<Arc<TestDatabase>>,
         nats_url: Option<String>,
         config: impl FnOnce(&mut Config),
         tuning: impl FnOnce(&mut Tuning),
@@ -191,7 +312,7 @@ impl TestCloud {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut cfg = Config {
             data_dir: dir.path().to_path_buf(),
-            database_url,
+            database_url: database.as_ref().map(|d| d.url.clone()),
             // Many test clouds share one database server.
             database_connections: 4,
             // Dozens of test clouds open databases on one server at once, which can take longer
@@ -227,6 +348,7 @@ impl TestCloud {
             http: reqwest::Client::new(),
             _dir: dir,
             _server: server,
+            _database: database,
         }
     }
 

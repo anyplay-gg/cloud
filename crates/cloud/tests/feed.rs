@@ -208,8 +208,14 @@ async fn the_feed_visibility_starts_at_friends_and_is_kept() {
 async fn the_migration_gives_existing_rows_the_default_and_remembers_played_titles() {
     sqlx::any::install_default_drivers();
     let dir = tempfile::tempdir().unwrap();
+    // Held until the end of the test: dropping it drops the database.
+    let mut _database = None;
     let (url, folder) = match common::postgres_database().await {
-        Some(url) => (url, "postgres"),
+        Some(database) => {
+            let url = database.url.clone();
+            _database = Some(database);
+            (url, "postgres")
+        }
         None => {
             let file = dir.path().join("old.db");
             let path = file.to_string_lossy().replace('\\', "/");

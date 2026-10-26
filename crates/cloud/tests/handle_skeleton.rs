@@ -67,8 +67,14 @@ async fn a_skeleton_is_held_by_one_account_in_the_store() {
         .await
         .unwrap();
     let mut pools = vec![sqlite];
-    if let Some(url) = common::postgres_database().await {
-        pools.push(db::open(db::Location::Postgres(&url), 2).await.unwrap());
+    // Held until the end of the test: dropping it drops the database.
+    let database = common::postgres_database().await;
+    if let Some(database) = &database {
+        pools.push(
+            db::open(db::Location::Postgres(&database.url), 2)
+                .await
+                .unwrap(),
+        );
     }
     for pool in pools {
         db::insert_account(&pool, 1, "Flokzy", "a@example.com", 1)
@@ -213,7 +219,7 @@ async fn migration_0014_fills_the_skeleton_and_survives_accounts_that_collide() 
     let url = format!("sqlite:{}?mode=rwc", dir.path().join("old.db").display())
         .replace(std::path::MAIN_SEPARATOR, "/");
     migrate_with_colliding_accounts("sqlite", &url).await;
-    if let Some(url) = common::postgres_database().await {
-        migrate_with_colliding_accounts("postgres", &url).await;
+    if let Some(database) = common::postgres_database().await {
+        migrate_with_colliding_accounts("postgres", &database.url).await;
     }
 }

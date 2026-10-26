@@ -1759,8 +1759,14 @@ async fn migration_0005_keeps_the_bans_and_reports_that_exist_and_gives_bans_a_s
 
     install_default_drivers();
     let dir = tempfile::tempdir().unwrap();
+    // Held until the end of the test: dropping it drops the database.
+    let mut _database = None;
     let (flavour, url) = match common::postgres_database().await {
-        Some(url) => ("postgres", url),
+        Some(database) => {
+            let url = database.url.clone();
+            _database = Some(database);
+            ("postgres", url)
+        }
         None => (
             "sqlite",
             format!("sqlite:{}?mode=rwc", dir.path().join("old.db").display())
