@@ -65,6 +65,10 @@ pub fn router(state: AppState) -> Router {
             path::APPEAR_OFFLINE,
             get(accounts::get_appear_offline).put(accounts::set_appear_offline),
         )
+        .route(
+            "/v1/me/public-profile",
+            get(accounts::get_public_profile).put(accounts::set_public_profile),
+        )
         .route(path::SESSIONS, post(sessions::create))
         .route(path::SESSION, get(sessions::get).patch(sessions::update))
         .route(path::SESSION_JOIN, post(sessions::join))

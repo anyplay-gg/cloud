@@ -5,7 +5,7 @@ use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use base64::Engine as _;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::error::{AppError, Result};
@@ -42,6 +42,35 @@ pub async fn set_appear_offline(
     state
         .set_appear_offline(auth.account, body.appear_offline)
         .await?;
+    Ok(Json(body))
+}
+
+/// The public profile switch: whether the player shows a page at `/u/<handle>` to people who are
+/// not their friends. Off for every new account.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicProfile {
+    pub public_profile: bool,
+}
+
+/// `GET /v1/me/public-profile`
+pub async fn get_public_profile(
+    State(state): State<AppState>,
+    auth: Auth,
+) -> Result<Json<PublicProfile>> {
+    Ok(Json(PublicProfile {
+        public_profile: db::public_profile(&state.db, auth.account).await?,
+    }))
+}
+
+/// `PUT /v1/me/public-profile`: shows the page to everyone, or only to the player and friends again.
+pub async fn set_public_profile(
+    State(state): State<AppState>,
+    auth: Auth,
+    ApiJson(body): ApiJson<PublicProfile>,
+) -> Result<Json<PublicProfile>> {
+    if !db::set_public_profile(&state.db, auth.account, body.public_profile).await? {
+        return Err(AppError::not_found());
+    }
     Ok(Json(body))
 }
 
@@ -148,6 +177,7 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
             "title_id": title, "number": number, "revealed": revealed,
         })).collect::<Vec<_>>(),
         "privacy": privacy,
+        "public_profile": db::public_profile(&state.db, account_id).await?,
         "linked_accounts": linked.iter().map(|l| json!({
             "provider": l.provider, "external_id": l.external_id,
             "display_name": l.display_name, "visibility": l.audience,

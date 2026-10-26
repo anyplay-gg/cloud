@@ -1189,6 +1189,7 @@ async fn a_profile_shows_the_connections_that_the_viewer_may_see() {
     let providers = Providers::start().await;
     let cloud = providers.cloud().await;
     let (alec, a) = user_with_portal(&cloud, "Alec").await;
+    cloud.show_page(&alec).await;
     let (bob, b) = user_with_portal(&cloud, "Bob").await;
     let (_, c) = user_with_portal(&cloud, "Cleo").await;
     let (dave, d) = user_with_portal(&cloud, "Dave").await;

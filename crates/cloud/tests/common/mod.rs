@@ -544,6 +544,17 @@ impl TestCloud {
         Events::connect(&self.base, token).await.expect("upgrade")
     }
 
+    /// Turns the public profile page of `user` on (it is off for a new account).
+    pub async fn show_page(&self, user: &User) {
+        self.put(
+            "/v1/me/public-profile",
+            user.token(),
+            Some(json!({"public_profile": true})),
+        )
+        .await
+        .ok(200);
+    }
+
     /// Two friends, both with an open event connection (welcome already read).
     pub async fn friends(&self, a: &str, b: &str) -> (User, User) {
         let a = self.sign_up(a).await;

@@ -401,6 +401,26 @@ pub async fn appear_offline(pool: &Pool, id: u64) -> sqlx::Result<bool> {
     Ok(row.is_some_and(|(on,)| on != 0))
 }
 
+/// Sets whether the account shows a public profile page to people who are not its friends. Says
+/// whether the account exists.
+pub async fn set_public_profile(pool: &Pool, id: u64, on: bool) -> sqlx::Result<bool> {
+    let done = sqlx::query("UPDATE accounts SET public_profile = $2 WHERE id = $1")
+        .bind(i(id))
+        .bind(i64::from(on))
+        .execute(pool)
+        .await?;
+    Ok(done.rows_affected() > 0)
+}
+
+/// Whether the account shows a public profile page. False for an account that does not exist.
+pub async fn public_profile(pool: &Pool, id: u64) -> sqlx::Result<bool> {
+    let row: Option<(i64,)> = sqlx::query_as("SELECT public_profile FROM accounts WHERE id = $1")
+        .bind(i(id))
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.is_some_and(|(on,)| on != 0))
+}
+
 /// The accounts with these IDs in one query, by ID; an ID without an account is missing.
 pub async fn accounts_by_ids(
     conn: &mut Conn,

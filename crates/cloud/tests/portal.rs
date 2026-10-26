@@ -1386,6 +1386,12 @@ async fn a_profile_page_carries_open_graph_tags_of_what_a_visitor_may_see() {
     let alec = cloud.sign_up("Alec").await;
     cloud.sign_up("Bob").await;
 
+    // The page is off for a new account: no page, no tags, the plain shell.
+    let off = fetch(&cloud, "/u/alec").await;
+    assert_eq!(off.status, 404);
+    assert_eq!(off.text(), INDEX);
+    cloud.show_page(&alec).await;
+
     // No text yet: a plain description.
     let page = fetch(&cloud, "/u/alec").await;
     assert_eq!(page.status, 200);
