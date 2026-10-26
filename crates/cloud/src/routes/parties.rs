@@ -42,7 +42,11 @@ async fn arm_grace(state: &AppState, account: u64) -> Result<()> {
 }
 
 /// A new party with `account` as its only member and leader, and its chat.
-async fn make_party(state: &AppState, account: u64, handle: String) -> Result<PartyState> {
+pub(crate) async fn make_party(
+    state: &AppState,
+    account: u64,
+    handle: String,
+) -> Result<PartyState> {
     let created = now() as i64;
     let row = PartyRow {
         id: random_uuid(),
@@ -89,7 +93,7 @@ async fn make_party(state: &AppState, account: u64, handle: String) -> Result<Pa
 }
 
 /// The party an account is in, read fresh.
-async fn party_of(state: &AppState, account: u64) -> Result<Option<PartyState>> {
+pub(crate) async fn party_of(state: &AppState, account: u64) -> Result<Option<PartyState>> {
     let mut conn = state.db.acquire().await?;
     match party::party_id_of(&mut conn, account).await? {
         Some(id) => Ok(party::party(&mut conn, &id).await?),

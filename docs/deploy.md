@@ -43,6 +43,15 @@ The cloud keeps its state in one SQLite file, so there is exactly one cloud proc
 
 A new version may migrate the database on its first start. The old version does not undo that. If a rollback happens after a migration, or if the new version damaged data, restore the backup that `update.sh` took (below) instead of only starting the old code. A failed update prints the command: `restore with deploy/restore.sh <archive> --really`. The archive was taken right before the new version started, so it holds everything up to that moment; what the new version wrote after it (accounts, sign-ups, bans) is gone after a restore. The same is true of the old version's data if you roll back late: the longer the new version ran, the more is lost.
 
+## Screenshots and clips
+
+Players can send a screenshot (up to 10 MB) or a clip (up to 100 MB and 60 seconds) to a friend. The cloud keeps the file for 30 days in `media_dir` (default `cloud-data/media`, so the same volume as the database) and then deletes it.
+
+- **Size the disk for it.** The worst case is `media_account_bytes` (1 GiB) per account for 30 days; in practice a small fraction. Watch the volume's free space.
+- **A cluster needs a shared folder.** Every node must mount the same `media_dir`; a file uploaded through one node is read through another.
+- **Back it up with the database** (the volume backup below takes it along). A restored database without the matching media folder shows media messages that cannot be opened until they expire; restore both from the same archive.
+- Uploads and downloads of media are outside the 30 second request timeout of other routes. They have their own limit (10 minutes for an upload, four uploads at a time per node), so a reverse proxy in front must allow a request body of 100 MB and a request time of 10 minutes on `/v1/conversations/*/media`.
+
 ## Backups
 
 The `cloud-data` volume holds everything the cloud cannot rebuild: the SQLite database (`anyplay-cloud.db`), `signing.key` (lose it and every token and relay ticket becomes invalid) and `ban.key` (lose it and banned e-mail hashes silently stop matching). [`deploy/backup.sh`](../deploy/backup.sh) copies the whole volume:

@@ -295,7 +295,37 @@ Discord tokens are not stored (`discord_sdk.rs`); login tokens from linking are 
 | Limits | 5 unanswered messages to a stranger; an account younger than 24 hours cannot write first to a stranger; a muted account cannot write. |
 | On deletion | The player's own messages are deleted. **A direct conversation is deleted whole, with the other person's messages.** Group conversations keep what others wrote. |
 | Export | The player's own messages and the conversations; **not** what others wrote to the player. |
-| Not built | Attachments, clips. Reactions, edit and unsend are in an open pull request (cloud#74) and must be added here when merged. |
+| Not built | Attachments other than the screenshots and clips of section 7.2b. Reactions, edit and unsend are in an open pull request (cloud#74) and must be added here when merged. |
+
+### 7.2a Looking for group listings
+
+| What | Detail |
+|---|---|
+| Tables | `lfg_listings` (poster, game title ID, mode, language, a note of at most 140 characters without links, slots, times, closed time) and `lfg_requests` (listing, account that asked, times, accepted time), migration 0025 |
+| Purpose | A player says they look for others to play a game with; others who have the game ask to join; the poster accepts them into their party. |
+| Basis (proposed) | Art. 6(1)(b), the feature the player chose to use; the note is what the player chose to write. |
+| Who sees it | Every signed-in player who asks for the board of that game and is not blocked either way with the poster: handle, account ID, game, mode, language, note, places. The cloud cannot tell who owns the game; that is the launcher's filter, not a rule. The poster sees who asked. A player who asked sees their own request. |
+| Kept | A listing lives 1 hour. Closed, full or expired listings are deleted a day later with their requests. A ban closes the account's listings at once. |
+| On deletion | Both tables cascade with the account. |
+| Export | The player's own listings and requests (`looking_for_group`). |
+| Reports | A report of a listing saves the note in the report (section 1.8). |
+
+### 7.2b Screenshots and clips sent to a friend
+
+| What | Detail |
+|---|---|
+| Tables and files | `media` (file ID, conversation and message number, sender, kind, type, size, picture size, length, times, removed time, hold time; migration 0026) and the file itself in `media_dir` under a random 128-bit key. |
+| Purpose | A player sends a screenshot or clip of their game to one friend, who sees it in the conversation. |
+| Basis (proposed) | Art. 6(1)(b) for the feature the player used. |
+| Content | Whatever the player chose to send. The cloud checks the file type, size and (for a clip) length. **It does not look at the picture** and does not remove metadata; a screenshot made by the launcher has none. |
+| Who sees it | The two friends only: a direct conversation both accepted, between friends, with no block. Never strangers, message requests or groups. Access is checked on every read; the key alone gives nothing. Moderators see a file only when a report holds it. |
+| Kept | 30 days from sending, then deleted from disk and from the table. Unsent by the sender: out of reach at once, kept 7 days for a report, then deleted. A report holds the file as long as an undecided report lives (`retention_open_reports_days`, 365). **Held files survive account deletion** like the report. |
+| On deletion | The account's files that no report holds are deleted from disk. When one friend deletes their account the direct conversation goes, and the other's files in it become unreachable and are deleted at their 30 days. |
+| Export | The list of what the player sent (`media_sent`: ID, kind, time), not the files. |
+| Backups | The media folder is part of the volume backup (section 5) and so is kept as long as the backup. |
+| Limits | 20 uploads per hour and 1 GiB of live files per account; four uploads at a time per node. |
+
+**Privacy page:** the privacy policy on the website must name both features (LFG listings visible to other players for an hour; screenshots and clips visible to the chosen friend for 30 days and kept for moderation when reported). OPERATOR AGENT: update the legal privacy page for LFG listings and shared screenshots/clips.
 
 ### 7.3 Feed
 

@@ -133,6 +133,10 @@ See [dsa.md](dsa.md). We propose hosting service today and online platform once 
 
 The research listed it as unchecked. [Section 4 OSA 2023](https://www.legislation.gov.uk/ukpga/2023/50/section/4/data.htm) makes a user-to-user service regulated if it has links to the UK: "a significant number of United Kingdom users" (s.4(5)) or a "material risk of significant harm" to people in the UK (s.4(6)); s.3 defines user-to-user services as services where user content may be encountered by another user; there is no exemption for volunteer or free services in the text we read. Schedule 1 exemptions (private one-to-one messaging is one candidate) were not read, nor Ofcom's guidance. **Questions:** Is a German friends-only gaming chat in scope? What is "significant" for a small network? Do we geo-block the UK for chat and voice, or accept the duties (illegal-content risk assessment, reporting, complaints)? We propose to decide before messages ship; it does not affect the core.
 
+## O14a. Looking for group and shared media (0.3.0)
+
+**OPERATOR AGENT: update the legal privacy page for LFG listings and shared screenshots/clips** (data inventory sections 7.2a and 7.2b). Questions for the lawyer: (1) a screenshot or clip is user content that the cloud stores for 30 days and cannot inspect: is the report-and-hold path enough, and may the cloud keep a held file for a year (`retention_open_reports_days`)? (2) A looking-for-group listing shows a handle and a free note to strangers who have the same game: is a note without links and with a report button enough for minors (see O2)? (3) Does the media folder need the erasure period of backups (G10)?
+
 ## O15. Transfers and location
 
 The research says data, logs and backups stay in the EU. We could not confirm this per provider (no provider is chosen). **Question:** the checklist per provider: servers, support access from outside the EU, sub-processors, logs.

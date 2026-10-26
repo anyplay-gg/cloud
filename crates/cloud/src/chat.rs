@@ -651,6 +651,7 @@ fn message(conversation: &str, row: MessageRow) -> Message {
         deleted: row.deleted_ms.is_some(),
         reactions: Vec::new(),
         rev: u(row.rev),
+        media: None,
     }
 }
 
@@ -704,6 +705,7 @@ async fn fetch(
         messages.reverse();
     }
     add_reactions(conn, conversation, viewer, &mut messages).await?;
+    crate::media::attach(conn, conversation, &mut messages, crate::util::now_ms()).await?;
     Ok(messages)
 }
 

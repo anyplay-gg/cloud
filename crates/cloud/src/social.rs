@@ -218,7 +218,9 @@ impl Inner {
         .await?;
         chat::sweep_retention(&mut conn, cut).await?;
         chat::sweep_empty(&mut conn, cut).await?;
+        crate::lfg::sweep(&mut conn, now_ms.saturating_sub(DAY_MS)).await?;
         drop(conn);
+        self.sweep_media(now_ms).await?;
         self.sweep_feed().await?;
         Ok(())
     }

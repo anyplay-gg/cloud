@@ -71,6 +71,15 @@ pub struct Rates {
     /// `discord_grant_window`. A player needs one about every seven days.
     pub discord_grants_per_account: u32,
     pub discord_grant_window: Duration,
+    /// Listings one account may post per `lfg_window`, requests to join it may make, and reads
+    /// of the listing board.
+    pub lfg_posts: u32,
+    pub lfg_asks: u32,
+    pub lfg_reads: u32,
+    pub lfg_window: Duration,
+    /// Screenshots and clips one account may upload per `media_window`.
+    pub media_uploads: u32,
+    pub media_window: Duration,
 }
 
 impl Default for Rates {
@@ -117,6 +126,12 @@ impl Default for Rates {
             run_report_window: Duration::from_secs(60 * 60),
             discord_grants_per_account: 10,
             discord_grant_window: Duration::from_secs(60 * 60),
+            lfg_posts: 6,
+            lfg_asks: 30,
+            lfg_reads: 60,
+            lfg_window: Duration::from_secs(10 * 60),
+            media_uploads: 20,
+            media_window: Duration::from_secs(60 * 60),
         }
     }
 }

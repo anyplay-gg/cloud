@@ -665,6 +665,11 @@ pub async fn edit(
     if target.stored.deleted() {
         return Err(AppError::bad_request("An unsent message cannot be edited."));
     }
+    if crate::media::of_message(&mut tx, &id, seq).await?.is_some() {
+        return Err(AppError::bad_request(
+            "A screenshot or clip has no text to edit. Unsend it instead.",
+        ));
+    }
     let now = now_ms();
     if now - target.stored.created_ms > (EDIT_WINDOW_SECS * 1000) as i64 {
         return Err(AppError::forbidden(
@@ -710,6 +715,15 @@ pub async fn unsend(
         revision = Some(revise(&mut tx, &id, seq).await?);
     }
     tx.commit().await?;
+    if revision.is_some() {
+        // A screenshot or clip is out of reach at once and kept a week for a report, like the
+        // text of an unsent message (ADR 0030).
+        if let Err(error) =
+            crate::media::unsent(&state, &id, seq, anyplay_api::REPORT_HOLD_SECS).await
+        {
+            tracing::error!(%error, "cannot remove the file of an unsent message");
+        }
+    }
     if let Some(rev) = revision {
         announce(&state, &id, seq, rev, &target);
     }
