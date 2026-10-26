@@ -1,8 +1,13 @@
 # The website next to the cloud, on the same host name. Optional: add it with
 #   COMPOSE_FILE=compose.yaml:compose.web.yaml   (in .env, so update.sh and every compose call see it)
-# and a checkout of anyplaynet/web beside cloud/ and network/ (or WEB_DIR pointing at one).
+# and the image, either prebuilt or built from a checkout of anyplaynet/web beside cloud/ and network/
+# (or WEB_DIR pointing at one):
+#   - WEB_IMAGE=ghcr.io/anyplaynet/web@sha256:...  runs that image (docker compose pull web, then up).
+#     update.sh --web-image pulls and checks it, and tags it anyplay-web, the default name below.
+#   - without WEB_IMAGE the image is built from the checkout and tagged anyplay-web.
 services:
   web:
+    image: ${WEB_IMAGE:-anyplay-web}
     build:
       context: ${WEB_DIR:-../../web}
     restart: unless-stopped
