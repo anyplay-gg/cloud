@@ -206,6 +206,8 @@ impl Launcher {
                 build: "0.1.3".into(),
                 join: None,
                 host: Some(host),
+                version_rule: Default::default(),
+                override_version: false,
             })
             .await
             .expect("hosted game start");
@@ -232,6 +234,8 @@ impl Launcher {
                 build: "0.1.3".into(),
                 join,
                 host: None,
+                version_rule: Default::default(),
+                override_version: false,
             })
             .await
             .expect("game start");
@@ -456,17 +460,49 @@ async fn meet_and_play(alice_relay: AliceRelay) -> Link {
             title_id: TITLE.into(),
             version: "01.050".into(),
             build: "0.1.3".into(),
+            version_rule: Default::default(),
+            override_version: false,
         })
         .await
         .unwrap_err();
     assert_eq!(mismatch.code, "version_mismatch");
     assert_eq!(mismatch.expected.unwrap().version, "01.000");
+    // The launcher's table can let a patch through, and the player can try anyway; the build still counts.
+    for (rule, over) in [
+        (anyplay_control::anyplay_api::VersionRule::Major, false),
+        (anyplay_control::anyplay_api::VersionRule::Exact, true),
+    ] {
+        bobby
+            .ok(Command::CheckJoin {
+                session: session.clone(),
+                title_id: TITLE.into(),
+                version: "01.050".into(),
+                build: "0.1.3".into(),
+                version_rule: rule,
+                override_version: over,
+            })
+            .await;
+    }
+    let wrong_build = bobby
+        .call::<serde_json::Value>(Command::CheckJoin {
+            session: session.clone(),
+            title_id: TITLE.into(),
+            version: "01.050".into(),
+            build: "9.9.9".into(),
+            version_rule: anyplay_control::anyplay_api::VersionRule::Any,
+            override_version: true,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(wrong_build.code, "version_mismatch");
     bobby
         .ok(Command::CheckJoin {
             session: session.clone(),
             title_id: TITLE.into(),
             version: "01.000".into(),
             build: "0.1.3".into(),
+            version_rule: Default::default(),
+            override_version: false,
         })
         .await;
 
@@ -731,6 +767,8 @@ async fn friends_play_together_by_broadcast_and_the_session_ends_with_its_host()
             title_id: TITLE.into(),
             version: "01.000".into(),
             build: "0.1.3".into(),
+            version_rule: Default::default(),
+            override_version: false,
         })
         .await;
     let game_b = bobby.start_game(Some(session.clone())).await;
