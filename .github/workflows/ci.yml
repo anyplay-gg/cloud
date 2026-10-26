@@ -31,9 +31,9 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            runner: blacksmith-8vcpu-windows-2025
+            runner: windows-latest
           - os: ubuntu-latest
-            runner: blacksmith-8vcpu-ubuntu-2404
+            runner: ubuntu-latest
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.runner }}
     defaults:
@@ -78,7 +78,7 @@ jobs:
   # (docs/adr/0003-postgres-for-a-cluster.md), and tests/cluster.rs with two nodes that share
   # the database and tell each other about changes over NATS (docs/adr/0004).
   postgres:
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     services:
       postgres:
         # postgres:18-alpine, pinned by digest.
@@ -151,7 +151,7 @@ jobs:
         run: ./test-backup.sh
 
   docker:
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
