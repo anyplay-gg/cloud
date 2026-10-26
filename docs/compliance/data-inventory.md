@@ -301,7 +301,7 @@ Discord tokens are not stored (`discord_sdk.rs`); login tokens from linking are 
 
 | What | Detail |
 |---|---|
-| Tables | `lfg_listings` (poster, game title ID, mode, language, a note of at most 140 characters without links, slots, times, closed time) and `lfg_requests` (listing, account that asked, times, accepted time), migration 0025 |
+| Tables | `lfg_listings` (poster, game title ID, mode, language, a note of at most 140 characters without links, slots, times, closed time) and `lfg_requests` (listing, account that asked, times, accepted time), migration 0026 |
 | Purpose | A player says they look for others to play a game with; others who have the game ask to join; the poster accepts them into their party. |
 | Basis (proposed) | Art. 6(1)(b), the feature the player chose to use; the note is what the player chose to write. |
 | Who sees it | Every signed-in player who asks for the board of that game and is not blocked either way with the poster: handle, account ID, game, mode, language, note, places. The cloud cannot tell who owns the game; that is the launcher's filter, not a rule. The poster sees who asked. A player who asked sees their own request. |
@@ -314,7 +314,7 @@ Discord tokens are not stored (`discord_sdk.rs`); login tokens from linking are 
 
 | What | Detail |
 |---|---|
-| Tables and files | `media` (file ID, conversation and message number, sender, kind, type, size, picture size, length, times, removed time, hold time; migration 0026) and the file itself in `media_dir` under a random 128-bit key. |
+| Tables and files | `media` (file ID, conversation and message number, sender, kind, type, size, picture size, length, times, removed time, hold time; migration 0027) and the file itself in `media_dir` under a random 128-bit key. |
 | Purpose | A player sends a screenshot or clip of their game to one friend, who sees it in the conversation. |
 | Basis (proposed) | Art. 6(1)(b) for the feature the player used. |
 | Content | Whatever the player chose to send. The cloud checks the file type, size and (for a clip) length. **It does not look at the picture** and does not remove metadata; a screenshot made by the launcher has none. |
