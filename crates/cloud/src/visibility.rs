@@ -36,6 +36,29 @@ impl Viewing {
         self.relation
     }
 
+    /// What the owner shows on a public profile page. A stranger sees the avatar, the trophies
+    /// and the playtime the owner shows to friends too, because the owner turned the page on;
+    /// a part the owner shows to nobody stays hidden, and so does the text and the favourites
+    /// unless the owner shows them to everyone. Every other relation sees what it always saw.
+    pub fn on_public_page(self) -> Self {
+        if self.relation != Relation::Stranger {
+            return self;
+        }
+        let lift = |audience| match audience {
+            Audience::Friends => Audience::Everyone,
+            other => other,
+        };
+        Self {
+            privacy: Privacy {
+                trophies: lift(self.privacy.trophies),
+                avatar: lift(self.privacy.avatar),
+                playtime: lift(self.privacy.playtime),
+                ..self.privacy
+            },
+            ..self
+        }
+    }
+
     /// True when the viewer may see `part`.
     pub fn can(&self, part: Part) -> bool {
         self.can_see(self.privacy.audience(part))
@@ -87,6 +110,25 @@ pub async fn viewing_as(pool: &Pool, viewer: Option<u64>, owner: u64) -> sqlx::R
             seen => Ok(seen),
         },
     }
+}
+
+/// What a viewer sees on the public page of `owner` ([`viewing_as`]), or `None` when there is no
+/// page for them: a player who is not the viewer and not their friend gets the page only if the
+/// player turned the public profile on. A viewer who is blocked either way counts as a stranger
+/// (see [`viewing_as`]), so the block does not show.
+pub async fn public_page(
+    pool: &Pool,
+    viewer: Option<u64>,
+    owner: u64,
+) -> sqlx::Result<Option<Viewing>> {
+    let seen = viewing_as(pool, viewer, owner).await?;
+    if seen.relation() != Relation::Stranger {
+        return Ok(Some(seen));
+    }
+    if !db::public_profile(pool, owner).await? {
+        return Ok(None);
+    }
+    Ok(Some(seen.on_public_page()))
 }
 
 /// How `viewer` stands to each of `owners` and what each shows, in three queries on one

@@ -285,6 +285,10 @@ pub fn router() -> Router<AppState> {
             get(social::my_appear_offline).put(social::set_appear_offline),
         )
         .route(
+            "/me/public-profile",
+            get(social::my_public_profile).put(social::set_public_profile),
+        )
+        .route(
             "/me/avatar",
             put(social::set_avatar).delete(social::remove_avatar),
         )

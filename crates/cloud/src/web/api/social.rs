@@ -26,7 +26,7 @@ use crate::http::{ApiJson, Auth, ClientIp};
 use crate::links;
 use crate::routes::{accounts, friends, profiles, trophies};
 use crate::state::AppState;
-use crate::visibility::{Relation, viewing_as};
+use crate::visibility::{Relation, public_page, viewing_as};
 use crate::web::existing;
 
 /// The token of a request that came with a browser session: the account, no device.
@@ -175,6 +175,26 @@ pub async fn set_appear_offline(
     )
 }
 
+/// `GET /me/public-profile`
+pub async fn my_public_profile(State(state): State<AppState>, member: Member) -> ApiResult {
+    Ok(accounts::get_public_profile(State(state), auth_of(&member))
+        .await?
+        .into_response())
+}
+
+/// `PUT /me/public-profile`
+pub async fn set_public_profile(
+    State(state): State<AppState>,
+    member: Member,
+    ApiJson(body): ApiJson<accounts::PublicProfile>,
+) -> ApiResult {
+    Ok(
+        accounts::set_public_profile(State(state), auth_of(&member), ApiJson(body))
+            .await?
+            .into_response(),
+    )
+}
+
 /// `PUT /me/avatar`: the body is the picture, a PNG or JPEG file.
 pub async fn set_avatar(
     State(state): State<AppState>,
@@ -317,7 +337,9 @@ pub async fn user(
     limit_public(&state, ip)?;
     let viewer_id = viewer(&state, &headers).await;
     let owner = owner_of(&state, &name).await?;
-    let seen = viewing_as(&state.db, viewer_id, owner.id()).await?;
+    let Some(seen) = public_page(&state.db, viewer_id, owner.id()).await? else {
+        return Err(AppError::not_found().into());
+    };
     let profile = profiles::profile_seen(&state, &seen, owner.id()).await?;
     let trophies = if seen.can(Part::Trophies) {
         Some(db::trophy_counts(&state.db, owner.id(), viewer_id.unwrap_or(0)).await?)
@@ -373,7 +395,9 @@ pub async fn user_trophies(
     limit_public(&state, ip)?;
     let viewer_id = viewer(&state, &headers).await;
     let owner = owner_of(&state, &name).await?;
-    let seen = viewing_as(&state.db, viewer_id, owner.id()).await?;
+    let Some(seen) = public_page(&state.db, viewer_id, owner.id()).await? else {
+        return Err(AppError::not_found().into());
+    };
     if !seen.can(Part::Trophies) {
         return Err(AppError::not_found().into());
     }

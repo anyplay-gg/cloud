@@ -232,6 +232,7 @@ async fn a_public_profile_shows_each_viewer_what_the_player_shows_them() {
     let (alec, bob) = cloud.friends("Alec", "Bob").await;
     let cleo = cloud.sign_up("Cleo").await;
     let dave = cloud.sign_up("Dave").await;
+    cloud.show_page(&alec).await;
     cloud
         .patch(
             "/v1/me/profile",
@@ -308,7 +309,8 @@ async fn a_public_profile_shows_each_viewer_what_the_player_shows_them() {
     assert_eq!(own["trophies"]["bronze"], 1);
     assert_eq!(own["favourites"], json!(["PPSA01234"]));
 
-    // Once the trophies are shown to friends, the friend sees them and the stranger does not.
+    // Once the trophies are shown to friends, the friend sees them. The stranger does too, because
+    // the page is public (see the test of the switch below).
     cloud
         .put(
             "/v1/me/privacy",
@@ -322,8 +324,8 @@ async fn a_public_profile_shows_each_viewer_what_the_player_shows_them() {
         1
     );
     assert_eq!(
-        stranger.get("/users/alec").await.ok(200)["trophies"],
-        Value::Null
+        stranger.get("/users/alec").await.ok(200)["trophies"]["bronze"],
+        1
     );
 
     // A block does not show on the page: whoever is blocked, either way, sees exactly what a
@@ -386,6 +388,108 @@ async fn a_public_profile_shows_each_viewer_what_the_player_shows_them() {
         .await
         .error(404, "not_found");
     out.get("/users/a%20b").await.error(404, "not_found");
+}
+
+#[tokio::test]
+async fn the_public_page_is_off_until_the_player_turns_it_on() {
+    let cloud = TestCloud::start().await;
+    let (alec, bob) = cloud.friends("Alec", "Bob").await;
+    let cleo = cloud.sign_up("Cleo").await;
+    upload_trophies(
+        &cloud,
+        &alec,
+        "PPSA01234",
+        json!([{"number": 1, "grade": "bronze", "earned": 1_700_000_000u64}]),
+    )
+    .await;
+    cloud
+        .patch(
+            "/v1/me/profile",
+            alec.token(),
+            json!({"about": "Hello.", "favourites": ["PPSA01234"]}),
+        )
+        .await
+        .ok(200);
+    let alecs = Portal::signed_in(&cloud, &alec).await;
+    let out = Portal::new(&cloud);
+    let stranger = Portal::signed_in(&cloud, &cleo).await;
+    let friend = Portal::signed_in(&cloud, &bob).await;
+
+    // Off: the setting reads false, and the page is there for the player and friends only. A
+    // visitor, a stranger and a trophy list all get the same 404 as for a handle nobody has.
+    assert_eq!(
+        alecs.get("/me/public-profile").await.ok(200)["public_profile"],
+        false
+    );
+    out.get("/users/alec").await.error(404, "not_found");
+    stranger.get("/users/alec").await.error(404, "not_found");
+    out.get("/users/alec/trophies")
+        .await
+        .error(404, "not_found");
+    friend.get("/users/alec").await.ok(200);
+    alecs.get("/users/alec").await.ok(200);
+
+    // On: the level, the trophy counts and the games played show, although the player kept the
+    // defaults (friends). The text and the favourites stay with friends.
+    let set = alecs
+        .send(
+            Method::PUT,
+            "/me/public-profile",
+            json!({"public_profile": true}),
+        )
+        .await
+        .ok(200);
+    assert_eq!(set["public_profile"], true);
+    assert_eq!(
+        cloud
+            .get("/v1/me/public-profile", alec.token())
+            .await
+            .ok(200)
+            .body["public_profile"],
+        true
+    );
+    for who in [&out, &stranger] {
+        let page = who.get("/users/alec").await.ok(200);
+        assert_eq!(page["trophies"]["bronze"], 1);
+        assert!(page["level"]["level"].is_number());
+        assert_eq!(page["about"], Value::Null);
+        assert_eq!(page["favourites"], Value::Null);
+    }
+
+    // A part the player shows to nobody stays hidden on the public page.
+    cloud
+        .put(
+            "/v1/me/privacy",
+            alec.token(),
+            Some(json!({"trophies": "nobody"})),
+        )
+        .await
+        .ok(200);
+    let page = out.get("/users/alec").await.ok(200);
+    assert_eq!(page["trophies"], Value::Null);
+    assert_eq!(page["level"], Value::Null);
+    out.get("/users/alec/trophies")
+        .await
+        .error(404, "not_found");
+
+    // Off again: gone for strangers at once.
+    alecs
+        .send(
+            Method::PUT,
+            "/me/public-profile",
+            json!({"public_profile": false}),
+        )
+        .await
+        .ok(200);
+    out.get("/users/alec").await.error(404, "not_found");
+    // Nobody else can set it.
+    out.send(
+        Method::PUT,
+        "/me/public-profile",
+        json!({"public_profile": true}),
+    )
+    .await
+    .error(401, "unauthorized");
 }
 
 #[tokio::test]
@@ -464,7 +568,8 @@ async fn trophies_are_counts_per_title_and_follow_the_privacy() {
 #[tokio::test]
 async fn public_reads_are_limited_per_address() {
     let cloud = TestCloud::with(|_| {}, |t| t.rates.portal_public = 3).await;
-    cloud.sign_up("Alec").await;
+    let alec = cloud.sign_up("Alec").await;
+    cloud.show_page(&alec).await;
     let portal = Portal::new(&cloud);
     for _ in 0..3 {
         portal.get("/users/alec").await.ok(200);
