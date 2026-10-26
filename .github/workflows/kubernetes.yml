@@ -90,7 +90,7 @@ jobs:
             deploy/helm/ci/postgres.yaml deploy/helm/examples/cnpg-cluster.yaml
 
   kind:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 60
     needs: lint
     steps:
