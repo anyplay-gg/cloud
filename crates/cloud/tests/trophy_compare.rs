@@ -431,7 +431,10 @@ async fn the_portal_compares_and_shows_points_and_levels() {
     assert_eq!(user["trophies"]["silver"], 0);
     let theirs = a.get("/users/sam/trophies").await.ok(200);
     assert_eq!(theirs["points"], 10);
-    // A visitor who is not signed in sees a stranger's view: nothing of friends-only trophies.
+    // A visitor who is not signed in gets no page while Sam keeps it off, and once it is on
+    // the trophies Sam shows to friends show on it.
+    out.get("/users/sam").await.error(404, "not_found");
+    cloud.show_page(&sam).await;
     let page = out.get("/users/sam").await.ok(200);
-    assert!(page["level"].is_null() && page["trophies"].is_null());
+    assert_eq!(page["level"]["points"], 10);
 }

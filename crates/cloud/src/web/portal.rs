@@ -28,7 +28,7 @@ use super::guard;
 use crate::error::AppError;
 use crate::http::ClientIp;
 use crate::state::AppState;
-use crate::visibility::viewing_as;
+use crate::visibility::public_page;
 
 /// The routes of the app that `index.html` answers. A route ending in `/{*rest}` also answers
 /// its deeper paths.
@@ -228,8 +228,11 @@ async fn profile_shell(
         let Ok(owner) = owner_of(&state, &name).await else {
             return Ok(html(StatusCode::NOT_FOUND, page));
         };
-        // What a signed-out visitor sees, whoever asks: the tags go to link previews.
-        let seen = viewing_as(&state.db, None, owner.id()).await?;
+        // What a signed-out visitor sees, whoever asks: the tags go to link previews. A player
+        // who keeps the page off has none.
+        let Some(seen) = public_page(&state.db, None, owner.id()).await? else {
+            return Ok(html(StatusCode::NOT_FOUND, page));
+        };
         let about = if seen.can(Part::About) {
             crate::db::profiles::profile_of(&state.db, owner.id())
                 .await?
