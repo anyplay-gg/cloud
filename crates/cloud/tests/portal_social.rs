@@ -233,6 +233,8 @@ async fn a_public_profile_shows_each_viewer_what_the_player_shows_them() {
     let cleo = cloud.sign_up("Cleo").await;
     let dave = cloud.sign_up("Dave").await;
     cloud.show_page(&alec).await;
+    cloud.show_page(&cleo).await;
+    cloud.show_page(&dave).await;
     cloud
         .patch(
             "/v1/me/profile",
@@ -544,6 +546,7 @@ async fn trophies_are_counts_per_title_and_follow_the_privacy() {
         .get("/users/alec/trophies")
         .await
         .error(404, "not_found");
+    cloud.show_page(&alec).await;
     cloud
         .put(
             "/v1/me/privacy",
