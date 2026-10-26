@@ -133,6 +133,8 @@ Built (see [inventory section 7](data-inventory.md#7-the-social-layer)). One act
 | Messages | Deliver messages | Players | Text, sender, time, read marks | Conversation members; moderators on a report | 30 days after sending; own messages on deletion |
 | Feed | Tell friends what happened | Players | Items, reactions, list of titles seen | Friends | Items 90 days; list for the life of the account |
 | Parties, calls, sessions, join codes | Play and talk together | Players | Handle, endpoint, relay, address, voice flag, missed calls | Members, friends of members, holders of a join code | Minutes to 30 days |
+| Looking for group | Find players for a game | Players | Handle, game, mode, language, a short note, requests | Players with the same game, not blocked | 1 hour, deleted a day after |
+| Screenshots and clips to a friend | Share a capture with one friend | Players | The file, type, size, length, times | The chosen friend; moderators when reported | 30 days; 7 days if unsent; held while a report is open |
 | Notifications | Push notices | Players who switch them on | Push address and keys | The browser maker's push service | Until switched off |
 
 ## Security measures, general (Art. 30(1)(g))

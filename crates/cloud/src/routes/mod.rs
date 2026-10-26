@@ -25,6 +25,8 @@ pub mod events;
 pub mod feed;
 pub mod friends;
 pub mod join_codes;
+pub mod lfg;
+pub mod media;
 pub mod messages;
 pub mod misc;
 pub mod moderation;
@@ -136,6 +138,15 @@ pub fn router(state: AppState) -> Router {
             path::CONVERSATION,
             get(messages::get).delete(messages::leave),
         )
+        .route(path::CONVERSATION_MEDIA, post(media::upload))
+        .route(path::MEDIA, get(media::download))
+        .route(path::MOD_MEDIA, get(media::moderate))
+        .route(path::LFG, get(lfg::board).post(lfg::create))
+        .route(path::LFG_MINE, get(lfg::mine))
+        .route(path::LFG_LISTING, delete(lfg::close))
+        .route(path::LFG_ASK, post(lfg::ask).delete(lfg::withdraw))
+        .route(path::LFG_REQUEST, delete(lfg::decline))
+        .route(path::LFG_REQUEST_ACCEPT, post(lfg::accept))
         .route(path::CONVERSATION_ACCEPT, post(messages::accept))
         .route(path::CONVERSATION_MEMBERS, post(messages::add_members))
         .route(
@@ -275,12 +286,16 @@ impl Guard {
     }
 }
 
-/// Routes left out of both limits. The event connection lives for hours: its handler answers the
+/// Routes left out of both limits. The media routes carry files of up to 100 MB and have a
+/// deadline and a cap of their own (`routes::media`). The event connection lives for hours: its handler answers the
 /// upgrade at once and the socket runs on a task of its own, but it stays out so that stays true.
 /// The health checks must answer exactly when the node is loaded: a shed liveness probe would make
 /// the orchestrator restart the pod then.
 fn is_exempt(route: &str) -> bool {
-    matches!(route, path::EVENTS | HEALTH | READY)
+    matches!(
+        route,
+        path::EVENTS | HEALTH | READY | path::CONVERSATION_MEDIA | path::MEDIA | path::MOD_MEDIA
+    )
 }
 
 async fn guard(State(guard): State<Arc<Guard>>, request: Request, next: Next) -> Response {

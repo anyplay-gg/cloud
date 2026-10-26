@@ -543,6 +543,7 @@ impl Inner {
         // Sessions and invitations first, while their members can still be told.
         let dirty = self.leave_everything(account).await?;
         self.forget_conversations(account).await?;
+        self.forget_media(account).await?;
         self.news.close_account(
             account,
             &Event::SignedOut,

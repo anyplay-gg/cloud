@@ -151,6 +151,38 @@ pub async fn file_report(state: &AppState, reporter: u64, request: api::Report) 
             content.push_str(&format!("\n(earlier text {}:)\n{before}", k + 1));
         }
     }
+    if let Some(listing) = &request.listing {
+        let row = crate::lfg::listing(&mut conn, listing)
+            .await?
+            .filter(|row| row.poster() == target)
+            .ok_or_else(AppError::not_found)?;
+        content.push_str(&format!(
+            "\nlooking-for-group listing {} (game {}, mode {}, posted {}):\n{}",
+            row.id,
+            row.title_id,
+            row.mode,
+            row.created_ms / 1000,
+            row.note
+        ));
+    }
+    if let (Some(conversation), Some(seq)) = (&request.conversation, request.seq) {
+        // A report that names a screenshot or clip keeps the file for the moderators for as long
+        // as an undecided report lives.
+        let until = (now() + state.config.retention_open_reports_days * DAY) as i64 * 1000;
+        if let Some(media) = crate::media::hold(&mut conn, conversation, seq, until).await? {
+            content.push_str(&format!(
+                "\nmedia {} ({}, {} bytes) is held for moderators{}",
+                media.id,
+                media.kind,
+                media.bytes,
+                if media.removed_ms.is_some() {
+                    "; the sender unsent it"
+                } else {
+                    ""
+                }
+            ));
+        }
+    }
     store::insert_report(
         &mut conn,
         &store::NewReport {
@@ -344,6 +376,7 @@ pub async fn act(state: &AppState, actor: &Actor, request: ActionRequest) -> Res
     if request.kind == ActionKind::Ban {
         let hash = state.ban_key.hash(&account.email);
         store::upsert_ban(&mut tx, target, &hash, until, &reason, id, created).await?;
+        crate::lfg::forget_account(&mut tx, target, crate::util::now_ms()).await?;
     }
     let audit_action = match request.kind {
         ActionKind::Warning => AuditAction::Warned,

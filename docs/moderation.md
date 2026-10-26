@@ -52,6 +52,16 @@ anyplay-cloud admin log [--limit N]
 - A ban signs the account out on every node at once, takes it out of its sessions and stops the same e-mail address from signing up, even after the account is deleted. Without `--days` it is for good.
 - A mute stops friend requests and messages, also to friends. The player can still play, accept requests and read.
 
+### Listings and shared media in reports
+
+A report may also name a **looking-for-group listing** (`listing`; the reported account must be its poster) or a **message that carries a screenshot or clip** (`conversation` and `seq`, as for any message).
+
+- A listing report saves the listing's game, mode, time and note in the snapshot. Listings are swept a day after they close, so the snapshot is what a moderator reads later.
+- A media report **holds the file**: it stays in the media folder, out of the sender's and the friend's reach, until the report is swept (`retention_open_reports_days`, 365 by default, counted from the report). A moderator opens it with `GET /v1/moderation/media/{id}` (a moderator's token or the admin token), which serves only held files. The media ID is in the report's text.
+- A sender who **unsends** a screenshot or clip removes it for the friend at once. Like the text of an unsent message, the file is kept 7 days for a report and then deleted; a report within that week holds it as above.
+- A ban closes the account's listings and drops its requests. A muted account cannot post or ask.
+- Without a report a media file is deleted 30 days after it was sent, with the message.
+
 ### What a report holds
 
 The report keeps the reporter and the reported account with the handles they had, the reason, the reporter's text, the time, and a **snapshot of what was reported**: the reported handle and the account's creation time and, when the reporter names a message (`conversation` and `seq`), its text. The reporter must be in that conversation and able to read the message, and the account reported must have written it. The snapshot stays when the message is swept by its retention or the account is deleted; that is its point, and the lawyer should know that it holds message text for as long as the report does. It does not vanish when an account is deleted:

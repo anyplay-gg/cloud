@@ -58,6 +58,11 @@ pub struct Config {
     /// `text` or `json`.
     pub log_format: LogFormat,
     pub data_dir: PathBuf,
+    /// Where uploaded screenshots and clips are kept. Absent: `data_dir/media`. With more than
+    /// one node it must be a folder they share.
+    pub media_dir: Option<PathBuf>,
+    /// The most bytes of unexpired screenshots and clips one account may have in the cloud.
+    pub media_account_bytes: u64,
     /// A file that holds the signing key. The cloud only reads it: it never creates it and never
     /// writes `signing.pub` next to it, so it can be a read-only secret mount. Without it the key
     /// lives in `data_dir`.
@@ -175,6 +180,8 @@ impl Default for Config {
             drain_seconds: 5,
             log_format: LogFormat::Text,
             data_dir: PathBuf::from("data"),
+            media_dir: None,
+            media_account_bytes: 1024 * 1024 * 1024,
             signing_key_file: None,
             database_url: None,
             database_connections: 16,
@@ -288,6 +295,12 @@ impl Config {
         }
         if let Some(v) = get("DATA_DIR") {
             self.data_dir = v.into();
+        }
+        if let Some(v) = get("MEDIA_DIR") {
+            self.media_dir = Some(v.into());
+        }
+        if let Some(v) = get("MEDIA_ACCOUNT_BYTES") {
+            self.media_account_bytes = parse("MEDIA_ACCOUNT_BYTES", &v)?;
         }
         if let Some(v) = get("SIGNING_KEY_FILE") {
             self.signing_key_file = Some(v.into());
@@ -441,6 +454,9 @@ impl Config {
         }
         if self.message_retention_days == 0 {
             bail!("message_retention_days must be at least 1");
+        }
+        if self.media_account_bytes < anyplay_api::MAX_CLIP_BYTES {
+            bail!("media_account_bytes must be at least 104857600 (one clip)");
         }
         if self.feed_retention_days == 0 {
             bail!("feed_retention_days must be at least 1");

@@ -406,6 +406,8 @@ fn on_text(ctx: &Ctx, text: &str) {
         Ok(Event::ConversationGone { .. }) => rec.event("conversation_gone"),
         Ok(Event::Feed) => rec.event("feed"),
         Ok(Event::AppearOffline { .. }) => rec.event("appear_offline"),
+        Ok(Event::LfgRequest { .. }) => rec.event("lfg_request"),
+        Ok(Event::LfgAccepted { .. }) => rec.event("lfg_accepted"),
         Ok(Event::Action { .. }) => rec.event("action"),
         Ok(Event::MissedCall { .. }) => rec.event("missed_call"),
         Ok(Event::MissedCallGone { .. }) => rec.event("missed_call_gone"),

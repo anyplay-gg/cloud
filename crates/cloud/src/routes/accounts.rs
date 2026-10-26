@@ -128,6 +128,8 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
         };
         (conversations, messages, party)
     };
+    let lfg = crate::lfg::export(&mut *state.db.acquire().await?, account_id).await?;
+    let media_sent = crate::routes::media::export(state, account_id).await?;
     let passkeys = crate::web::store::passkeys_of(&state.db, account_id).await?;
     let notifications = crate::push::subscriptions_of(&state.db, account_id).await?;
     let linked = crate::links::rows_of(&state.db, account_id).await?;
@@ -209,6 +211,8 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
             "item": item, "reaction": reaction, "created": created,
         })).collect::<Vec<_>>(),
         "party": party,
+        "looking_for_group": lfg,
+        "media_sent": media_sent,
         "conversations": conversations,
         "message_reactions": message_reactions.iter().map(|(conversation, seq, reaction)| json!({
             "conversation": conversation, "seq": seq, "reaction": reaction,
