@@ -2,7 +2,7 @@
 
 The Helm chart in [`deploy/helm/anyplay-cloud`](../deploy/helm/anyplay-cloud) runs the cloud as a cluster: several nodes of one program behind one Service, sharing a PostgreSQL database and a NATS server ([architecture](ARCHITECTURE.md), stage 5). A workflow ([`kubernetes.yml`](../.github/workflows/kubernetes.yml)) installs it into a kind cluster on every change and checks that it answers, also while a pod is deleted.
 
-For one machine and a handful of players, [`docker compose`](../README.md#host-your-own) is simpler and enough.
+For one machine and a handful of players, [`docker compose`](self-hosting.md) is simpler and enough.
 
 ## What you need first
 
@@ -139,7 +139,7 @@ Losing the key signs everybody out and makes every relay refuse its players unti
 
 ## Sizing
 
-These are starting points, not measurements; the load harness (stage 6) will replace them with numbers.
+These are starting points, not measurements; the load harness (stage 6, [numbers so far](LOAD.md)) is the way to replace them with numbers from your cluster.
 
 - **Nodes**: two for availability, from the first day. Add nodes for connections, not for requests: each player holds one WebSocket, and memory per connection is small. Start with the default requests (250m CPU, 256 Mi) and watch `anyplay_cloud_event_connections` per node and CPU.
 - **Autoscaling** on CPU is a rough fit, since idle connections cost little. Scale-in is slow on purpose (one node per five minutes): a node that goes away makes every player on it reconnect. Do not let it scale in during an evening peak.

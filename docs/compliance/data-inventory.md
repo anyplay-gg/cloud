@@ -295,7 +295,7 @@ Discord tokens are not stored (`discord_sdk.rs`); login tokens from linking are 
 | Limits | 5 unanswered messages to a stranger; an account younger than 24 hours cannot write first to a stranger; a muted account cannot write. |
 | On deletion | The player's own messages are deleted. **A direct conversation is deleted whole, with the other person's messages.** Group conversations keep what others wrote. |
 | Export | The player's own messages and the conversations; **not** what others wrote to the player. |
-| Not built | Attachments other than the screenshots and clips of section 7.2b. Reactions, edit and unsend are in an open pull request (cloud#74) and must be added here when merged. |
+| Not built | Attachments other than the screenshots and clips of section 7.2b. Reactions, edit and unsend were merged with cloud#74 and still have to be described in this section. |
 
 ### 7.2a Looking for group listings
 

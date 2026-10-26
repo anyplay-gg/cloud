@@ -17,6 +17,9 @@ Everything in the [cloud API](https://github.com/anyplaynet/network/blob/main/sp
 | Relays | Signed tickets that let one endpoint use one relay for 24 hours. Relays check them offline and never call the cloud. | works |
 | Moderation | Reports, bans per account and e-mail address, rate limits on every route, and an admin command line. | works |
 | Parties and messages | Parties with a leader and members, and text messages in one-to-one and group conversations. A message from someone who is not a friend waits in the receiver's message requests. Voice and calls run between players, not through the cloud. | works |
+| Find Players | Listings that look for people to play a game with. A listing lives for an hour; other players ask to join, and the poster accepts or declines. | works |
+| Screenshots and clips | A screenshot (up to 10 MB) or a clip (up to 100 MB, 60 seconds) sent to a friend. The cloud keeps the file for 30 days and then deletes it ([disk and backups](deploy.md#screenshots-and-clips)). | works |
+| Voice signalling | A party member announces a voice endpoint and relay, and the other members read it with the party. The audio runs between players, not through the cloud. | works |
 | Matchmaking, leaderboards, save backups | | planned |
 
 ## How it is built
@@ -24,7 +27,7 @@ Everything in the [cloud API](https://github.com/anyplaynet/network/blob/main/sp
 - **Requests and events.** The net service calls a small JSON API over HTTPS and holds one WebSocket that pushes events: a friend's presence, an invitation, a change in a session. Events are short, and the client reads the full state after each reconnect, so a lost event never leaves it wrong.
 - **Tokens.** The cloud signs its own tokens with Ed25519 ([`crates/ticket`](../crates/ticket)): access tokens that live 15 minutes, and relay tickets bound to one endpoint. A refresh token used twice signs the device out, because only a thief would do that.
 - **Relays.** [iroh](https://www.iroh.computer/) relays carry encrypted QUIC traffic between players and cannot read it. `anyplay-relay` admits an endpoint only with a ticket the cloud signed for it.
-- **One program, two shapes.** Self-hosters run one process with a SQLite file. AnyPlay's own cloud will run the same program on many nodes with PostgreSQL and NATS, and the same tests run on both ([ADR 0002](adr/0002-one-program-two-shapes.md)). The road from one process to a cluster is in [ARCHITECTURE.md](ARCHITECTURE.md).
+- **One program, two shapes.** Self-hosters run one process with a SQLite file. The same program can run on many nodes with PostgreSQL and NATS, and the same tests run on both ([ADR 0002](adr/0002-one-program-two-shapes.md)). The cloud at anyplaynet.com is one node today; the road to a cluster is in [ARCHITECTURE.md](ARCHITECTURE.md#stages).
 
 ## What the cloud never does
 
