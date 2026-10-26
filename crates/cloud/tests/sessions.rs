@@ -389,6 +389,74 @@ async fn joining_checks_blocks_then_visibility_then_version_then_capacity() {
         .is_error("forbidden", 403);
 }
 
+fn join_with(version: &str, build: &str, n: u8, extra: Value) -> Value {
+    let mut body = json!({"version": version, "build": build, "endpoint": endpoint(n)});
+    body.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    body
+}
+
+#[tokio::test]
+async fn the_version_guard_follows_the_rule_and_the_override_skips_only_the_version() {
+    let cloud = TestCloud::start().await;
+    let (a, b) = cloud.friends("Alec", "Sam").await;
+    let session = create(&cloud, &a, 1, 4, "friends").await;
+    let path = format!("/v1/sessions/{}/join", session.id);
+    // No rule is exact, as before the rule existed; saying so changes nothing.
+    for extra in [json!({}), json!({"version_rule": "exact"})] {
+        cloud
+            .post(&path, b.token(), join_with("01.050", "0.1.3", 2, extra))
+            .await
+            .is_error("version_mismatch", 409);
+    }
+    // A major rule does not reach across majors.
+    cloud
+        .post(
+            &path,
+            b.token(),
+            join_with("02.000", "0.1.3", 2, json!({"version_rule": "major"})),
+        )
+        .await
+        .is_error("version_mismatch", 409);
+    // Neither rule nor override touches the build.
+    cloud
+        .post(
+            &path,
+            b.token(),
+            join_with(
+                "01.050",
+                "9.9.9",
+                2,
+                json!({"version_rule": "any", "override_version": true}),
+            ),
+        )
+        .await
+        .is_error("version_mismatch", 409);
+    // The same major fits.
+    cloud
+        .post(
+            &path,
+            b.token(),
+            join_with("01.050", "0.1.3", 2, json!({"version_rule": "major"})),
+        )
+        .await
+        .ok(200);
+
+    // An explicit override joins across majors, whatever the rule says.
+    let (c, d) = cloud.friends("Carl", "Dee").await;
+    let session = create(&cloud, &c, 3, 4, "friends").await;
+    let path = format!("/v1/sessions/{}/join", session.id);
+    cloud
+        .post(
+            &path,
+            d.token(),
+            join_with("02.000", "0.1.3", 4, json!({"override_version": true})),
+        )
+        .await
+        .ok(200);
+}
+
 #[tokio::test]
 async fn invite_only_and_closed_sessions() {
     let cloud = TestCloud::start().await;
