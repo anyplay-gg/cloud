@@ -20,6 +20,9 @@ x-logging: &logging
 
 services:
   cloud:
+    # Every service has an image name of its own, so that update.sh --image can put a pulled image
+    # under it (a plain `docker compose build` gives the same names: project `anyplay` + service).
+    image: anyplay-cloud
     build:
       <<: *build
       target: cloud
@@ -57,6 +60,7 @@ services:
       - cloud-data:/data
 
   relay:
+    image: anyplay-relay
     build:
       <<: *build
       target: relay
@@ -97,6 +101,7 @@ services:
       - caddy-data:/caddy:ro
 
   caddy:
+    image: anyplay-caddy
     build:
       <<: *build
       target: caddy

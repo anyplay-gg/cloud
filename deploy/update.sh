@@ -4,11 +4,15 @@
 #
 #   cloud/deploy/update.sh [--cloud REF] [--network REF] [--pre-hook CMD] [--timeout SECONDS]
 #                          [--no-rollback] [--no-backup] [--dry-run]
+#   cloud/deploy/update.sh --cloud COMMIT --image sha256:... --relay-image sha256:... [--no-attestation]
+#                          [the options above]
 #
 # REF is a commit, tag or branch (a branch means its state on `origin`). --cloud defaults to
 # origin/main; --network defaults to the commit in `network.ref` of the cloud commit being deployed.
 # After the build, right before the new version starts, it runs backup.sh and stops if that fails
 # (--no-backup skips it).
+# With --image the cloud and relay images are pulled from ghcr.io (built by CI, checked against their
+# attestation) instead of built here; Caddy and the website are still built here.
 # Details, what "near-zero downtime" means and how to roll back by hand: docs/deploy.md.
 set -Eeuo pipefail
 
@@ -16,7 +20,8 @@ set -Eeuo pipefail
 # very file, and bash reads a script while it runs.
 main() {
   local cloud_ref=origin/main network_ref='' hook=${ANYPLAY_UPDATE_HOOK:-} \
-    timeout=${ANYPLAY_UPDATE_TIMEOUT:-180} rollback=1 dry=0 backup=1
+    timeout=${ANYPLAY_UPDATE_TIMEOUT:-180} rollback=1 dry=0 backup=1 
+    image='' relay_image='' attest=1 registry=${ANYPLAY_IMAGE_REGISTRY:-ghcr.io/anyplaynet}
   while [ $# -gt 0 ]; do
     case $1 in
       --cloud) cloud_ref=${2:?--cloud needs a ref}; shift 2 ;;
@@ -25,11 +30,23 @@ main() {
       --timeout) timeout=${2:?--timeout needs seconds}; shift 2 ;;
       --no-rollback) rollback=0; shift ;;
       --no-backup) backup=0; shift ;;
+      --image) image=${2:?--image needs the digest of the cloud image (sha256:...)}; shift 2 ;;
+      --relay-image) relay_image=${2:?--relay-image needs the digest of the relay image (sha256:...)}; shift 2 ;;
+      --no-attestation) attest=0; shift ;;
       --dry-run) dry=1; shift ;;
-      -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
+      -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
       *) echo "unknown argument: $1 (see --help)" >&2; return 2 ;;
     esac
   done
+
+  # Image mode: both digests, written out in full, and the commit they were built from.
+  if [ -n "$image$relay_image" ]; then
+    local d
+    for d in "$image" "$relay_image"; do
+      [[ $d =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "--image and --relay-image each take a digest, sha256:<64 hex characters>" >&2; return 2; }
+    done
+    [ "$cloud_ref" != origin/main ] || { echo "--image needs --cloud <the commit the images were built from>" >&2; return 2; }
+  fi
 
   local here root deploy
   here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -143,11 +160,52 @@ main() {
     log "Caddy's files changed; starting a new Caddy"
     docker compose up -d --no-build --no-deps --force-recreate --wait --wait-timeout "$timeout" caddy
   }
-  log "building"
-  if ! docker compose build --quiet; then
-    log "build failed; restoring the previous sources, the running version was not touched"
-    restore_sources
-    return 1
+  if [ -n "$image" ]; then
+    # Pulled, not built: the images CI built for this commit. Each is checked against the commit it
+    # says it was built from, and against its attestation, before anything is replaced.
+    log "pulling the cloud and relay images; building the rest"
+    local svc ref rev others
+    for svc in cloud relay; do
+      if [ "$svc" = relay ]; then ref=$registry/relay@$relay_image; else ref=$registry/cloud@$image; fi
+      if ! docker pull --quiet "$ref" >/dev/null; then
+        log "cannot pull $ref (is the package public, or is docker logged in to ghcr.io?); restoring the previous sources, the running version was not touched"
+        restore_sources
+        return 1
+      fi
+      rev=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ref")
+      if [ "$rev" != "$cloud_new" ]; then
+        log "$ref was built from ${rev:-no known commit}, not from $cloud_new; restoring the previous sources, the running version was not touched"
+        restore_sources
+        return 1
+      fi
+      if [ "$attest" = 0 ]; then
+        log "WARNING: --no-attestation: $ref is not checked against its attestation"
+      elif command -v gh >/dev/null; then
+        if ! gh attestation verify "oci://$ref" --repo anyplaynet/cloud >/dev/null; then
+          log "no valid attestation for $ref (gh attestation verify failed; --no-attestation skips the check); restoring the previous sources, the running version was not touched"
+          restore_sources
+          return 1
+        fi
+        log "attestation ok: $ref"
+      else
+        log "WARNING: gh is not installed, so $ref is not checked against its attestation"
+      fi
+    done
+    others=$(docker compose config --services | grep -vx -e cloud -e relay | tr '
+' ' ') || others=''
+    # shellcheck disable=SC2086 # the service names are words
+    if [ -n "$others" ] && ! docker compose build --quiet $others; then
+      log "build failed; restoring the previous sources, the running version was not touched"
+      restore_sources
+      return 1
+    fi
+  else
+    log "building"
+    if ! docker compose build --quiet; then
+      log "build failed; restoring the previous sources, the running version was not touched"
+      restore_sources
+      return 1
+    fi
   fi
 
   # 4b. Back up now: the old version still runs, the new one is built and has not started, so the archive
@@ -176,6 +234,12 @@ main() {
 
   # 5. Replace only the services whose image or settings changed. The cloud has one SQLite file and
   # so one writer: it stops and starts again in a few seconds, the relay and Caddy follow.
+  if [ -n "$image" ]; then
+    # compose runs the names anyplay-cloud and anyplay-relay (compose.yaml); a manual
+    # `docker compose up` later finds the same images. The rollback tags were made in step 3.
+    docker tag "$registry/cloud@${image}" anyplay-cloud
+    docker tag "$registry/relay@${relay_image}" anyplay-relay
+  fi
   log "starting the new version"
   if docker compose up -d --no-build --remove-orphans --wait --wait-timeout "$timeout" \
      && fresh_caddy && verify "$timeout"; then

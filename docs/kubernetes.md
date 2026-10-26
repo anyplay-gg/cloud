@@ -10,7 +10,7 @@ For one machine and a handful of players, [`docker compose`](../README.md#host-y
 |---|---|---|
 | Kubernetes | 1.29 or newer (CI: the default of kind v0.33.0) | A network plugin that enforces NetworkPolicy, or switch `networkPolicy.enabled` off. |
 | Helm | 3 or 4 (CI: v4.3.1) | |
-| An image | built from [`deploy/Dockerfile`](../deploy/Dockerfile), target `cloud` | No public image exists yet. Build it with the `network` checkout beside `cloud` (see the Dockerfile) and push it to a registry your cluster reads. |
+| An image | built from [`deploy/Dockerfile`](../deploy/Dockerfile), target `cloud` | The `image` workflow pushes `ghcr.io/anyplaynet/cloud` on every merge to `main` ([deploy](deploy.md#deploying-a-prebuilt-image)); no release is tagged yet. To build it yourself, use the `network` checkout beside `cloud` (see the Dockerfile) and push it to a registry your cluster reads. |
 | PostgreSQL | 18 | [CloudNativePG](https://cloudnative-pg.io) is the way to run it: operator chart `cloudnative-pg` **0.29.1** (operator 1.30.1). An example `Cluster` is in [`deploy/helm/examples/cnpg-cluster.yaml`](../deploy/helm/examples/cnpg-cluster.yaml). |
 | NATS | 2.15 | The official chart `nats` **2.15.1** from `https://nats-io.github.io/k8s/helm/charts/` (app 2.15.1). A single server is enough to start: NATS carries only news, and losing it loses no state ([ADR 0004](adr/0004-nats-carries-news-not-state.md)). Switch on its clustering for three servers when one is not enough. |
 | An Ingress or load balancer with TLS | | The cloud speaks plain HTTP. It must pass WebSockets and keep them open for hours. |
