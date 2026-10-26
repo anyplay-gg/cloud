@@ -21,7 +21,7 @@ Texts we read for this pass: GDPR, DSA, the Cyber Resilience Act (CRA), TDDDG §
 
 ## O2. Youth media protection for chat and voice (JMStV, JuSchG)
 
-**Why it matters.** Messages, party chat and voice are planned (network `docs/SOCIAL.md`, phases S2 and S3). Contact functions are named as youth risks in German law.
+**Why it matters.** Messages, party chat and party voice are built (network `docs/SOCIAL.md`, phases S2 and S3). Contact functions are named as youth risks in German law.
 
 **What the law says.**
 - [JMStV](https://www.tlm.de/assets/uploads/general/DieTLM/Rechtsgrundlagen/JMStV_2025.pdf) § 5(1), sentence 2 now covers "Risiken durch Kommunikations- und Kontaktfunktionen" (risks from communication and contact functions) as a factor in age-appropriateness.

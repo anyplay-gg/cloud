@@ -73,8 +73,7 @@ The pattern is the one Riot's messaging service and Roblox's notification stream
 - **One session, one writer at a time.** Every change to a session starts by touching its row (`UPDATE sessions SET revision = revision + 1 … RETURNING …`). That holds a row lock in Postgres and the write lock in SQLite until the transaction ends, so blocks, visibility, the version guard and capacity are checked against a state nobody else is changing. The same statement yields the new revision.
 - **One conversation, one counter.** A message takes the next number with an `UPDATE` of its conversation's row inside the transaction that stores it. The row lock serializes writers on all nodes, so numbers are never used twice, and a lower number is always committed before a higher one. A client that holds number N asks for what comes after N and misses nothing. Events for messages are pointers (conversation and number); a party is a versioned state like a session ([network ADR 0013](https://github.com/anyplaynet/network/blob/main/docs/adr/0013-messages-are-numbered-per-conversation.md)).
 - **One party, one writer at a time.** Every change to a party starts by touching its row, as for a session. The unique account in `party_members` keeps an account in one party whichever node writes. A member's voice endpoint, relay and `voice` flag (`PUT /v1/party/endpoint`) are columns of that row: they are written under the party's lock, so two members naming one key are decided once on every node; an unchanged announcement rolls the lock back and sends nothing; a change goes out as the ordinary `party` event, which reaches members on other nodes over NATS like any party change; leaving, removal and the end of the party delete the row and so clear them.
-- **Sweeps without a leader.** Presence grace, expired invitations (session and party), party members gone too long, messages and feed items past their retention, challenges and leases, and the connections of dead nodes are swept by every node. Each step is one conditional statement, so it takes effect once, and the node whose statement changed rows sends the news.
-- **Sweeps without a leader.** Presence grace, expired invitations (session and party), expired join codes, party members gone too long, messages past their retention, challenges and leases, and the connections of dead nodes are swept by every node. Each step is one conditional statement, so it takes effect once, and the node whose statement changed rows sends the news.
+- **Sweeps without a leader.** Presence grace, expired invitations (session and party), expired join codes, party members gone too long, messages and feed items past their retention, challenges and leases, and the connections of dead nodes are swept by every node. Each step is one conditional statement, so it takes effect once, and the node whose statement changed rows sends the news.
 - **Dead nodes.** Each node writes a heartbeat. The connections of a node whose heartbeat is older than its timeout count as closed, and the usual grace period follows.
 
 ## Deploys and failures
@@ -125,15 +124,17 @@ Game traffic goes directly between players where the network allows it and throu
 
 ## Stages
 
+**Today** the cloud at anyplaynet.com runs as a single node: one `anyplay-cloud` process on SQLite, with the relay and Caddy beside it (`deploy/compose.yaml`). Stages 1 to 5 are built and tested in CI, including a two-node cluster test on PostgreSQL and NATS and a Helm chart on a kind cluster. The cluster shape has not run in production. The next step is a production cluster: moving the live cloud to PostgreSQL and NATS (the NATS stage). Regions and cells (stage 7) are design only ([ADR 0006](adr/0006-one-store-many-regions.md)).
+
 | Stage | What | State |
 |---|---|---|
 | 1 | Everything shared moves into the store; the store runs on SQLite and Postgres; tests on both | done |
-| 2 | News over NATS; the cluster test | done |
+| 2 | News over NATS; the cluster test | built and tested; not in production |
 | 3 | Revisions on sessions and presence; clients spread their reconnects | done |
 | 4 | Operations: health, readiness, metrics, drain, JSON logs | done |
 | 5 | Kubernetes: a Helm chart, tried on a kind cluster in CI ([guide](kubernetes.md)) | done |
 | 6 | Load harness and first numbers: [docs/LOAD.md](LOAD.md) (one laptop, up to 5,000 players; a real cluster is not measured yet) | first numbers |
-| 7 | Regions and cells | |
+| 7 | Regions and cells | design only |
 
 ### Known limits
 

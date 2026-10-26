@@ -1,10 +1,11 @@
 # Updating a running cloud
 
-`deploy/update.sh` moves a deployment made with [`deploy/compose.yaml`](../deploy/compose.yaml) to given commits of this repository and of the network repository, checks that it came up and rolls back if it did not. Run it on the machine that hosts the cloud, from a checkout laid out as in the README (`cloud/` and `network/` side by side, `cloud/deploy/.env` filled in):
+`deploy/update.sh` moves a deployment made with [`deploy/compose.yaml`](../deploy/compose.yaml) to a new version, checks that it came up and rolls back if it did not. There are two paths. The fast one, [`--image`](#deploying-a-prebuilt-image), pulls the images that CI built for a commit from GHCR. The fallback builds them on the server from given commits of this repository and of the network repository. Run it on the machine that hosts the cloud, from a checkout laid out as in the README (`cloud/` and `network/` side by side, `cloud/deploy/.env` filled in):
 
 ```sh
-cloud/deploy/update.sh                                   # origin/main of the cloud, the network commit in its network.ref
-cloud/deploy/update.sh --cloud 1a2b3c4 --network v0.4.0  # commits, tags or branches
+cloud/deploy/update.sh --cloud <commit> --image sha256:<cloud digest> --relay-image sha256:<relay digest>   # fast path: pull the images CI built
+cloud/deploy/update.sh                                   # fallback: build origin/main of the cloud with the network commit in its network.ref
+cloud/deploy/update.sh --cloud 1a2b3c4 --network v0.4.0  # fallback with commits, tags or branches
 cloud/deploy/update.sh --dry-run                         # show what would change, change nothing
 ```
 

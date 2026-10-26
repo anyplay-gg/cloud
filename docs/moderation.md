@@ -99,7 +99,7 @@ An account may file `report_limit_per_day` (20) reports in 24 hours and 5 in 10 
 
 ## Settings
 
-All are in the table in [configuration.md](configuration.md#moderation).
+All are in the table in [configuration.md](configuration.md#moderation-settings).
 
 ## Retention
 
