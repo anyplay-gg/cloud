@@ -436,3 +436,79 @@ async fn deleting_the_account_deletes_its_files() {
     cloud.delete_account_now(&ann).await;
     assert!(cloud.state.media_store().open(&id).is_err());
 }
+
+#[tokio::test]
+async fn unsending_does_not_free_the_allowance_while_the_file_is_on_disk() {
+    let room = png().len() as u64 + 10;
+    let cloud = TestCloud::with(move |c| c.media_account_bytes = room, |_| {}).await;
+    let (ann, ben) = cloud.friends("Ann", "Ben").await;
+    let conversation = open(&cloud, &ann, &ben).await;
+    let sent: Message = upload(&cloud, &ann, &conversation.id, "image/png", png())
+        .await
+        .ok(200)
+        .json();
+    cloud
+        .delete(
+            &format!(
+                "/v1/conversations/{}/messages/{}",
+                conversation.id, sent.seq
+            ),
+            ann.token(),
+        )
+        .await
+        .ok(200);
+    // The file is held for a report for a week, so it still counts.
+    upload(&cloud, &ann, &conversation.id, "image/png", png())
+        .await
+        .is_error("limit", 409);
+    // Once the sweep has deleted it, the room is free again.
+    sqlx::query("UPDATE media SET hold_until_ms = 1")
+        .execute(&cloud.state.db)
+        .await
+        .unwrap();
+    cloud.state.sweep().await.unwrap();
+    upload(&cloud, &ann, &conversation.id, "image/png", png())
+        .await
+        .ok(200);
+}
+
+#[tokio::test]
+async fn an_upload_without_a_length_is_held_to_the_allowance_too() {
+    let room = png().len() as u64 + 10;
+    let cloud = TestCloud::with(move |c| c.media_account_bytes = room, |_| {}).await;
+    let (ann, ben) = cloud.friends("Ann", "Ben").await;
+    let conversation = open(&cloud, &ann, &ben).await;
+    upload(&cloud, &ann, &conversation.id, "image/png", png())
+        .await
+        .ok(200);
+    // A chunked body has no Content-Length, so only the check after the upload can refuse it.
+    let file = png();
+    let mut request = format!(
+        "POST /v1/conversations/{}/media HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\n\
+         Content-Type: image/png\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+        conversation.id,
+        cloud.base,
+        ann.token()
+    )
+    .into_bytes();
+    request.extend(format!("{:x}\r\n", file.len()).into_bytes());
+    request.extend(&file);
+    request.extend(b"\r\n0\r\n\r\n");
+    let mut socket = tokio::net::TcpStream::connect(cloud.base.clone())
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut socket, &request)
+        .await
+        .unwrap();
+    let mut answer = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut socket, &mut answer)
+        .await
+        .unwrap();
+    let answer = String::from_utf8_lossy(&answer);
+    assert!(answer.starts_with("HTTP/1.1 409"), "{answer}");
+    let (files,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM media")
+        .fetch_one(&cloud.state.db)
+        .await
+        .unwrap();
+    assert_eq!(files, 1);
+}
