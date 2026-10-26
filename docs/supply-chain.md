@@ -1,6 +1,6 @@
 # Supply chain
 
-What is pinned in this repository, how updates arrive, what CI says about the container images, and what is not covered yet. The cloud has no public release or registry image yet ([ARCHITECTURE.md](ARCHITECTURE.md)); the images are built in CI and by operators with [deploy/Dockerfile](../deploy/Dockerfile).
+What is pinned in this repository, how updates arrive, what CI says about the container images, and what is not covered yet. The cloud has no public release yet ([ARCHITECTURE.md](ARCHITECTURE.md)); the `cloud` and `relay` images are built and pushed to ghcr.io by the `image` workflow on every merge to `main`, and operators can build them with [deploy/Dockerfile](../deploy/Dockerfile).
 
 ## What is pinned
 
@@ -23,14 +23,14 @@ The workspace names the network's API crate by path (`../network/crates/api`). D
 
 ## The images
 
-CI builds the three images (`cloud`, `relay`, `caddy`) and does not push them, so there is no registry to attach an SBOM or a provenance attestation to. What the `docker` job does instead:
+The `docker` job of `ci.yml` builds the three images (`cloud`, `relay`, `caddy`) on pull requests and does not push them. What it does with them:
 
 - It writes a CycloneDX SBOM of each built image and keeps them as the artifact `image-reports`.
 - It runs [Trivy](https://trivy.dev/) on each image and writes the HIGH and CRITICAL findings that have a fix into the job summary.
 
 **The scan does not block, on purpose.** Nobody has seen yet what the baseline of three Debian-based images looks like, and a new CVE in a Debian package would turn every unrelated pull request red until someone updated the base image. Look at the first reports, update the base images (Dependabot does), and accept what remains with a reason. Then make it block: in `.github/workflows/ci.yml` set `TRIVY_EXIT_CODE` of the step "SBOM and vulnerability report of the images" to `"1"`, remove its `continue-on-error`, and put the findings you accept in a `.trivyignore` file with a comment for each.
 
-**When a workflow starts to push an image**, it should build with `docker/build-push-action` with `sbom: true` and `provenance: mode=max`, so the registry holds the SBOM and a SLSA provenance next to the image, and attest the pushed digest with `actions/attest-build-provenance` (`subject-name` the image name, `subject-digest` the build's digest, `push-to-registry: true`). That job needs `packages: write`, `id-token: write` and `attestations: write`, and nothing else. Pin those actions like all others. Operators then verify with `gh attestation verify oci://<image> --repo anyplaynet/cloud`.
+**Pushed images.** The `image` workflow ([image.yml](../.github/workflows/image.yml)) builds `cloud` and `relay` on every merge to `main` with `docker/build-push-action` (`sbom: true`, `provenance: mode=max`), pushes them to `ghcr.io/anyplaynet/cloud` and `ghcr.io/anyplaynet/relay` as `<commit>` and `main`, and attests each digest with `actions/attest-build-provenance` (`push-to-registry: true`). Its job has `packages: write`, `id-token: write` and `attestations: write`; the actions are pinned like all others. Verify with `gh attestation verify oci://ghcr.io/anyplaynet/cloud@sha256:... --repo anyplaynet/cloud`; `deploy/update.sh --image` does it before it replaces anything ([deploy.md](deploy.md#deploying-a-prebuilt-image), [ADR 0007](adr/0007-images-are-built-in-ci-and-pulled.md)). The Caddy image is not pushed.
 
 ## Verify
 
@@ -38,7 +38,7 @@ Nothing is released yet. To check a source tree: `cargo deny --all-features chec
 
 ## What is not covered yet
 
-- **Pushed images, their SBOM, provenance and signature**, as above: there is no pushing workflow.
+- **A signature of the images with a key of ours** (cosign or similar): the attestation is made with the workflow's identity (Sigstore public-good instance), nothing more.
 - **Reproducible builds.** The build stage compiles on `rust:1-bookworm` (pinned by digest, which Dependabot moves) and the runtime stage runs `apt-get install ca-certificates`, which takes whatever Debian serves that day.
 - **`cargo auditable` in the images**: the binaries do not carry their dependency list yet (the launcher's do).
 - **Commit and tag signing**, and branch protection, are repository settings and are not switched on.

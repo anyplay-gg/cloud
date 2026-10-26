@@ -10,14 +10,33 @@
 #
 # Every base image is pinned by the digest of its multi-platform index, with the tag it was taken
 # from in the comment above it; Dependabot (the `docker` ecosystem in .github/dependabot.yml) moves
-# both together. Nothing here pushes an image: CI only builds and scans them (docs/supply-chain.md).
+# both together. The `image` workflow builds the cloud and relay images from this file on every merge
+# to main and pushes them to ghcr.io (docs/deploy.md, docs/supply-chain.md).
+#
+# The Rust build is split with cargo-chef, so that the dependencies are compiled in a layer of their
+# own: `planner` writes a recipe of the manifests and the lockfile, `build` cooks it (the layer
+# changes only when a dependency or `network.ref` does) and then compiles the sources on top.
 
 # rust:1-bookworm
-FROM rust:1-bookworm@sha256:48b7f435b8fc6378ce43b44f15e3a47fd8919b2825f835c39bd4bd3da50af5b8 AS build
+FROM rust:1-bookworm@sha256:48b7f435b8fc6378ce43b44f15e3a47fd8919b2825f835c39bd4bd3da50af5b8 AS chef
+RUN cargo install cargo-chef --version 0.1.78 --locked
 WORKDIR /src
+
+FROM chef AS planner
 COPY network ./network
 COPY cloud ./cloud
 WORKDIR /src/cloud
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS build
+# The network checkout is whole here, not only the crates the cloud links: cargo needs the manifests
+# of every path dependency of the workspace (the e2e crate names more of them). It changes only
+# when `network.ref` does.
+COPY network ./network
+WORKDIR /src/cloud
+COPY --from=planner /src/cloud/recipe.json recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json -p anyplay-cloud -p anyplay-relay
+COPY cloud ./
 RUN cargo build --release --locked -p anyplay-cloud -p anyplay-relay
 
 # debian:bookworm-slim

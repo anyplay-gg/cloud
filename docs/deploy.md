@@ -16,6 +16,8 @@ cloud/deploy/update.sh --dry-run                         # show what would chang
 | `--timeout SECONDS` | How long the new version gets to become healthy and to answer. Default 180. Also `ANYPLAY_UPDATE_TIMEOUT`. |
 | `--no-rollback` | Leave a failed version running, for looking at it. |
 | `--dry-run` | Fetch and resolve the refs, print them, stop. |
+| `--image DIGEST`, `--relay-image DIGEST` | Deploy the prebuilt images of these digests (`sha256:...`) instead of building them; needs `--cloud COMMIT`. See [Deploying a prebuilt image](#deploying-a-prebuilt-image). |
+| `--no-attestation` | With `--image`: do not check the images against their attestation. Prints a warning. |
 
 `ANYPLAY_UPDATE_URL` replaces the address that is checked (default `https://<CLOUD_DOMAIN>/v1/info`).
 
@@ -28,6 +30,26 @@ cloud/deploy/update.sh --dry-run                         # show what would chang
 5. Runs `docker compose up -d --wait`. Compose replaces only the services whose image or settings changed. When the Caddyfile or a site file (`deploy/*.caddy`) changed, it also starts a new Caddy container: Caddy reads them through single-file mounts, which keep showing the old file after a checkout.
 6. Checks that `/v1/info` answers over the public address, through Caddy and TLS, and that every container is running after a few seconds.
 7. On success it prunes dangling images and build cache older than seven days. On failure it checks out the previous commits, puts the previous images back, starts them and checks again.
+
+## Deploying a prebuilt image
+
+Every merge to `main` builds the cloud and relay images in CI ([`image` workflow](../.github/workflows/image.yml)) and pushes them to `ghcr.io/anyplaynet/cloud` and `ghcr.io/anyplaynet/relay`, tagged with the commit and as `main`. Each image carries an attestation made by that workflow. The run's job summary prints the command:
+
+```sh
+cloud/deploy/update.sh --cloud <commit> --image sha256:<cloud digest> --relay-image sha256:<relay digest>
+```
+
+`--cloud` is the commit the images were built from (the compose files, the Caddyfile and `network.ref` come from that checkout). With `--image` step 4 above changes: instead of building the cloud and relay it pulls both images by digest, and it stops, with the running version untouched, when
+
+- the pull fails (the server must be able to read ghcr.io, see below),
+- an image's `org.opencontainers.image.revision` label is not the cloud commit being deployed, or
+- `gh attestation verify oci://<image> --repo anyplaynet/cloud` rejects it. This check runs when `gh` is installed and logged in on the server; without `gh` the script warns and goes on, and `--no-attestation` skips it on purpose.
+
+Caddy and the website are still built on the server (a few cached layers). Everything else is as before: the backup right before the new version starts, the rollback tags, the health check and the rollback. The pulled images are tagged `anyplay-cloud` and `anyplay-relay`, the names `compose.yaml` runs, so a later `docker compose up -d` by hand finds them.
+
+To find the digests of the latest build: the job summary of the newest `image` run on `main`, or `docker buildx imagetools inspect ghcr.io/anyplaynet/cloud:main`. To check an image by hand: `gh attestation verify oci://ghcr.io/anyplaynet/cloud@sha256:... --repo anyplaynet/cloud`.
+
+**One-time setup on the server:** the packages must be readable. If `docker pull ghcr.io/anyplaynet/cloud:main` is denied, either make both packages public (GitHub: the package's settings, "Change visibility") or run `docker login ghcr.io` with a token that has only `read:packages`. Without `--image` nothing changes: the build path is the fallback, for example when the `image` workflow is red. See [ADR 0007](adr/0007-images-are-built-in-ci-and-pulled.md).
 
 ## Which network revision
 

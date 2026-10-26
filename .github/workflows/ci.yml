@@ -176,12 +176,35 @@ jobs:
           repository: anyplaynet/network
           ref: ${{ steps.network-pin.outputs.ref }}
           path: network
+      # The cloud and relay images start from the dependency layer that the `image` workflow cached
+      # on main (read only here; pull requests do not write the cache).
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build the cloud image
-        run: docker build -f cloud/deploy/Dockerfile --target cloud -t anyplay-cloud .
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: cloud/deploy/Dockerfile
+          target: cloud
+          load: true
+          tags: anyplay-cloud
+          cache-from: type=gha,scope=cloud
       - name: Build the relay image
-        run: docker build -f cloud/deploy/Dockerfile --target relay -t anyplay-relay .
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: cloud/deploy/Dockerfile
+          target: relay
+          load: true
+          tags: anyplay-relay
+          cache-from: type=gha,scope=cloud
       - name: Build the Caddy image
-        run: docker build -f cloud/deploy/Dockerfile --target caddy -t anyplay-caddy .
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: cloud/deploy/Dockerfile
+          target: caddy
+          load: true
+          tags: anyplay-caddy
       - name: Check the compose file
         env:
           CLOUD_DOMAIN: cloud.example.com
