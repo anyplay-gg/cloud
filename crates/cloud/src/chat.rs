@@ -9,7 +9,7 @@
 //! nothing by asking for what comes after N (`docs/adr/0013` in the network repository).
 //!
 //! A message can change after it was numbered: an edit, an unsend or a reaction takes the next
-//! `rev` of the conversation the same way (`docs/adr/0030`), under the same lock, and stamps the
+//! `rev` of the conversation the same way (`docs/adr/0034`), under the same lock, and stamps the
 //! message with it. A client asks for the messages with a `rev` above the one it holds.
 //!
 //! Messages stay for a limited time and are deleted by [`sweep_retention`]
@@ -440,6 +440,16 @@ pub async fn hold_text(
     body: &str,
     now_ms: i64,
 ) -> sqlx::Result<()> {
+    // The time is part of the key, so two changes within one millisecond must not share it:
+    // the second text would be dropped and the count of edits would fall short.
+    let (latest,): (Option<i64>,) = sqlx::query_as(
+        "SELECT MAX(held_ms) FROM message_holds WHERE conversation_id = $1 AND seq = $2",
+    )
+    .bind(conversation)
+    .bind(i(seq))
+    .fetch_one(&mut *conn)
+    .await?;
+    let now_ms = latest.map_or(now_ms, |latest| now_ms.max(latest + 1));
     sqlx::query(
         "INSERT INTO message_holds (conversation_id, seq, body, held_ms) VALUES ($1, $2, $3, $4) \
          ON CONFLICT DO NOTHING",

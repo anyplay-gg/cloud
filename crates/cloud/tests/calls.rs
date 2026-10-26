@@ -38,6 +38,23 @@ async fn missed_event(events: &mut Events) -> MissedCall {
     }
 }
 
+/// Reads the ring and the missed call of a call nobody answers. A short ring time can run out
+/// before the ring itself is read off the connection, so the two may arrive in either order.
+async fn ring_and_miss(events: &mut Events) -> (PartyInvitation, MissedCall) {
+    let (mut ringing, mut missed) = (None, None);
+    while ringing.is_none() || missed.is_none() {
+        match events
+            .until(|e| matches!(e, Event::PartyInvitation { .. } | Event::MissedCall { .. }))
+            .await
+        {
+            Event::PartyInvitation { invitation } => ringing = Some(invitation),
+            Event::MissedCall { call } => missed = Some(call),
+            _ => unreachable!(),
+        }
+    }
+    (ringing.unwrap(), missed.unwrap())
+}
+
 async fn ended(events: &mut Events) -> (AccountId, CallEnd) {
     match events.until(|e| matches!(e, Event::CallEnded { .. })).await {
         Event::CallEnded { account, reason } => (account, reason),
@@ -124,8 +141,7 @@ async fn a_call_that_rings_out_is_missed_and_the_caller_hears_so() {
     let mut eb = cloud.events(ben.token()).await;
 
     call(&cloud, &ann, &[&ben]).await.ok(200);
-    let ringing = ring(&mut eb).await;
-    let miss = missed_event(&mut eb).await;
+    let (ringing, miss) = ring_and_miss(&mut eb).await;
     assert_eq!(miss.from.id, AccountId(ann.id));
     assert_eq!(miss.from.handle, ann.handle);
     assert_eq!(ended(&mut ea).await, (AccountId(ben.id), CallEnd::NoAnswer));
@@ -310,14 +326,14 @@ async fn the_leader_sets_a_discord_link_for_the_party() {
         .patch(
             "/v1/party",
             ann.token(),
-            json!({"discord": "https://discord.gg/nSHbHBRdS"}),
+            json!({"discord": "https://discord.gg/9zYqf8fEsh"}),
         )
         .await
         .ok(200)
         .json();
     assert_eq!(
         party.discord.as_deref(),
-        Some("https://discord.gg/nSHbHBRdS")
+        Some("https://discord.gg/9zYqf8fEsh")
     );
     let party: Party = cloud
         .patch("/v1/party", ann.token(), json!({"discord": ""}))
