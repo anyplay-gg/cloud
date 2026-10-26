@@ -6,6 +6,21 @@ services:
     build:
       context: ${WEB_DIR:-../../web}
     restart: unless-stopped
+    # The instance's own details (operator, address, contact), from deploy/.env. See docs/deploy.md.
+    environment:
+      SITE_URL: ${SITE_URL:-}
+      LEGAL_OPERATOR_NAME: ${LEGAL_OPERATOR_NAME:-}
+      LEGAL_OPERATOR_STREET: ${LEGAL_OPERATOR_STREET:-}
+      LEGAL_OPERATOR_CITY: ${LEGAL_OPERATOR_CITY:-}
+      LEGAL_OPERATOR_COUNTRY: ${LEGAL_OPERATOR_COUNTRY:-}
+      LEGAL_CONTACT_EMAIL: ${LEGAL_CONTACT_EMAIL:-}
+      LEGAL_PRIVACY_EMAIL: ${LEGAL_PRIVACY_EMAIL:-}
+      LEGAL_ABUSE_EMAIL: ${LEGAL_ABUSE_EMAIL:-}
+      LEGAL_AUTHORITY_NAME: ${LEGAL_AUTHORITY_NAME:-}
+      LEGAL_AUTHORITY_STREET: ${LEGAL_AUTHORITY_STREET:-}
+      LEGAL_AUTHORITY_CITY: ${LEGAL_AUTHORITY_CITY:-}
+      LEGAL_AUTHORITY_SITE: ${LEGAL_AUTHORITY_SITE:-}
+      COMMUNITY_DISCORD_URL: ${COMMUNITY_DISCORD_URL:-}
     logging:
       driver: json-file
       options:
