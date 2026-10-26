@@ -717,7 +717,7 @@ pub async fn unsend(
     tx.commit().await?;
     if revision.is_some() {
         // A screenshot or clip is out of reach at once and kept a week for a report, like the
-        // text of an unsent message (ADR 0030).
+        // text of an unsent message (ADR 0034).
         if let Err(error) =
             crate::media::unsent(&state, &id, seq, anyplay_api::REPORT_HOLD_SECS).await
         {

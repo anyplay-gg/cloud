@@ -1,5 +1,5 @@
 //! Replies, edits, unsends, reactions, typing, mute and pin, unread counts and delivered marks
-//! (`docs/adr/0030` in the network repository). Runs on SQLite, and on Postgres when
+//! (`docs/adr/0034` in the network repository). Runs on SQLite, and on Postgres when
 //! `ANYPLAY_TEST_DATABASE_URL` is set.
 
 mod common;

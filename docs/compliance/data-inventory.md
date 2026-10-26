@@ -267,7 +267,7 @@ Whether the launcher or net service stores or reads anything on the device that 
 
 ## 7. The social layer
 
-Built and live (migrations 0003 to 0023). Audited against the code at cloud `8e0e02d` on 25 October 2026. Feature by feature: what is kept, who sees it, how long, and what account deletion does. Counts and periods are the code defaults; the operator can change several in `config.rs`.
+Built and live (migrations 0003 to 0023; message reactions, edit and unsend since 0024, added to section 7.2 on 26 October 2026 from the code). Audited against the code at cloud `8e0e02d` on 25 October 2026. Feature by feature: what is kept, who sees it, how long, and what account deletion does. Counts and periods are the code defaults; the operator can change several in `config.rs`.
 
 ### 7.1 Profile, avatar, trophies, playtime, run reports
 
@@ -295,7 +295,11 @@ Discord tokens are not stored (`discord_sdk.rs`); login tokens from linking are 
 | Limits | 5 unanswered messages to a stranger; an account younger than 24 hours cannot write first to a stranger; a muted account cannot write. |
 | On deletion | The player's own messages are deleted. **A direct conversation is deleted whole, with the other person's messages.** Group conversations keep what others wrote. |
 | Export | The player's own messages and the conversations; **not** what others wrote to the player. |
-| Not built | Attachments other than the screenshots and clips of section 7.2b. Reactions, edit and unsend were merged with cloud#74 and still have to be described in this section. |
+| Reactions | `message_reactions` (conversation, message number, account, one of six fixed names: `nice`, `love`, `laugh`, `gg`, `wow`, `sad`; time; migration 0024). One reaction per account and message; choosing again replaces it, removing it deletes the row. Purpose: let a member answer a message without writing. Seen by the members of the conversation who may see the message (the accounts that reacted are listed by number); a member a block lies between and the reactor is not told of a new reaction. Kept until removed, with the message (30 days from sending), or until the message is unsent, which deletes its reactions. Deleted with the account (cascade). Export: the player's own reactions (`message_reactions`: conversation, message number, reaction), not other people's. |
+| Edit | The sender can change the text of their own message for 15 minutes after sending, at most 20 times (`messages.edited_ms`; migration 0024). Members see the new text and that it was edited, and when; the earlier text is not shown to them. Each replaced text is kept in `message_holds` for 7 days (`REPORT_HOLD_SECS`), read only by a moderator judging a report about that message, then deleted by the sweep (it also goes with the message). It is not in the export and not reachable by members. |
+| Unsend | The sender can take back their own message at any time while it exists (`messages.deleted_ms`; migration 0024). The text is emptied for everyone at once and a marker stays in the conversation until the message's 30 days end; its reactions are deleted. The removed text is kept in `message_holds` for 7 days like an edited one, so that a report can still be judged on what the reporter saw, then deleted. A screenshot or clip is handled in section 7.2b. Account deletion removes the player's own messages and holds with them. |
+| Limits on changes | 60 edits, unsends and reactions per account and minute; a muted account cannot edit or react. |
+| Not built | Attachments other than the screenshots and clips of section 7.2b. |
 
 ### 7.2a Looking for group listings
 

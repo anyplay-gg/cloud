@@ -1,4 +1,4 @@
-//! Appearing offline (network ADR 0028): friends see an offline account while it stays signed in,
+//! Appearing offline (network ADR 0033): friends see an offline account while it stays signed in,
 //! plays, joins and is invited.
 
 mod common;
