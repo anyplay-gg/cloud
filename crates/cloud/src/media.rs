@@ -1,5 +1,5 @@
 //! Screenshots and clips that players send to a friend (network `spec/cloud-api.md`, "Media in
-//! messages", and `docs/adr/0031`).
+//! messages", and `docs/adr/0032`).
 //!
 //! A file lives in a [`MediaStore`] under a key of 128 random bits and has one row in `media`.
 //! The row has no foreign key to the message: it is the only record that its file exists, so it

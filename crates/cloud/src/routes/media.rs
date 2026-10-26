@@ -1,6 +1,6 @@
 //! Screenshots and clips in messages: upload into a conversation, download by a member, and the
 //! moderators' read of a file a report holds. See [`crate::media`] for the rules on the file and
-//! network `docs/adr/0031` for the decision.
+//! network `docs/adr/0032` for the decision.
 //!
 //! Both file routes are outside the request timeout of the guard in [`super`]: an upload of a
 //! clip takes longer than a request should. They have a deadline of their own, a cap of
