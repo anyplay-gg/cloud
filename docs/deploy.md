@@ -3,7 +3,7 @@
 `deploy/update.sh` moves a deployment made with [`deploy/compose.yaml`](../deploy/compose.yaml) to a new version, checks that it came up and rolls back if it did not. There are two paths. The fast one, [`--image`](#deploying-a-prebuilt-image), pulls the images that CI built for a commit from GHCR. The fallback builds them on the server from given commits of this repository and of the network repository. Run it on the machine that hosts the cloud, from a checkout laid out as in the README (`cloud/` and `network/` side by side, `cloud/deploy/.env` filled in):
 
 ```sh
-cloud/deploy/update.sh --cloud <commit> --image sha256:<cloud digest> --relay-image sha256:<relay digest>   # fast path: pull the images CI built
+cloud/deploy/update.sh --cloud <commit> --image sha256:<cloud digest> --relay-image sha256:<relay digest> [--web-image sha256:<web digest>]   # fast path: pull the images CI built
 cloud/deploy/update.sh                                   # fallback: build origin/main of the cloud with the network commit in its network.ref
 cloud/deploy/update.sh --cloud 1a2b3c4 --network v0.4.0  # fallback with commits, tags or branches
 cloud/deploy/update.sh --dry-run                         # show what would change, change nothing
@@ -18,7 +18,8 @@ cloud/deploy/update.sh --dry-run                         # show what would chang
 | `--no-rollback` | Leave a failed version running, for looking at it. |
 | `--dry-run` | Fetch and resolve the refs, print them, stop. |
 | `--image DIGEST`, `--relay-image DIGEST` | Deploy the prebuilt images of these digests (`sha256:...`) instead of building them; needs `--cloud COMMIT`. See [Deploying a prebuilt image](#deploying-a-prebuilt-image). |
-| `--no-attestation` | With `--image`: do not check the images against their attestation. Prints a warning. |
+| `--web-image DIGEST` | Pull the website's prebuilt image (`ghcr.io/anyplaynet/web`, built by the web repository's CI) instead of building it; needs the website enabled (`compose.web.yaml`, see [The website](#the-website)). Can be combined with `--image` or used alone. |
+| `--no-attestation` | With `--image` or `--web-image`: do not check the images against their attestation. Prints a warning. |
 
 `ANYPLAY_UPDATE_URL` replaces the address that is checked (default `https://<CLOUD_DOMAIN>/v1/info`).
 
@@ -46,11 +47,13 @@ cloud/deploy/update.sh --cloud <commit> --image sha256:<cloud digest> --relay-im
 - an image's `org.opencontainers.image.revision` label is not the cloud commit being deployed, or
 - `gh attestation verify oci://<image> --repo anyplaynet/cloud` rejects it. This check runs when `gh` is installed and logged in on the server; without `gh` the script warns and goes on, and `--no-attestation` skips it on purpose.
 
-Caddy and the website are still built on the server (a few cached layers). Everything else is as before: the backup right before the new version starts, the rollback tags, the health check and the rollback. The pulled images are tagged `anyplay-cloud` and `anyplay-relay`, the names `compose.yaml` runs, so a later `docker compose up -d` by hand finds them.
+Caddy is still built on the server (a few cached layers), and so is the website unless you pass `--web-image` (below). Everything else is as before: the backup right before the new version starts, the rollback tags, the health check and the rollback. The pulled images are tagged `anyplay-cloud` and `anyplay-relay`, the names `compose.yaml` runs, so a later `docker compose up -d` by hand finds them.
 
-To find the digests of the latest build: the job summary of the newest `image` run on `main`, or `docker buildx imagetools inspect ghcr.io/anyplaynet/cloud:main`. To check an image by hand: `gh attestation verify oci://ghcr.io/anyplaynet/cloud@sha256:... --repo anyplaynet/cloud`.
+**The website image.** The web repository builds its image the same way: every merge to its `main` pushes `ghcr.io/anyplaynet/web:<commit>` and `:main` with an attestation (its `docker` workflow; the job summary prints the digest). `--web-image sha256:<digest>` pulls it by digest, checks `gh attestation verify oci://<image> --repo anyplaynet/web` (same rules as above: with `gh`, skipped by `--no-attestation`, a warning without `gh`), tags it `anyplay-web` and leaves the website out of the build on the server, which saves 5 to 8 minutes. The website has its own commit, so the `org.opencontainers.image.revision` label is not compared with `--cloud`; the attestation is what ties the image to the web repository. The script stops with the running version untouched when the compose files have no `web` service. Without `--web-image` the website is built from the `web/` checkout as before.
 
-**One-time setup on the server:** the packages must be readable. If `docker pull ghcr.io/anyplaynet/cloud:main` is denied, either make both packages public (GitHub: the package's settings, "Change visibility") or run `docker login ghcr.io` with a token that has only `read:packages`. Without `--image` nothing changes: the build path is the fallback, for example when the `image` workflow is red. See [ADR 0007](adr/0007-images-are-built-in-ci-and-pulled.md).
+To find the digests of the latest build: the job summary of the newest `image` run on `main`, or `docker buildx imagetools inspect ghcr.io/anyplaynet/cloud:main` (likewise `.../web:main`). To check an image by hand: `gh attestation verify oci://ghcr.io/anyplaynet/cloud@sha256:... --repo anyplaynet/cloud`.
+
+**One-time setup on the server:** the packages must be readable. If `docker pull ghcr.io/anyplaynet/cloud:main` is denied, either make the packages (cloud, relay and, for `--web-image`, web) public (GitHub: the package's settings, "Change visibility") or run `docker login ghcr.io` with a token that has only `read:packages`. Without `--image` nothing changes: the build path is the fallback, for example when the `image` workflow is red. See [ADR 0007](adr/0007-images-are-built-in-ci-and-pulled.md).
 
 ## Which network revision
 
@@ -135,7 +138,7 @@ The landing page (anyplaynet/web) can run on the cloud's host name: Caddy sends 
 
 1. Check out [anyplaynet/web](https://github.com/anyplaynet/web) beside `cloud/` and `network/` (or set `WEB_DIR` in `.env` to its path).
 2. Add `COMPOSE_FILE=compose.yaml:compose.web.yaml` to `deploy/.env`. Compose reads it there, so `update.sh` and every `docker compose` call include the website from then on.
-3. Run `update.sh` as usual. It builds the website from the checkout as it is; update that checkout with `git pull` first.
+3. Run `update.sh` as usual. It builds the website from the checkout as it is; update that checkout with `git pull` first. Or skip the checkout and the build: pass the digest of the website image CI built, `update.sh ... --web-image sha256:<digest>` (see [Deploying a prebuilt image](#deploying-a-prebuilt-image)). `compose.web.yaml` also reads `WEB_IMAGE` (an image reference) from `.env`, for running a given image by hand with `docker compose pull web && docker compose up -d`.
 
 4. Set `ANYPLAY_CLOUD_PORTAL_EXTERNAL=true` (with `ANYPLAY_CLOUD_PUBLIC_URL`) in the cloud's environment, so the launcher's sign-in opens the website's `/sign-in` and `/create` pages instead of the cloud's own.
 
