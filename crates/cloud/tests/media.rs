@@ -264,16 +264,23 @@ async fn files_are_refused_by_type_size_and_allowance() {
     )
     .await
     .is_error("bad_request", 400);
-    // Over 10 MB is refused for a screenshot.
-    upload(
-        &cloud,
-        &ann,
-        &conversation.id,
-        "image/png",
-        vec![0; 10 * 1024 * 1024 + 1],
-    )
-    .await
-    .is_error("too_large", 413);
+    // Over 10 MB is refused for a screenshot. The cloud answers before it reads the body, so a
+    // client that is still sending may see its connection closed (Windows reports it as an
+    // abort) instead of the answer; both mean the same.
+    let big = cloud
+        .http
+        .post(format!(
+            "http://{}/v1/conversations/{}/media",
+            cloud.base, conversation.id
+        ))
+        .bearer_auth(ann.token())
+        .header("content-type", "image/png")
+        .body(vec![0u8; 10 * 1024 * 1024 + 1])
+        .send()
+        .await;
+    if let Ok(response) = big {
+        assert_eq!(response.status().as_u16(), 413);
+    }
     // Nothing is left behind.
     let (rows,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM media")
         .fetch_one(&cloud.state.db)
