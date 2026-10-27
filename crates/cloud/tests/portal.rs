@@ -1535,8 +1535,9 @@ async fn every_way_to_delete_the_account_waits_for_the_grace_period() {
     assert_eq!(portal.get("/account").await.ok(200)["deletion"]["at"], at);
 
     // The API of the launcher answers with the scheduled time, and keeps the first one.
-    let renewed = cloud.sign_in(&alec.email, "Desk").await;
-    let answer = cloud.delete("/v1/me", &renewed.tokens.access).await.ok(200);
+    let desk = anyplay_proof::DeviceKey::generate();
+    let renewed = cloud.sign_in_keyed(&alec.email, "Desk", &desk).await;
+    let answer = cloud.delete_me(&renewed.tokens.access, &desk).await.ok(200);
     assert_eq!(answer.body["deletion"]["at"], at);
     assert!(
         anyplay_cloud::db::account(&cloud.state.db, alec.id)
@@ -1811,7 +1812,12 @@ async fn a_scheduled_deletion_is_mailed_whichever_way_it_was_asked_for() {
     assert_eq!(cloud.mail.notice_count(&alec.email), 1);
 
     // The API of the launcher.
-    cloud.delete("/v1/me", bob.token()).await.ok(200);
+    let bob_key = anyplay_proof::DeviceKey::generate();
+    let bob_pc = cloud.sign_in_keyed(&bob.email, "Bob PC", &bob_key).await;
+    cloud
+        .delete_me(&bob_pc.tokens.access, &bob_key)
+        .await
+        .ok(200);
     assert_eq!(cloud.mail.notice_count(&bob.email), 1);
     // Nobody else was mailed.
     assert_eq!(cloud.mail.notice_count(&alec.email), 1);

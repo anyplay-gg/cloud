@@ -819,6 +819,17 @@ async fn sensitive_actions_need_a_recent_sign_in() {
     assert!(refused.text().contains("Sign in again"));
     assert_eq!(cloud.get("/v1/me", alec.token()).await.status, 200);
     assert_eq!(browser.get("/web/account/delete").await.status, 403);
+    // The copy of the data and signing a device out are as sensitive.
+    assert_eq!(browser.get("/web/account/export").await.status, 403);
+    let other = cloud.sign_in(&alec.email, "Laptop").await;
+    let refused = browser
+        .post_form(
+            &format!("/web/account/devices/{}/sign-out", other.tokens.device),
+            &[("csrf", &csrf)],
+        )
+        .await;
+    assert_eq!(refused.status, 403);
+    assert_eq!(cloud.get("/v1/me", &other.tokens.access).await.status, 200);
     // Reading is fine.
     assert_eq!(browser.get("/web/account").await.status, 200);
 }
@@ -1584,4 +1595,17 @@ async fn the_web_works_behind_a_proxy_that_terminates_tls() {
         .ok(200)
         .json();
     assert_eq!(info.web.as_deref(), Some("https://anyplaynet.com"));
+}
+
+#[tokio::test]
+async fn pages_without_a_cookie_share_the_bucket_of_new_sessions() {
+    let cloud = TestCloud::with(|_| {}, |t| t.rates.portal_sessions_per_ip = 2).await;
+    let alec = cloud.sign_up("Alec").await;
+    // This browser starts one session; it is the first of the two the address may start.
+    let browser = account_browser(&cloud, &alec).await;
+    assert_eq!(Browser::new(&cloud).get("/web/sign-in").await.status, 200);
+    assert_eq!(Browser::new(&cloud).get("/web/sign-in").await.status, 429);
+    assert_eq!(Browser::new(&cloud).get("/web/create").await.status, 429);
+    // A browser that has its session is not counted.
+    assert_eq!(browser.get("/web/account").await.status, 200);
 }

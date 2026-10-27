@@ -48,6 +48,12 @@ pub async fn insert_challenge(
     code: &str,
     expires_ms: i64,
 ) -> sqlx::Result<()> {
+    // A new code replaces the older ones of the address, so the guesses allowed per code cannot
+    // be multiplied by asking for more codes.
+    sqlx::query("DELETE FROM challenges WHERE email = $1")
+        .bind(email)
+        .execute(&mut *conn)
+        .await?;
     sqlx::query(
         "INSERT INTO challenges (id_hash, email, code_hash, tries, expires_ms) \
          VALUES ($1, $2, $3, 0, $4)",
@@ -67,6 +73,15 @@ pub async fn delete_challenge(conn: &mut Conn, challenge: &str) -> sqlx::Result<
         .execute(conn)
         .await?;
     Ok(())
+}
+
+/// The address a challenge was made for, while it exists.
+pub async fn challenge_email(conn: &mut Conn, challenge: &str) -> sqlx::Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT email FROM challenges WHERE id_hash = $1")
+        .bind(&sha256(challenge.as_bytes())[..])
+        .fetch_optional(conn)
+        .await?;
+    Ok(row.map(|(email,)| email))
 }
 
 /// What a code typed for a challenge turned out to be.

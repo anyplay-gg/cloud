@@ -122,6 +122,20 @@ pub fn normalize_email(text: &str) -> Option<String> {
     (local_ok && domain_ok).then_some(email)
 }
 
+/// The form of a normalized address that stands for the mailbox: the part of the name after a
+/// `+` is dropped, and for Gmail the dots too (and `googlemail.com` is `gmail.com`). Only for
+/// keys of bans and limits; the address is mailed and stored as typed.
+pub fn canonical_email(email: &str) -> String {
+    let Some((local, domain)) = email.rsplit_once('@') else {
+        return email.to_owned();
+    };
+    let local = local.split_once('+').map_or(local, |(name, _)| name);
+    if domain == "gmail.com" || domain == "googlemail.com" {
+        return format!("{}@gmail.com", local.replace('.', ""));
+    }
+    format!("{local}@{domain}")
+}
+
 /// True for a short, printable text of 1 to `max` characters.
 pub fn is_label(text: &str, max: usize) -> bool {
     let n = text.chars().count();
@@ -192,5 +206,23 @@ mod tests {
         assert!(!is_http_url("https://"));
         assert!(!is_http_url("https://a b"));
         assert!(!is_http_url(&format!("https://{}", "a".repeat(250))));
+    }
+}
+
+#[cfg(test)]
+mod canonical_tests {
+    use super::canonical_email;
+
+    #[test]
+    fn a_tag_and_gmail_dots_do_not_make_another_address() {
+        assert_eq!(canonical_email("name+tag@example.com"), "name@example.com");
+        assert_eq!(canonical_email("na.me@example.com"), "na.me@example.com");
+        assert_eq!(canonical_email("n.a.m.e+x@gmail.com"), "name@gmail.com");
+        assert_eq!(canonical_email("name@googlemail.com"), "name@gmail.com");
+        assert_eq!(
+            canonical_email("name@gmail.com.evil.com"),
+            "name@gmail.com.evil.com"
+        );
+        assert_eq!(canonical_email("not an address"), "not an address");
     }
 }
