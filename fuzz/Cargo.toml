@@ -1,6 +1,6 @@
 [package]
 name = "anyplay-cloud-fuzz"
-description = "Coverage-guided fuzz targets for the token check of the cloud and its relays"
+description = "Coverage-guided fuzz targets for the token check of the cloud and its relays, and for the clip reader"
 version = "0.0.0"
 edition = "2024"
 license = "AGPL-3.0-only"
@@ -16,6 +16,7 @@ members = ["."]
 [dependencies]
 libfuzzer-sys = "0.4.13"
 anyplay-ticket = { path = "../crates/ticket" }
+anyplay-cloud = { path = "../crates/cloud" }
 
 [[bin]]
 name = "ticket_forged"
@@ -27,6 +28,13 @@ bench = false
 [[bin]]
 name = "ticket_altered"
 path = "fuzz_targets/ticket_altered.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mp4_clip"
+path = "fuzz_targets/mp4_clip.rs"
 test = false
 doc = false
 bench = false

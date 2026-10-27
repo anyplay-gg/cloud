@@ -108,6 +108,8 @@ fn declared_type(request: &Request) -> Result<(&'static str, MediaKind)> {
     Ok((content_type, kind))
 }
 
+const QUOTA_MESSAGE: &str = "You have sent as many screenshots and clips as the cloud keeps for you. Unsend some, or wait until they expire.";
+
 fn too_large(kind: MediaKind) -> AppError {
     AppError::too_large(match kind {
         MediaKind::Clip => "A clip may be at most 100 MB.",
@@ -142,7 +144,14 @@ async fn receive(
         .map_err(|_| AppError::internal())?;
     let mut stream = request.into_body().into_data_stream();
     let mut total = 0u64;
-    while let Some(chunk) = stream.next().await {
+    loop {
+        // A client that sends a byte now and then would hold one of the few upload slots for
+        // the whole deadline.
+        let chunk = match tokio::time::timeout(media::UPLOAD_IDLE, stream.next()).await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(_) => return Err(AppError::bad_request("The upload stalled.")),
+        };
         let chunk = chunk.map_err(|_| AppError::bad_request("The upload was cut off."))?;
         total += chunk.len() as u64;
         if total > max {
@@ -184,14 +193,15 @@ pub async fn upload(
             .ok_or_else(AppError::not_found)?;
         let members = chat::members(&mut conn, &id).await?;
         check_pair(&mut conn, &conversation, &members, auth.account).await?;
-        let used = media::active_bytes(&mut conn, auth.account, now_ms()).await?;
+        let used = media::stored_bytes(&mut conn, auth.account).await?;
         if used + announced.unwrap_or(0) > state.config.media_account_bytes {
-            return Err(AppError::limit(
-                "You have sent as many screenshots and clips as the cloud keeps for you. \
-                 Unsend some, or wait until they expire.",
-            ));
+            return Err(AppError::limit(QUOTA_MESSAGE));
         }
     }
+    // The slot first: a refusal for lack of one must not use up an upload of the account.
+    let _slot = media::UPLOADS
+        .try_acquire()
+        .map_err(|_| AppError::rate_limited(10))?;
     let rates = &state.tuning.rates;
     state
         .limiter
@@ -201,9 +211,6 @@ pub async fn upload(
             rates.media_window,
         )
         .map_err(AppError::rate_limited)?;
-    let _slot = media::UPLOADS
-        .try_acquire()
-        .map_err(|_| AppError::rate_limited(10))?;
 
     let store = state.media_store();
     let temp = Temp(Some(store.temp_path().map_err(|_| AppError::internal())?));
@@ -279,6 +286,11 @@ async fn send(
         .ok_or_else(AppError::not_found)?;
     let members = chat::members(&mut tx, id).await?;
     let other = check_pair(&mut tx, &conversation, &members, me).await?;
+    // The quota again, now that the size is known and the conversation is locked: an upload
+    // without a Content-Length, or several at once, passed the first check on what was announced.
+    if media::stored_bytes(&mut tx, me).await? + bytes > state.config.media_account_bytes {
+        return Err(AppError::limit(QUOTA_MESSAGE));
+    }
     let from_seq = members
         .iter()
         .find(|m| m.id() == me)
@@ -298,7 +310,9 @@ async fn send(
             bytes,
             meta,
             created_ms,
-            expires_ms: created_ms + (MEDIA_KEEP_SECS * 1000) as i64,
+            // Never longer than the message that carries it is kept.
+            expires_ms: created_ms
+                + (MEDIA_KEEP_SECS.min(state.config.message_retention_days * 86_400) * 1000) as i64,
         },
     )
     .await?;
