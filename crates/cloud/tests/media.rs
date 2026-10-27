@@ -520,3 +520,48 @@ async fn an_upload_without_a_length_is_held_to_the_allowance_too() {
         .unwrap();
     assert_eq!(files, 1);
 }
+
+#[tokio::test]
+async fn deciding_a_report_shortens_the_hold_on_its_file() {
+    let (cloud, ann, ben, conversation) = friends_cloud().await;
+    let sent: Message = upload(&cloud, &ann, &conversation.id, "image/png", png())
+        .await
+        .ok(200)
+        .json();
+    let report = || {
+        cloud.post(
+            "/v1/reports",
+            ben.token(),
+            json!({"account": ann.id, "reason": "harassment",
+                   "conversation": conversation.id, "seq": sent.seq}),
+        )
+    };
+    report().await.ok(204);
+    let hold = || async {
+        let (until,): (Option<i64>,) = sqlx::query_as("SELECT hold_until_ms FROM media")
+            .fetch_one(&cloud.state.db)
+            .await
+            .unwrap();
+        until.unwrap() / 1000 - (anyplay_cloud::util::now_ms() / 1000)
+    };
+    let day = 24 * 60 * 60;
+    // While the report is open, the file is held for the open-report period.
+    let open = cloud.state.config.retention_open_reports_days as i64 * day;
+    assert!((hold().await - open).abs() < 60);
+    let (id,): (i64,) = sqlx::query_as("SELECT id FROM reports")
+        .fetch_one(&cloud.state.db)
+        .await
+        .unwrap();
+    cloud
+        .post(
+            &format!("/v1/moderation/reports/{id}/dismiss"),
+            ADMIN,
+            json!({"reason": "Nothing to see."}),
+        )
+        .await
+        .ok(200);
+    // Decided, it is held as long as the report is kept, and no longer.
+    let decided = cloud.state.config.retention_reports_days as i64 * day;
+    assert!((hold().await - decided).abs() < 60);
+    assert!(decided < open);
+}
