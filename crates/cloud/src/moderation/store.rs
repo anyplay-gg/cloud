@@ -57,14 +57,16 @@ pub struct NewReport<'a> {
     pub reason: &'a str,
     pub details: &'a str,
     pub content: &'a str,
+    /// The screenshot or clip the report holds for the moderators.
+    pub media_id: Option<&'a str>,
     pub now: u64,
 }
 
 pub async fn insert_report(conn: &mut Conn, report: &NewReport<'_>) -> sqlx::Result<u64> {
     let (id,): (i64,) = sqlx::query_as(
         "INSERT INTO reports (reporter, reporter_handle, reported, reported_handle, reason, \
-         details, content, created, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open') \
-         RETURNING id",
+         details, content, created, status, media_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open', $9) RETURNING id",
     )
     .bind(i(report.reporter))
     .bind(report.reporter_handle)
@@ -74,6 +76,7 @@ pub async fn insert_report(conn: &mut Conn, report: &NewReport<'_>) -> sqlx::Res
     .bind(report.details)
     .bind(report.content)
     .bind(i(report.now))
+    .bind(report.media_id)
     .fetch_one(conn)
     .await?;
     Ok(u(id))
@@ -149,9 +152,13 @@ pub struct Decision<'a> {
     pub by: Option<u64>,
     pub by_handle: &'a str,
     pub action: Option<u64>,
+    /// When the file the report held is deleted at the latest (seconds): a decided report keeps
+    /// it as long as the report itself is kept.
+    pub release_media_at: u64,
 }
 
-/// Decides an open report. False when it was decided already.
+/// Decides an open report. False when it was decided already. A file the report held is released
+/// to `release_media_at`, unless another undecided report holds it too.
 pub async fn decide_report(conn: &mut Conn, id: u64, d: &Decision<'_>) -> sqlx::Result<bool> {
     let result = sqlx::query(
         "UPDATE reports SET status = 'decided', outcome = $2, decided = $3, decided_by = $4, \
@@ -163,9 +170,21 @@ pub async fn decide_report(conn: &mut Conn, id: u64, d: &Decision<'_>) -> sqlx::
     .bind(d.by.map(i))
     .bind(d.by_handle)
     .bind(d.action.map(i))
+    .execute(&mut *conn)
+    .await?;
+    if result.rows_affected() != 1 {
+        return Ok(false);
+    }
+    sqlx::query(
+        "UPDATE media SET hold_until_ms = $2 WHERE hold_until_ms > $2 \
+         AND id = (SELECT media_id FROM reports WHERE id = $1) \
+         AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.media_id = media.id AND r.status = 'open')",
+    )
+    .bind(i(id))
+    .bind(i(d.release_media_at) * 1000)
     .execute(conn)
     .await?;
-    Ok(result.rows_affected() == 1)
+    Ok(true)
 }
 
 /// Forgets who filed the reports of an account that is being deleted. The reports stay, as

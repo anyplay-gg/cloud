@@ -165,11 +165,13 @@ pub async fn file_report(state: &AppState, reporter: u64, request: api::Report) 
             row.note
         ));
     }
+    let mut held_media = None;
     if let (Some(conversation), Some(seq)) = (&request.conversation, request.seq) {
         // A report that names a screenshot or clip keeps the file for the moderators for as long
         // as an undecided report lives.
         let until = (now() + state.config.retention_open_reports_days * DAY) as i64 * 1000;
         if let Some(media) = crate::media::hold(&mut conn, conversation, seq, until).await? {
+            held_media = Some(media.id.clone());
             content.push_str(&format!(
                 "\nmedia {} ({}, {} bytes) is held for moderators{}",
                 media.id,
@@ -193,6 +195,7 @@ pub async fn file_report(state: &AppState, reporter: u64, request: api::Report) 
             reason: &reason,
             details: &request.details,
             content: &content,
+            media_id: held_media.as_deref(),
             now: now(),
         },
     )
@@ -299,6 +302,7 @@ pub async fn dismiss(state: &AppState, actor: &Actor, id: u64, reason: &str) -> 
         by: actor.id,
         by_handle: &actor.handle,
         action: None,
+        release_media_at: now() + state.config.retention_reports_days * DAY,
     };
     if !store::decide_report(&mut tx, id, &decision).await? {
         return Err(AppError::limit("This report is decided already."));
@@ -388,6 +392,7 @@ pub async fn act(state: &AppState, actor: &Actor, request: ActionRequest) -> Res
             by: actor.id,
             by_handle: &actor.handle,
             action: Some(id),
+            release_media_at: created + state.config.retention_reports_days * DAY,
         };
         if !store::decide_report(&mut tx, report_id, &decision).await? {
             // Another moderator decided it between the check and now.
