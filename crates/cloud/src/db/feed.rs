@@ -217,6 +217,22 @@ pub async fn items_of_owners(
     .await
 }
 
+/// The numbers of a title that `account` keeps secret and has not revealed.
+pub async fn hidden_numbers(
+    conn: &mut Conn,
+    account: u64,
+    title_id: &str,
+) -> sqlx::Result<Vec<i64>> {
+    let rows: Vec<(i64,)> = sqlx::query_as(
+        "SELECT number FROM trophy_secrets          WHERE account_id = $1 AND title_id = $2 AND revealed = 0",
+    )
+    .bind(i(account))
+    .bind(title_id)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows.into_iter().map(|(n,)| n).collect())
+}
+
 /// Up to `limit` party items that name `member`, older than `before`, newest first.
 pub async fn party_items_of(
     conn: &mut Conn,

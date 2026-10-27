@@ -138,24 +138,30 @@ pub async fn create(
         return Err(AppError::bad_request("A listing looks for 1 to 7 players."));
     }
     let now = now_ms();
-    {
-        let mut conn = state.db.acquire().await?;
-        let open = lfg::open_of(&mut conn, auth.account, now).await?;
-        if open.iter().any(|row| row.title_id == request.title_id) {
-            return Err(AppError::limit(
-                "You have a listing for this game already. Close it first.",
-            ));
-        }
-        if open.len() >= MAX_LFG_OPEN {
-            return Err(AppError::limit("You have three open listings already."));
-        }
-    }
     let rates = &state.tuning.rates;
     rate(&state, "lfg_post", auth.account, rates.lfg_posts)?;
     let id = random_uuid();
-    let mut conn = state.db.acquire().await?;
+    // The open listings are counted and the new one written in one write transaction, so two
+    // requests cannot both pass the limit.
+    let mut tx = state.begin_write().await?;
+    if tx.backend_name() == "PostgreSQL" {
+        // SQLite serializes its writers already; PostgreSQL needs the poster's turn.
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(auth.account as i64 ^ 0x4c46_4700_0000_0000)
+            .execute(&mut *tx)
+            .await?;
+    }
+    let open = lfg::open_of(&mut tx, auth.account, now).await?;
+    if open.iter().any(|row| row.title_id == request.title_id) {
+        return Err(AppError::limit(
+            "You have a listing for this game already. Close it first.",
+        ));
+    }
+    if open.len() >= MAX_LFG_OPEN {
+        return Err(AppError::limit("You have three open listings already."));
+    }
     lfg::insert(
-        &mut conn,
+        &mut tx,
         &NewListing {
             id: &id,
             poster: auth.account,
@@ -169,10 +175,10 @@ pub async fn create(
         },
     )
     .await?;
-    let row = lfg::listing(&mut conn, &id)
+    let row = lfg::listing(&mut tx, &id)
         .await?
         .ok_or_else(AppError::internal)?;
-    drop(conn);
+    tx.commit().await?;
     Ok(Json(poster_view(&state, &row).await?))
 }
 

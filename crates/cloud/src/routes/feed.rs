@@ -71,9 +71,73 @@ pub async fn page(
         .collect();
     let blocked = db::blocked_among(&mut conn, me, &party_owners).await?;
     rows.retain(|row| !(row.is_party() && blocked.contains(&row.owner())));
+    keep_visible(&mut conn, me, &mut rows).await?;
 
     let items = build(&mut conn, me, rows).await?;
     Ok(Json(Feed { items, next }))
+}
+
+/// Drops what the viewer may not see of the items: a trophy item needs the owner's trophies to be
+/// visible to them and the trophy not to be secret, a first-played item the owner's playtime, and
+/// a friend item must not name an account that blocked the viewer or that they blocked. The
+/// owner's own items are always theirs; party items are decided elsewhere.
+async fn keep_visible(
+    conn: &mut sqlx::AnyConnection,
+    me: u64,
+    rows: &mut Vec<ItemRow>,
+) -> Result<()> {
+    let owners: Vec<u64> = rows
+        .iter()
+        .filter(|row| !row.is_party())
+        .map(ItemRow::owner)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let seen = viewing_many(conn, me, &owners).await?;
+    let others: Vec<u64> = rows
+        .iter()
+        .filter_map(|row| row.other_account.map(|a| a as u64))
+        .collect();
+    let blocked = db::blocked_among(conn, me, &others).await?;
+    let mut secrets: std::collections::HashMap<(u64, String), Vec<i64>> = Default::default();
+    let mut keep = Vec::with_capacity(rows.len());
+    for row in rows.iter() {
+        let owner = row.owner();
+        let ok = if row.is_party() || owner == me && row.kind != "friend" {
+            true
+        } else {
+            let seen = &seen[&owner];
+            match row.kind.as_str() {
+                "trophy" => {
+                    let (Some(title), Some(number)) = (&row.title_id, row.trophy_number) else {
+                        keep.push(false);
+                        continue;
+                    };
+                    if !seen.can(Part::Trophies) {
+                        false
+                    } else if owner == me {
+                        true
+                    } else {
+                        let key = (owner, title.clone());
+                        if !secrets.contains_key(&key) {
+                            let hidden = db::feed::hidden_numbers(conn, owner, title).await?;
+                            secrets.insert(key.clone(), hidden);
+                        }
+                        !secrets[&key].contains(&number)
+                    }
+                }
+                "first_played" => seen.can(Part::Playtime),
+                "friend" => !row
+                    .other_account
+                    .is_some_and(|a| blocked.contains(&(a as u64))),
+                _ => true,
+            }
+        };
+        keep.push(ok);
+    }
+    let mut keep = keep.into_iter();
+    rows.retain(|_| keep.next().unwrap_or(false));
+    Ok(())
 }
 
 /// The items as the API shows them, with the accounts, reactions and rarities read for all of
@@ -180,11 +244,13 @@ async fn visible_item(state: &AppState, me: u64, id: u64) -> Result<ItemRow> {
         Relation::Friend => seen.can(Part::Feed),
         Relation::Stranger => false,
     };
+    let mut rows = vec![row];
     if allowed {
-        Ok(row)
+        keep_visible(&mut conn, me, &mut rows).await?;
     } else {
-        Err(AppError::not_found())
+        rows.clear();
     }
+    rows.pop().ok_or_else(AppError::not_found)
 }
 
 fn limit_reactions(state: &AppState, me: u64) -> Result<()> {

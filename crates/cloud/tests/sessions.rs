@@ -365,7 +365,8 @@ async fn joining_checks_blocks_then_visibility_then_version_then_capacity() {
         .await
         .is_error("full", 409);
 
-    // A block between the joiner and any member beats everything else, even a full session.
+    // A block between the joiner and any member beats everything else, even a full session, and
+    // answers like a session that is not there.
     cloud
         .put(&format!("/v1/blocks/{}", late.id), friend.token(), None)
         .await
@@ -373,7 +374,7 @@ async fn joining_checks_blocks_then_visibility_then_version_then_capacity() {
     cloud
         .post(&path, late.token(), join_body(3))
         .await
-        .is_error("forbidden", 403);
+        .is_error("not_found", 404);
     // It also works the other way round.
     cloud
         .delete(&format!("/v1/blocks/{}", late.id), friend.token())
@@ -386,7 +387,7 @@ async fn joining_checks_blocks_then_visibility_then_version_then_capacity() {
     cloud
         .post(&path, late.token(), join_body(3))
         .await
-        .is_error("forbidden", 403);
+        .is_error("not_found", 404);
 }
 
 fn join_with(version: &str, build: &str, n: u8, extra: Value) -> Value {
@@ -1360,4 +1361,43 @@ async fn a_party_moved_into_a_lan_session_gets_lan_invitations() {
     };
     assert_eq!(invitation.kind, SessionKind::Lan);
     assert_eq!(invitation.session, session.id);
+}
+
+#[tokio::test]
+async fn an_invitation_is_not_sent_across_a_block_with_the_inviter_or_a_member() {
+    let cloud = TestCloud::start().await;
+    let (a, b) = cloud.friends("Alec", "Sam").await;
+    let kim = cloud.sign_up("Kim").await;
+    let lou = cloud.sign_up("Lou").await;
+    befriend(&cloud, &a, &kim).await;
+    befriend(&cloud, &a, &lou).await;
+    let session = create(&cloud, &a, 1, 4, "invite").await;
+    join_by_invitation(&cloud, &a, &b, &session.id).await;
+    // Kim blocked a member, Lou blocked nobody; Alec's friendship with both stays.
+    cloud
+        .put(&format!("/v1/blocks/{}", b.id), kim.token(), None)
+        .await
+        .ok(204);
+    let invited: Invited = cloud
+        .post(
+            &format!("/v1/sessions/{}/invitations", session.id),
+            a.token(),
+            json!({"to": [kim.id, lou.id]}),
+        )
+        .await
+        .ok(200)
+        .json();
+    assert_eq!(invited.sent, vec![AccountId(lou.id)]);
+}
+
+async fn join_by_invitation(cloud: &TestCloud, from: &User, to: &User, session: &str) {
+    cloud
+        .post(
+            &format!("/v1/sessions/{session}/invitations"),
+            from.token(),
+            json!({"to": [to.id]}),
+        )
+        .await
+        .ok(200);
+    join(cloud, to, session, 2).await;
 }

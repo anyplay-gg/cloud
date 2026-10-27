@@ -361,12 +361,42 @@ impl Inner {
     /// member; the last member closes the session. Returns the accounts whose presence may have
     /// changed.
     pub async fn remove_member(&self, id: &str, account: u64) -> Result<Vec<u64>, AppError> {
+        self.remove_member_by(id, account, None).await
+    }
+
+    /// [`Self::remove_member`] for `by`, the leader who removes another member: the leader
+    /// check is made under the session's lock, so a leader who handed over meanwhile cannot kick.
+    pub async fn remove_member_by(
+        &self,
+        id: &str,
+        account: u64,
+        by: Option<u64>,
+    ) -> Result<Vec<u64>, AppError> {
         let mut tx = self.begin_write().await?;
         let Some(mut session) = live::lock_session(&mut tx, id).await? else {
-            return Ok(Vec::new());
+            return if by.is_some() {
+                Err(AppError::not_found())
+            } else {
+                Ok(Vec::new())
+            };
         };
+        if let Some(by) = by {
+            if !session.is_member(by) {
+                return Err(AppError::not_found());
+            }
+            if session.leader() != by {
+                return Err(AppError::forbidden("Only the leader can remove members."));
+            }
+            if account == by {
+                return Err(AppError::bad_request("Leave the session instead."));
+            }
+        }
         if !session.is_member(account) {
-            return Ok(Vec::new());
+            return if by.is_some() {
+                Err(AppError::not_found())
+            } else {
+                Ok(Vec::new())
+            };
         }
         live::delete_member(&mut tx, id, account).await?;
         session.members.retain(|m| m.account_id as u64 != account);

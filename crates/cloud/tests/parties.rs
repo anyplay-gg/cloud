@@ -1104,3 +1104,18 @@ async fn an_invitation_carries_no_endpoint() {
     assert!(!text.contains("relay"), "{text}");
     assert!(!text.contains(&endpoint(0xab)), "{text}");
 }
+
+#[tokio::test]
+async fn blocking_a_party_member_leaves_the_shared_party() {
+    let cloud = TestCloud::start().await;
+    let (lead, friends) = leader_and_friends(&cloud, 2).await;
+    let (bea, cy) = (&friends[0], &friends[1]);
+    gather(&cloud, &lead, &[bea, cy]).await;
+    cloud
+        .put(&format!("/v1/blocks/{}", lead.id), bea.token(), None)
+        .await
+        .ok(204);
+    party_of(&cloud, bea).await.is_error("not_found", 404);
+    party_of(&cloud, &lead).await.ok(200);
+    party_of(&cloud, cy).await.ok(200);
+}
