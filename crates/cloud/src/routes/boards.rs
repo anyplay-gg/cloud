@@ -1,5 +1,5 @@
 //! Leaderboards: submitting a score, reading a board, the account's audience and the
-//! moderator's calls (network `spec/cloud-api.md`, "Leaderboards", ADR 0040). The store and the
+//! moderator's calls (network `spec/cloud-api.md`, "Leaderboards", ADR 0041). The store and the
 //! rules of who sees what are in [`crate::leaderboards`].
 //!
 //! The cloud offers them only when `leaderboards_enabled` is set; until then every route answers

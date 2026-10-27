@@ -1,4 +1,4 @@
--- Leaderboards (network spec/cloud-api.md, "Leaderboards", ADR 0040). A board is a title and the
+-- Leaderboards (network spec/cloud-api.md, "Leaderboards", ADR 0041). A board is a title and the
 -- board ID the game passes; it is made by the first accepted score with the defaults, and a
 -- moderator sets its real order, bounds and status. An entry is an account's best score on a
 -- board. Nothing here is game content: no names, no units, no art.

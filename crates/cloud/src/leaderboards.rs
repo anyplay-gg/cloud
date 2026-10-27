@@ -1,5 +1,5 @@
 //! Leaderboards: boards of best scores, named by a title and what the game passes (network
-//! `spec/cloud-api.md`, "Leaderboards", ADR 0040). Written once with `$1` parameters for SQLite
+//! `spec/cloud-api.md`, "Leaderboards", ADR 0041). Written once with `$1` parameters for SQLite
 //! and Postgres, like [`crate::played_with`].
 //!
 //! The module has four jobs behind a small interface. [`submit`] keeps an account's best score on

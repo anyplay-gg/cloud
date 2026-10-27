@@ -117,7 +117,7 @@ pub struct Config {
     /// Whether the cloud offers share play (network `spec/share-play.md`). Off by default: every
     /// share request is answered `forbidden` until the legal review is done.
     pub share_enabled: bool,
-    /// Whether the cloud offers leaderboards (network ADR 0040). Off by default: every route
+    /// Whether the cloud offers leaderboards (network ADR 0041). Off by default: every route
     /// answers `forbidden` (the portal's reads `not_found`) until it is set.
     pub leaderboards_enabled: bool,
     /// The most a relayed share should stream, in kbit/s; announced in `GET /v1/info`.

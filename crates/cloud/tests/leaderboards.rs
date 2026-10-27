@@ -1,4 +1,4 @@
-//! Leaderboards (network `spec/cloud-api.md`, "Leaderboards", ADR 0040): boards are made by the
+//! Leaderboards (network `spec/cloud-api.md`, "Leaderboards", ADR 0041): boards are made by the
 //! first score, an entry is an account's best, who sees an entry follows the account's audience,
 //! friendship and blocks, and a moderator decides order, bounds and what stays. Like the other
 //! tests these run on SQLite, and on PostgreSQL as well when `ANYPLAY_TEST_DATABASE_URL` is set.

@@ -175,7 +175,7 @@ pub fn router(state: AppState) -> Router {
         .route(path::CONVERSATION_TYPING, put(messages::typing))
         .route(path::CONVERSATION_SETTINGS, patch(messages::settings))
         .route(path::CONVERSATION_READ, put(messages::mark_read));
-    // Leaderboards (network spec/cloud-api.md, ADR 0040)
+    // Leaderboards (network spec/cloud-api.md, ADR 0041)
     router = router
         .route(path::MY_SCORE, put(boards::submit))
         .route(
