@@ -57,6 +57,10 @@ services:
       # Web Push (docs/configuration.md, "Notifications"): off while these are empty.
       ANYPLAY_CLOUD_VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       ANYPLAY_CLOUD_VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+      # Share play (docs/configuration.md): off unless SHARE_ENABLED=true in .env. An empty value is not set.
+      ANYPLAY_CLOUD_SHARE_ENABLED: ${SHARE_ENABLED:-}
+      ANYPLAY_CLOUD_SHARE_RELAY_KBPS: ${SHARE_RELAY_KBPS:-}
+      ANYPLAY_CLOUD_SHARE_RELAY_MINUTES_PER_DAY: ${SHARE_RELAY_MINUTES_PER_DAY:-}
     volumes:
       - cloud-data:/data
 
