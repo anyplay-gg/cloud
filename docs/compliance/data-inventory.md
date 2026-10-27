@@ -170,7 +170,7 @@ The endpoint ID is a stable key. A player who keeps the net service's data folde
 | | |
 |---|---|
 | What | The ID of every deleted account and the time of its deletion (milliseconds). Nothing else: no handle, no e-mail address, no hash. |
-| Where | `deleted_accounts` (`account_id`, `deleted_ms`; migration 0028). Written by `db::delete_account` in the same transaction as the deletion; added to by `anyplay-cloud replay-deletions --ledger FILE`. |
+| Where | `deleted_accounts` (`account_id`, `deleted_ms`; migration 0029). Written by `db::delete_account` in the same transaction as the deletion; added to by `anyplay-cloud replay-deletions --ledger FILE`. |
 | Why | A restored backup brings back accounts that were deleted after it was made. The privacy notice promises they are deleted again. After a restore, `replay-deletions` deletes every account the ledger lists that exists. `deploy/restore.sh` first reads the ledger of the replaced database into `anyplay-cloud-pre-restore-<time>.deletions`, because the restored database only knows the deletions before its own backup. |
 | Basis (proposed) | Art. 6(1)(c) and (f): keeping the promise of erasure (Art. 17). An account ID without any other data is hard to link to a person, but it is not anonymous while the account's moderation records still carry the same ID. |
 | Kept today | 90 days from the deletion, then the sweep deletes the row; 90 days is the longest a backup may hold the account. |
