@@ -269,6 +269,13 @@ impl Config {
 
     /// Reads the file, if any, then applies the environment and checks the result.
     pub fn load(path: Option<&Path>) -> Result<Self> {
+        Self::load_for(path, true)
+    }
+
+    /// Like [`Config::load`]. With `serving` false (`keygen`, `healthcheck` and the other
+    /// commands that send no mail and listen nowhere) the check of `mail = "log"` against the
+    /// listen address is skipped, so that a command works without settings.
+    pub fn load_for(path: Option<&Path>, serving: bool) -> Result<Self> {
         let mut config = match path {
             Some(path) => {
                 let text = std::fs::read_to_string(path)
@@ -278,6 +285,9 @@ impl Config {
             None => Config::default(),
         };
         config.apply_env(|name| std::env::var(format!("ANYPLAY_CLOUD_{name}")).ok())?;
+        if !serving {
+            config.allow_log_mail = true;
+        }
         config.validate()?;
         Ok(config)
     }
