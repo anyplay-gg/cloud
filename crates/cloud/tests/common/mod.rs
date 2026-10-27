@@ -248,6 +248,8 @@ pub fn fast_tuning() -> Tuning {
         // slowly it runs; the tests of the grace itself shorten it.
         session_grace: Duration::from_secs(30),
         sweep_interval: Duration::from_millis(100),
+        // Counted afresh every time, so that a test sees its own uploads at once.
+        rarity_ttl: Duration::ZERO,
         rates: Rates {
             email_per_address: 100,
             email_per_ip: 10_000,

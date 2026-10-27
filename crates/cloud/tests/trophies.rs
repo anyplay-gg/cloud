@@ -665,3 +665,131 @@ async fn one_call_for_a_mix_of_accounts_gives_each_its_own_card() {
         .collect();
     assert_eq!(got, want);
 }
+
+/// Gives the account `titles` titles of `per` bronze trophies each, written straight to the store.
+async fn fill(cloud: &TestCloud, user: &User, titles: usize, per: usize) {
+    for title in 0..titles {
+        let rows = (0..per)
+            .map(|n| format!("({}, 'FILL{title:05}', {n}, 'bronze', 1)", user.id))
+            .collect::<Vec<_>>()
+            .join(",");
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO trophies (account_id, title_id, number, grade, earned) VALUES {rows}"
+        )))
+        .execute(&cloud.state.db)
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn an_account_keeps_a_limited_number_of_titles_and_trophies() {
+    let cloud = TestCloud::start().await;
+    let alec = cloud.sign_up("Alec").await;
+    let t = now();
+    fill(&cloud, &alec, 499, 100).await;
+    // The five hundredth title is the last one.
+    upload(&cloud, &alec, "GAME00001", vec![trophy(0, "gold", t)])
+        .await
+        .ok(200);
+    upload(&cloud, &alec, "GAME00002", vec![trophy(0, "gold", t)])
+        .await
+        .is_error("limit", 409);
+    // A title it holds still takes trophies, up to the most rows: 49,901 are held.
+    let more = |from: u16, to: u16| (from..to).map(|n| trophy(n, "bronze", t)).collect();
+    upload(&cloud, &alec, "FILL00000", more(100, 300))
+        .await
+        .is_error("limit", 409);
+    let kept: TrophiesAdded = upload(&cloud, &alec, "FILL00000", more(100, 199))
+        .await
+        .ok(200)
+        .json();
+    assert_eq!(kept.added, 99);
+    upload(&cloud, &alec, "FILL00000", more(199, 200))
+        .await
+        .is_error("limit", 409);
+    // A refused upload stored nothing, and one that repeats known trophies still passes.
+    let (rows,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM trophies WHERE account_id = $1")
+        .bind(alec.id as i64)
+        .fetch_one(&cloud.state.db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 50_000);
+    let again: TrophiesAdded = upload(&cloud, &alec, "FILL00000", more(0, 10))
+        .await
+        .ok(200)
+        .json();
+    assert_eq!(again.added, 0);
+}
+
+#[tokio::test]
+async fn secret_marks_are_limited_per_title_count() {
+    let cloud = TestCloud::start().await;
+    let alec = cloud.sign_up("Alec").await;
+    for n in 0..500 {
+        cloud
+            .put(
+                &format!("/v1/me/trophies/FILL{n:05}/secret"),
+                alec.token(),
+                Some(json!({"numbers": [1, 2, 2]})),
+            )
+            .await
+            .ok(200);
+    }
+    cloud
+        .put(
+            "/v1/me/trophies/GAME00001/secret",
+            alec.token(),
+            Some(json!({"numbers": [1]})),
+        )
+        .await
+        .is_error("limit", 409);
+    // A title already held takes more marks; marks already set change nothing.
+    let changed = cloud
+        .put(
+            "/v1/me/trophies/FILL00000/secret",
+            alec.token(),
+            Some(json!({"numbers": [2, 3]})),
+        )
+        .await
+        .ok(200);
+    assert_eq!(changed.body["changed"], 1);
+}
+
+#[tokio::test]
+async fn the_rarity_of_a_title_is_reused_for_the_time_to_live() {
+    let cloud = TestCloud::with(
+        |_| {},
+        |t| t.rarity_ttl = std::time::Duration::from_secs(3600),
+    )
+    .await;
+    let t = now();
+    let mut players = Vec::new();
+    for n in 0..RARITY_MIN_PLAYERS + 1 {
+        players.push(cloud.sign_up(&format!("Player{n}")).await);
+    }
+    for player in players.iter().take(RARITY_MIN_PLAYERS as usize) {
+        upload(&cloud, player, "PPSA01234", vec![trophy(0, "bronze", t)])
+            .await
+            .ok(200);
+    }
+    let asker = players[0].token().to_owned();
+    let rarity = async || -> Rarity {
+        cloud
+            .get("/v1/titles/PPSA01234/rarity", &asker)
+            .await
+            .ok(200)
+            .json()
+    };
+    assert_eq!(rarity().await.players, RARITY_MIN_PLAYERS);
+    upload(
+        &cloud,
+        players.last().unwrap(),
+        "PPSA01234",
+        vec![trophy(0, "bronze", t)],
+    )
+    .await
+    .ok(200);
+    // Counted once; the newcomer shows when the counts are old enough.
+    assert_eq!(rarity().await.players, RARITY_MIN_PLAYERS);
+}
