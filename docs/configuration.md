@@ -28,7 +28,8 @@ Without a file, the defaults apply. The cloud runs that way for development: sig
 | `nats_url` | none | A NATS server, such as `nats://nats.internal:4222` (`tls://` for TLS). With it the cloud runs as one node of a cluster: the nodes share the database of `database_url`, which must be set, and tell each other about changes over NATS ([ADR 0004](adr/0004-nats-carries-news-not-state.md)). Every node needs the same signing key, so give them the same key: the same `signing.key` in `data_dir`, or one secret file named by `signing_key_file`. |
 | `name` | `AnyPlay cloud` | The public name, shown by `GET /v1/info` and in sign-in mails. 1 to 64 characters. |
 | `relays` | none | The URLs of your relays, such as `https://relay.example.com`. The cloud hands out a ticket for each. In an environment variable, separate them with commas. |
-| `mail` | `log` | `log` writes sign-in codes to the log. `smtp` sends them. |
+| `mail` | `log` | `log` writes sign-in codes to the log. `smtp` sends them. The cloud refuses to start with `log` unless `listen` is a loopback address (`127.0.0.1`, `[::1]`) or `allow_log_mail` is set. |
+| `allow_log_mail` | `false` | Allows `mail = "log"` on a listen address that is not a loopback address, for a development cloud in a container. Environment variable `ANYPLAY_CLOUD_ALLOW_LOG_MAIL`. Never on a cloud with real players. |
 | `mail_from` | `AnyPlay cloud <noreply@localhost>` | The sender of sign-in mails. |
 | `smtp_host` | none | The SMTP server. Required with `mail = "smtp"`. |
 | `smtp_port` | by `smtp_tls` | `587` for `starttls`, `465` for `tls`, `25` for `none`. |
@@ -52,7 +53,7 @@ The `admin` and `healthcheck` commands read the same settings to find the cloud 
 
 ### Sign-in mails
 
-With `mail = "smtp"` the cloud never writes addresses or codes to its log above debug level. With `mail = "log"` it does, at info level, because that is the point of the mode.
+With `mail = "smtp"` the cloud never writes addresses or codes to its log above debug level. With `mail = "log"` a sign-in code and its address are written at info level, because that is the point of the mode; that is why the cloud refuses the mode on a public address without `allow_log_mail`. A notice mail (deletion, ban) is logged with its subject only, never the address.
 
 When a mail cannot be sent, the cloud logs one line at error level, such as `cannot send a sign-in code class=auth status=535`, and the player sees the same generic error as before. `class` is one of:
 

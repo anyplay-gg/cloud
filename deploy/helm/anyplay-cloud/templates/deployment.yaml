@@ -78,6 +78,11 @@ spec:
               value: {{ .Values.config.name | quote }}
             - name: ANYPLAY_CLOUD_MAIL
               value: {{ .Values.config.mail | quote }}
+            {{- if eq .Values.config.mail "log" }}
+            # The cloud refuses the log mode on a public address; the chart's log mode is for tests.
+            - name: ANYPLAY_CLOUD_ALLOW_LOG_MAIL
+              value: "true"
+            {{- end }}
             - name: ANYPLAY_CLOUD_MAIL_FROM
               value: {{ .Values.config.mailFrom | quote }}
             - name: ANYPLAY_CLOUD_SIGNUP

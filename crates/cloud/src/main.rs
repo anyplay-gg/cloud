@@ -13,7 +13,8 @@ use tokio::net::TcpListener;
 async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
-    let config = Config::load(cli.config.as_deref())?;
+    let serving = matches!(cli.command, None | Some(Command::Serve));
+    let config = Config::load_for(cli.config.as_deref(), serving)?;
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "info,sqlx=warn".into());
     match config.log_format {
@@ -64,6 +65,9 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Healthcheck { url } => anyplay_cloud::cli::healthcheck(&config, url).await,
+        Command::ReplayDeletions { ledger } => {
+            anyplay_cloud::cli::replay_deletions(config, ledger).await
+        }
         Command::Admin { url, action } => anyplay_cloud::cli::admin(&config, url, action).await,
     }
 }

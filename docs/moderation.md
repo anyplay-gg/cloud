@@ -107,14 +107,14 @@ The sweep runs on every node about once an hour and deletes:
 
 | What | Deleted | Default | Setting |
 |---|---|---|---|
-| A temporary ban, and its e-mail hash | After its end | 6 months (183 days) | `retention_bans_days` |
-| A mute, an ended or a lifted action (a ban lifted, a mute lifted) with its appeal | After its end or lifting | 6 months | `retention_bans_days` |
+| A temporary ban row, and its e-mail hash | After its end | 6 months (183 days) | `retention_bans_days` |
+| A mute, an ended or a lifted action (a ban lifted, a mute lifted) with its appeal. This is the action record; it holds no e-mail hash | After its end or lifting | 6 months | `retention_bans_days` |
 | A warning with its appeal | After it was given | 6 months | `retention_bans_days` |
 | A decided report | After the decision | 6 months | `retention_reports_days` |
 | A report nobody decided | After it was filed | 1 year (365 days) | `retention_open_reports_days` |
 | A line of the audit log | After it was written | 3 years (1095 days) | `retention_audit_days` |
 
-- A **ban for good** is kept until a moderator lifts it, and for `retention_bans_days` after that. It is the one record the cloud keeps without an end, because it is the ban. Decide how often your moderators review them; the lawyer should set the review period ([compliance/open-questions.md](compliance/open-questions.md)).
+- A **ban for good** is kept until a moderator lifts it. It is the one record the cloud keeps without an end, because it is the ban. Lifting a ban (by `unban`, by lifting its action, or by an appeal that reverses it) deletes the ban row and so the e-mail hash at once; the action record stays for `retention_bans_days` after the lifting, as the table says. A temporary ban that is not lifted keeps its ban row, with the hash, until `retention_bans_days` after its end. Decide how often your moderators review them; the lawyer should set the review period ([compliance/open-questions.md](compliance/open-questions.md)).
 - An action with an **open appeal** is kept until the appeal is decided.
 - `retention_bans_days` may not be shorter than `appeal_days`, so that no warning goes before its appeal time ends. The cloud refuses to start otherwise.
 - The audit log is written by the cloud and never changed; the database refuses an `UPDATE`. Only this sweep deletes lines. Because lines name players and carry the reason text, the period is a data-protection choice: keep it as short as your duty to show who did what allows.
@@ -132,4 +132,4 @@ A ban keeps a hash of the banned person's e-mail address so that they cannot sig
 
 Each line has the time, who did it (a moderator's account and handle, or `operator`), what happened (`warned`, `muted`, `banned`, `lifted`, `report_dismissed`, `appeal_filed`, `appeal_upheld`, `appeal_reversed`, `moderator_granted`, `moderator_revoked`), the account concerned with the handle it had, the reason, the rule, and the report, action or appeal it belongs to. A player who files an appeal appears as the actor of that line. Read it with `anyplay-cloud admin log` or `GET /v1/moderation/log`.
 
-The older `tracing` line `account banned` is still written to the ordinary log with the account ID. It is not the record.
+The ordinary log has one `tracing` line for every action, `moderation action` at warn level, with the account ID and the kind (`ban`, `mute`, `warn`). It is not the record; the audit log is.
