@@ -204,11 +204,17 @@ impl Metrics {
         }
         let _ = writeln!(
             out,
-            "# HELP anyplay_cloud_tunnel_paths_total Tunnels players reported, by the kind of path they settled on.
-\n             # TYPE anyplay_cloud_tunnel_paths_total counter
-\n             anyplay_cloud_tunnel_paths_total{{kind=\"direct\"}} {}
-\n             anyplay_cloud_tunnel_paths_total{{kind=\"relay\"}} {}",
-            self.tunnel_direct.load(Ordering::Relaxed),
+            "# HELP anyplay_cloud_tunnel_paths_total Tunnels players reported, by the kind of path they settled on."
+        );
+        let _ = writeln!(out, "# TYPE anyplay_cloud_tunnel_paths_total counter");
+        let _ = writeln!(
+            out,
+            "anyplay_cloud_tunnel_paths_total{{kind=\"direct\"}} {}",
+            self.tunnel_direct.load(Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            out,
+            "anyplay_cloud_tunnel_paths_total{{kind=\"relay\"}} {}",
             self.tunnel_relay.load(Ordering::Relaxed)
         );
         counter(
