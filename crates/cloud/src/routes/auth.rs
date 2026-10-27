@@ -18,7 +18,9 @@ use crate::error::{AppError, Result};
 use crate::http::{ApiJson, Auth, ClientIp};
 use crate::live::{self, CodeCheck};
 use crate::state::AppState;
-use crate::util::{self, hex, normalize_email, now, now_ms, random_id, random_token, sha256};
+use crate::util::{
+    self, canonical_email, hex, normalize_email, now, now_ms, random_id, random_token, sha256,
+};
 
 const CODE_LENGTH: u8 = 6;
 /// Challenges and sign-ups a client can make us hold at once.
@@ -105,7 +107,7 @@ pub async fn start_email_challenge(
     state
         .limiter
         .hit(
-            &format!("email:ip:{ip}"),
+            &format!("email:ip:{}", crate::http::rate_key(ip)),
             rates.email_per_ip,
             rates.auth_window,
         )
@@ -115,9 +117,21 @@ pub async fn start_email_challenge(
     state
         .limiter
         .hit(
-            &format!("email:address:{}", hex(&sha256(email.as_bytes()))),
+            &format!(
+                "email:address:{}",
+                hex(&sha256(canonical_email(&email).as_bytes()))
+            ),
             rates.email_per_address,
             rates.auth_window,
+        )
+        .map_err(AppError::rate_limited)?;
+    // However many addresses and clients ask, the store gets only so many new codes a minute.
+    state
+        .limiter
+        .hit(
+            "email:global",
+            rates.email_global,
+            rates.email_global_window,
         )
         .map_err(AppError::rate_limited)?;
 
@@ -148,6 +162,23 @@ pub async fn start_email_challenge(
 
 /// Checks a typed code against its challenge. Returns the verified address.
 pub async fn check_challenge(state: &AppState, challenge: &str, code: &str) -> Result<String> {
+    // Wrong codes count per address over all its challenges, so asking for new codes does not
+    // bring new guesses.
+    let rates = &state.tuning.rates;
+    let failures = live::challenge_email(&mut *state.db.acquire().await?, challenge)
+        .await?
+        .map(|email| {
+            format!(
+                "code:wrong:{}",
+                hex(&sha256(canonical_email(&email).as_bytes()))
+            )
+        });
+    if let Some(key) = &failures {
+        state
+            .limiter
+            .blocked(key, rates.code_failures_per_address)
+            .map_err(AppError::rate_limited)?;
+    }
     let check = live::check_code(
         &mut *state.db.acquire().await?,
         challenge,
@@ -165,7 +196,17 @@ pub async fn check_challenge(state: &AppState, challenge: &str, code: &str) -> R
             ErrorCode::CodeExpired,
             "This code has expired. Ask for a new one.",
         )),
-        CodeCheck::Wrong => Err(AppError::new(ErrorCode::CodeWrong, "That code is wrong.")),
+        CodeCheck::Wrong => {
+            if let Some(key) = &failures {
+                // Over the limit the next check is refused, not this answer.
+                let _ = state.limiter.hit(
+                    key,
+                    rates.code_failures_per_address,
+                    rates.code_failure_window,
+                );
+            }
+            Err(AppError::new(ErrorCode::CodeWrong, "That code is wrong."))
+        }
         CodeCheck::Right { email } => Ok(email),
     }
 }
@@ -179,7 +220,7 @@ pub async fn code(
     state
         .limiter
         .hit(
-            &format!("code:ip:{ip}"),
+            &format!("code:ip:{}", crate::http::rate_key(ip)),
             rates.code_per_ip,
             rates.auth_window,
         )
@@ -232,7 +273,12 @@ pub fn signups_closed() -> AppError {
 pub async fn check_email_ban(state: &AppState, email: &str) -> Result<()> {
     use crate::moderation::banhash::BanKey;
     let keyed = state.ban_key.hash(email);
-    let bans = db::bans_by_email(&state.db, &keyed, &BanKey::legacy(email)).await?;
+    let mut bans = db::bans_by_email(&state.db, &keyed, &BanKey::legacy(email)).await?;
+    // Bans made before the canonical form hold the address as it was typed.
+    let exact = state.ban_key.hash_exact(email);
+    if exact != keyed {
+        bans.extend(db::bans_by_email(&state.db, &exact, &BanKey::legacy(email)).await?);
+    }
     let now = now();
     if let Some(ban) = bans.iter().find(|b| b.active(now)) {
         if ban.salted == 0 {
@@ -260,7 +306,7 @@ pub async fn signup(
     state
         .limiter
         .hit(
-            &format!("code:ip:{ip}"),
+            &format!("code:ip:{}", crate::http::rate_key(ip)),
             rates.code_per_ip,
             rates.auth_window,
         )
@@ -466,9 +512,18 @@ pub fn issue_tokens(state: &AppState, account: u64, device: u64, refresh: String
 
 pub async fn refresh(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     headers: HeaderMap,
     ApiJson(request): ApiJson<RefreshRequest>,
 ) -> Result<Json<Tokens>> {
+    state
+        .limiter
+        .hit(
+            &format!("refresh:ip:{}", crate::http::rate_key(ip)),
+            state.tuning.rates.refresh_per_ip,
+            state.tuning.rates.refresh_ip_window,
+        )
+        .map_err(AppError::rate_limited)?;
     let invalid = || AppError::unauthorized("This refresh token is not valid. Sign in again.");
     if request.refresh.len() > 128 {
         return Err(invalid());

@@ -41,7 +41,7 @@ pub async fn token(
     state
         .limiter
         .hit(
-            &format!("code:ip:{ip}"),
+            &format!("code:ip:{}", crate::http::rate_key(ip)),
             rates.code_per_ip,
             rates.auth_window,
         )
@@ -135,6 +135,7 @@ fn expired_link() -> WebError {
 /// fetches the address (a preview, a scanner) cannot sign anybody in.
 pub async fn link_page(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     headers: axum::http::HeaderMap,
     Query(query): Query<LinkQuery>,
 ) -> WebResult {
@@ -157,7 +158,7 @@ pub async fn link_page(
     let account = db::account(&state.db, grant.account)
         .await?
         .ok_or_else(expired_link)?;
-    let mut visit = super::visit(&state, &headers).await?;
+    let mut visit = super::visit(&state, ip, &headers).await?;
     let v = view(&state, &mut visit.session).await?;
     let html = pages::link(&v.ctx(), &account.handle, &code);
     Ok(page(&state, &visit, StatusCode::OK, html))

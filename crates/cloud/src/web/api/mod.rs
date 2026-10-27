@@ -333,7 +333,7 @@ pub fn limit_public(state: &AppState, ip: std::net::IpAddr) -> Result<(), AppErr
     state
         .limiter
         .hit(
-            &format!("portal:ip:{ip}"),
+            &format!("portal:ip:{}", crate::http::rate_key(ip)),
             rates.portal_public,
             rates.portal_public_window,
         )

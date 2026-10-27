@@ -67,8 +67,15 @@ impl BanKey {
         Ok(Self(bytes))
     }
 
-    /// HMAC-SHA-256 of an address that is already normalized.
+    /// HMAC-SHA-256 of the canonical form of an address that is already normalized, so that
+    /// `name+tag@` and, at Gmail, dotted spellings of the name are the same address.
     pub fn hash(&self, email: &str) -> [u8; 32] {
+        hmac_sha256(&self.0, crate::util::canonical_email(email).as_bytes())
+    }
+
+    /// HMAC-SHA-256 of the address exactly as given: what bans made before the canonical form
+    /// used.
+    pub fn hash_exact(&self, email: &str) -> [u8; 32] {
         hmac_sha256(&self.0, email.as_bytes())
     }
 
@@ -174,5 +181,22 @@ mod tests {
         let first = BanKey::load(None, dir.path()).unwrap();
         let second = BanKey::load(None, dir.path()).unwrap();
         assert_eq!(first.hash("x@example.com"), second.hash("x@example.com"));
+    }
+}
+
+#[cfg(test)]
+mod canonical_tests {
+    use super::*;
+
+    #[test]
+    fn spellings_of_one_mailbox_have_one_hash() {
+        let key = BanKey(b"0123456789abcdef".to_vec());
+        assert_eq!(key.hash("sam+x@example.com"), key.hash("sam@example.com"));
+        assert_eq!(key.hash("s.am@gmail.com"), key.hash("sam+y@googlemail.com"));
+        assert_ne!(key.hash("s.am@example.com"), key.hash("sam@example.com"));
+        assert_ne!(
+            key.hash_exact("sam+x@example.com"),
+            key.hash("sam+x@example.com")
+        );
     }
 }

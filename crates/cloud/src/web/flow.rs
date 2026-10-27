@@ -432,8 +432,12 @@ pub async fn complete_login(
 
 // The pages
 
-pub async fn sign_in_page(State(state): State<AppState>, headers: HeaderMap) -> WebResult {
-    let mut visit = super::visit(&state, &headers).await?;
+pub async fn sign_in_page(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+) -> WebResult {
+    let mut visit = super::visit(&state, ip, &headers).await?;
     if visit.session.account.is_some() && visit.session.data.authorize.is_none() {
         return Ok(redirect(&state, &visit, "/web/account"));
     }
@@ -442,8 +446,12 @@ pub async fn sign_in_page(State(state): State<AppState>, headers: HeaderMap) -> 
     Ok(page(&state, &visit, StatusCode::OK, html))
 }
 
-pub async fn create_page(State(state): State<AppState>, headers: HeaderMap) -> WebResult {
-    let mut visit = super::visit(&state, &headers).await?;
+pub async fn create_page(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+) -> WebResult {
+    let mut visit = super::visit(&state, ip, &headers).await?;
     if visit.session.account.is_some() && visit.session.data.authorize.is_none() {
         return Ok(redirect(&state, &visit, "/web/account"));
     }
@@ -496,8 +504,12 @@ pub async fn email(
     }
 }
 
-pub async fn code_page(State(state): State<AppState>, headers: HeaderMap) -> WebResult {
-    let mut visit = super::visit(&state, &headers).await?;
+pub async fn code_page(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+) -> WebResult {
+    let mut visit = super::visit(&state, ip, &headers).await?;
     let Some(Login::Code { email, create, .. }) = visit.session.data.login.clone() else {
         return Ok(redirect(&state, &visit, "/web/sign-in"));
     };
@@ -567,8 +579,12 @@ pub async fn resend(
     Ok(redirect(&state, &visit, landing.path()))
 }
 
-pub async fn details_page(State(state): State<AppState>, headers: HeaderMap) -> WebResult {
-    let mut visit = super::visit(&state, &headers).await?;
+pub async fn details_page(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+) -> WebResult {
+    let mut visit = super::visit(&state, ip, &headers).await?;
     let Some(Login::NewAccount { email, .. }) = visit.session.data.login.clone() else {
         return Ok(redirect(&state, &visit, "/web/create"));
     };
@@ -637,8 +653,12 @@ pub async fn details(
     }
 }
 
-pub async fn terms_page(State(state): State<AppState>, headers: HeaderMap) -> WebResult {
-    let mut visit = super::visit(&state, &headers).await?;
+pub async fn terms_page(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+) -> WebResult {
+    let mut visit = super::visit(&state, ip, &headers).await?;
     let (Some(Login::Terms { .. }), Some(version)) =
         (visit.session.data.login.clone(), state.config.terms())
     else {

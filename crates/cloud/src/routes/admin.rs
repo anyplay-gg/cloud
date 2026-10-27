@@ -92,7 +92,7 @@ fn authorize(state: &AppState, ip: std::net::IpAddr, headers: &HeaderMap) -> Res
     state
         .limiter
         .hit(
-            &format!("admin:{ip}"),
+            &format!("admin:{}", crate::http::rate_key(ip)),
             rates.admin_per_ip,
             rates.account_window,
         )
