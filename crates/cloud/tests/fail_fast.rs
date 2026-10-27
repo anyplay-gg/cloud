@@ -55,7 +55,12 @@ async fn a_starved_pool_answers_429_with_retry_after_within_the_acquire_timeout(
         if reply.status == 200 {
             break;
         }
-        assert!(Instant::now() < until, "still {}: {:?}", reply.status, reply.body);
+        assert!(
+            Instant::now() < until,
+            "still {}: {:?}",
+            reply.status,
+            reply.body
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
