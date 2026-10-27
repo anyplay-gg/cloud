@@ -34,6 +34,7 @@ pub mod parties;
 pub mod profiles;
 pub mod runs;
 pub mod sessions;
+pub mod shares;
 pub mod trophies;
 
 /// Answers while the process runs.
@@ -164,6 +165,15 @@ pub fn router(state: AppState) -> Router {
         .route(path::CONVERSATION_TYPING, put(messages::typing))
         .route(path::CONVERSATION_SETTINGS, patch(messages::settings))
         .route(path::CONVERSATION_READ, put(messages::mark_read));
+    // Share play (network spec/share-play.md)
+    router = router
+        .route("/v1/shares", post(shares::create))
+        .route(
+            "/v1/share",
+            get(shares::get).delete(shares::end).patch(shares::update),
+        )
+        .route("/v1/share/accept", post(shares::accept))
+        .route("/v1/share/invitations", get(shares::invitations));
     // Moderation (docs/moderation.md)
     router = router
         .route(path::ME_ACTIONS, get(moderation::my_actions))

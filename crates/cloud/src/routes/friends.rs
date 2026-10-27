@@ -274,6 +274,7 @@ pub async fn block(
         state.remove_party_member(&party, auth.account).await?;
     }
     state.forget_missed_between(auth.account, them).await?;
+    state.check_shares(&[auth.account, them]).await;
     state.news.push(auth.account, &Event::Friends);
     // The blocked account learns only what it would see anyway: a friend or request is gone.
     if had_relation {

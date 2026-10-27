@@ -682,8 +682,11 @@ impl Inner {
         let (offline, gone, leaving) = step("live sessions", swept).unwrap_or_default();
         self.invitations_gone(&gone);
         step("social", self.sweep_social(now).await);
+        step("shares", self.sweep_shares(now).await);
         self.sweep_deletions().await;
         self.sweep_deletion_ledger(now).await;
+        // An account that went offline plays nothing: a share of its game ends.
+        self.check_shares(&offline).await;
         let mut dirty = offline;
         for account in leaving {
             if let Some(more) = step("leave", self.leave_everything(account).await) {

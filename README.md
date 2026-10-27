@@ -10,6 +10,7 @@ The central services of the [AnyPlay network](https://github.com/anyplaynet/netw
 - **Messages:** one-to-one and group conversations, message requests, reactions, edit and unsend.
 - **Profiles, feed and trophies:** profile pages with per-field visibility, a feed of friends' activity, trophy records with rarity and gamer cards.
 - **Find Players (LFG):** listings to look for people to play with.
+- **Share play:** a host streams the game they run to one party member; the cloud holds the invitation and the record, never the media. Off unless `share_enabled` is set.
 - **Media:** screenshots and clips sent to friends, kept for 30 days.
 - **Moderation:** reports, bans, rate limits and an admin command line.
 - **Relay with ticket check:** `anyplay-relay` carries encrypted game traffic between players who cannot connect directly, and admits only endpoints holding a ticket the cloud signed.

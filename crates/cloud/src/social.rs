@@ -179,6 +179,8 @@ impl Inner {
         if !party.members.is_empty() {
             self.announce_party(&party);
         }
+        // A share needs both in one party.
+        self.check_shares(&[account]).await;
         Ok(true)
     }
 

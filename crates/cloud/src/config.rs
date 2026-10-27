@@ -114,6 +114,13 @@ pub struct Config {
     pub feed_retention_days: u64,
     /// Minutes a join code lives (network `spec/cloud-api.md`, "Join codes").
     pub join_code_minutes: u64,
+    /// Whether the cloud offers share play (network `spec/share-play.md`). Off by default: every
+    /// share request is answered `forbidden` until the legal review is done.
+    pub share_enabled: bool,
+    /// The most a relayed share should stream, in kbit/s; announced in `GET /v1/info`.
+    pub share_relay_kbps: u32,
+    /// Minutes per UTC day one host's shares may be relayed; a share past it ends with `quota`.
+    pub share_relay_minutes_per_day: u32,
     // Moderation (docs/moderation.md)
     /// A secret for the keyed hash of banned e-mail addresses. Without it the cloud makes one in
     /// `data_dir/ban.key`.
@@ -212,6 +219,9 @@ impl Default for Config {
             message_retention_days: 30,
             feed_retention_days: 90,
             join_code_minutes: 120,
+            share_enabled: false,
+            share_relay_kbps: 6000,
+            share_relay_minutes_per_day: 120,
             ban_secret: None,
             new_account_hours: 24,
             new_account_friend_requests_per_day: 10,
@@ -401,6 +411,15 @@ impl Config {
         if let Some(v) = get("JOIN_CODE_MINUTES") {
             self.join_code_minutes = parse("JOIN_CODE_MINUTES", &v)?;
         }
+        if let Some(v) = get("SHARE_ENABLED") {
+            self.share_enabled = parse("SHARE_ENABLED", &v)?;
+        }
+        if let Some(v) = get("SHARE_RELAY_KBPS") {
+            self.share_relay_kbps = parse("SHARE_RELAY_KBPS", &v)?;
+        }
+        if let Some(v) = get("SHARE_RELAY_MINUTES_PER_DAY") {
+            self.share_relay_minutes_per_day = parse("SHARE_RELAY_MINUTES_PER_DAY", &v)?;
+        }
         if let Some(v) = get("BAN_SECRET") {
             self.ban_secret = Some(v);
         }
@@ -468,6 +487,12 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         if !(1..=7 * 24 * 60).contains(&self.join_code_minutes) {
             bail!("join_code_minutes must be 1 to 10080 (a week)");
+        }
+        if !(100..=1_000_000).contains(&self.share_relay_kbps) {
+            bail!("share_relay_kbps must be 100 to 1000000");
+        }
+        if !(1..=24 * 60).contains(&self.share_relay_minutes_per_day) {
+            bail!("share_relay_minutes_per_day must be 1 to 1440 (a day)");
         }
         if self.message_retention_days == 0 {
             bail!("message_retention_days must be at least 1");
@@ -761,6 +786,12 @@ pub struct Tuning {
     pub invitation_ttl: Duration,
     /// How long a call rings.
     pub call_ttl: Duration,
+    /// How long a share invitation waits for the guest.
+    pub share_invitation_ttl: Duration,
+    /// How long a share lasts when one of its accounts has no event connection.
+    pub share_absent: Duration,
+    /// What a minute of the daily relay allowance lasts.
+    pub share_minute: Duration,
     pub ping_interval: Duration,
     pub sweep_interval: Duration,
     /// How long a node may miss its heartbeat before its connections count as closed.
@@ -834,6 +865,9 @@ impl Default for Tuning {
             session_grace: Duration::from_secs(30),
             invitation_ttl: Duration::from_secs(15 * 60),
             call_ttl: Duration::from_secs(anyplay_api::CALL_RING_SECONDS),
+            share_invitation_ttl: Duration::from_secs(60),
+            share_absent: Duration::from_secs(60),
+            share_minute: Duration::from_secs(60),
             ping_interval: Duration::from_secs(20),
             sweep_interval: Duration::from_secs(5),
             node_timeout: Duration::from_secs(30),
