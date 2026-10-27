@@ -39,6 +39,43 @@ pub struct AuthCache {
     pub valid_from: HashMap<u64, u64>,
 }
 
+/// What the rarity of a title's trophies counted to: the players and, by trophy number, how many
+/// earned it.
+pub type RarityCounts = Arc<(i64, Vec<(i64, i64)>)>;
+
+/// The most titles whose rarity a node holds.
+const RARITY_TITLES: usize = 256;
+
+/// The rarity counts of titles, each kept for a short time so that a popular title is counted
+/// once in a while and not once per request. Other nodes are not told: the time alone keeps it
+/// right.
+#[derive(Default)]
+pub struct RarityCache {
+    titles: std::sync::Mutex<HashMap<String, (Instant, RarityCounts)>>,
+}
+
+impl RarityCache {
+    /// The counts for `title` that are younger than `ttl`.
+    pub fn get(&self, title: &str, ttl: Duration) -> Option<RarityCounts> {
+        let titles = self.titles.lock().unwrap_or_else(|e| e.into_inner());
+        let (at, counts) = titles.get(title)?;
+        (at.elapsed() < ttl).then(|| Arc::clone(counts))
+    }
+
+    /// Keeps the counts for `title`. Past [`RARITY_TITLES`] titles the stale ones go, and when
+    /// none is stale the table starts again.
+    pub fn put(&self, title: &str, ttl: Duration, counts: RarityCounts) {
+        let mut titles = self.titles.lock().unwrap_or_else(|e| e.into_inner());
+        if titles.len() >= RARITY_TITLES && !titles.contains_key(title) {
+            titles.retain(|_, (at, _)| at.elapsed() < ttl);
+            if titles.len() >= RARITY_TITLES {
+                titles.clear();
+            }
+        }
+        titles.insert(title.to_owned(), (Instant::now(), counts));
+    }
+}
+
 pub struct Inner {
     pub config: Config,
     pub tuning: Tuning,
@@ -48,6 +85,8 @@ pub struct Inner {
     pub mailer: Arc<dyn Mailer>,
     pub limiter: RateLimiter,
     pub cache: RwLock<AuthCache>,
+    /// Trophy rarity per title, for `tuning.rarity_ttl`.
+    pub rarity: RarityCache,
     pub news: News,
     /// The account web, when the cloud has a public address.
     pub web: Option<crate::web::Web>,
