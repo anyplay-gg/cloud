@@ -48,7 +48,7 @@ main() {
   name=$newest
   (cd "$dir" && sha256sum -c "$name.sha256" >/dev/null 2>&1) || die "$name does not match its manifest; not copying a damaged archive"
 
-  local stage send
+  local send # stage: global, the EXIT trap runs after main has returned
   stage=$(mktemp -d)
   trap 'rm -rf "${stage:?}"' EXIT
   if [ -n "$recipient" ]; then

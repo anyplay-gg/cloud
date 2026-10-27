@@ -120,7 +120,7 @@ async fn drill_verify() {
     let signed_in = cloud
         .sign_in(alec["email"].as_str().unwrap(), "after the restore")
         .await;
-    assert_eq!(signed_in.me.id, alec_id);
+    assert_eq!(signed_in.me.id, anyplay_api::AccountId(alec_id));
     let token = signed_in.tokens.access;
 
     // Friends.
