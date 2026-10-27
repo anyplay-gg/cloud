@@ -46,8 +46,18 @@ async fn a_starved_pool_answers_429_with_retry_after_within_the_acquire_timeout(
     assert!(took >= Duration::from_millis(400), "{took:?}");
 
     // Once a connection is free again the same call works.
+    // A dropped connection goes back to the pool on a task of its own, so the very next call
+    // can still find the pool empty (seen on the slower Windows runner): ask until it works.
     drop(held);
-    cloud.get("/v1/friends", a.token()).await.ok(200);
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        let reply = cloud.get("/v1/friends", a.token()).await;
+        if reply.status == 200 {
+            break;
+        }
+        assert!(Instant::now() < until, "still {}: {:?}", reply.status, reply.body);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 #[tokio::test]
