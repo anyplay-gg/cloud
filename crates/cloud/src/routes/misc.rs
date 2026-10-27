@@ -20,6 +20,7 @@ pub async fn info(State(state): State<AppState>) -> Json<Info> {
         privacy: state.config.privacy_url.clone(),
         terms: state.config.terms_url.clone(),
         web: state.config.web_origin(),
+        share: Some(state.share_info()),
     })
 }
 
@@ -51,6 +52,10 @@ pub async fn set_presence(
     )
     .await?;
     state.refresh_presence([auth.account]).await;
+    if activity.is_none() {
+        // The game ended: a share of it ends too.
+        state.check_shares(&[auth.account]).await;
+    }
     if let Some(activity) = &activity {
         state
             .record_first_played(auth.account, &activity.title_id)

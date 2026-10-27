@@ -91,6 +91,9 @@ pub struct Rates {
     /// Screenshots and clips one account may upload per `media_window`.
     pub media_uploads: u32,
     pub media_window: Duration,
+    /// Shares one account may start per `share_window`.
+    pub share_starts: u32,
+    pub share_window: Duration,
 }
 
 impl Default for Rates {
@@ -149,6 +152,8 @@ impl Default for Rates {
             lfg_window: Duration::from_secs(10 * 60),
             media_uploads: 20,
             media_window: Duration::from_secs(60 * 60),
+            share_starts: 10,
+            share_window: Duration::from_secs(60 * 60),
         }
     }
 }

@@ -264,6 +264,7 @@ pub async fn block(
         crate::party::take_between(&mut *state.db.acquire().await?, auth.account, them).await?;
     state.party_invitations_gone(&gone);
     state.forget_missed_between(auth.account, them).await?;
+    state.check_shares(&[auth.account, them]).await;
     state.news.push(auth.account, &Event::Friends);
     // The blocked account learns only what it would see anyway: a friend or request is gone.
     if had_relation {

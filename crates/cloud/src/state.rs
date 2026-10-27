@@ -599,7 +599,10 @@ impl Inner {
         };
         self.invitations_gone(&gone);
         self.sweep_social(now).await?;
+        self.sweep_shares(now).await?;
         self.sweep_deletions().await;
+        // An account that went offline plays nothing: a share of its game ends.
+        self.check_shares(&offline).await;
         let mut dirty = offline;
         for account in leaving {
             dirty.extend(self.leave_everything(account).await?);

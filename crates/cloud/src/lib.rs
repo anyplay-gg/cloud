@@ -38,6 +38,7 @@ pub mod news;
 pub mod party;
 pub mod push;
 pub mod routes;
+pub mod share;
 pub mod social;
 pub mod state;
 pub mod util;
