@@ -221,7 +221,13 @@ pub async fn accept(
             "The two sides need endpoints of their own.",
         ));
     }
-    share::set_accepted(&mut tx, &row.id, &request.endpoint, request.relay.as_deref()).await?;
+    share::set_accepted(
+        &mut tx,
+        &row.id,
+        &request.endpoint,
+        request.relay.as_deref(),
+    )
+    .await?;
     tx.commit().await?;
 
     let mut row = row;
@@ -310,8 +316,8 @@ pub async fn invitations(
     auth: Auth,
 ) -> Result<Json<ShareInvitations>> {
     enabled(&state)?;
-    let rows = share::invitations_of(&mut *state.db.acquire().await?, auth.account, now_ms())
-        .await?;
+    let rows =
+        share::invitations_of(&mut *state.db.acquire().await?, auth.account, now_ms()).await?;
     Ok(Json(ShareInvitations {
         invitations: rows.iter().map(ShareRow::invitation_view).collect(),
     }))

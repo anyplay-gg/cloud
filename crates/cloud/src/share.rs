@@ -473,8 +473,11 @@ impl Inner {
         let (late, away, relayed) = {
             let mut conn = self.db.acquire().await?;
             let late = expired(&mut conn, now_ms).await?;
-            let away = absent(&mut conn, now_ms - self.tuning.share_absent.as_millis() as i64)
-                .await?;
+            let away = absent(
+                &mut conn,
+                now_ms - self.tuning.share_absent.as_millis() as i64,
+            )
+            .await?;
             let relayed = relayed(&mut conn).await?;
             (late, away, relayed)
         };

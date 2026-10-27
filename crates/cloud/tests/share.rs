@@ -71,7 +71,11 @@ async fn play(cloud: &TestCloud, user: &User) {
 
 async fn stop_playing(cloud: &TestCloud, user: &User) {
     cloud
-        .put("/v1/presence", user.token(), Some(json!({"activity": null})))
+        .put(
+            "/v1/presence",
+            user.token(),
+            Some(json!({"activity": null})),
+        )
         .await
         .ok(204);
 }
@@ -152,10 +156,7 @@ async fn share_event_with(events: &mut Events, revision: u64) -> Share {
 }
 
 async fn gone(events: &mut Events) -> (String, ShareGoneReason) {
-    match events
-        .until(|e| matches!(e, Event::ShareGone { .. }))
-        .await
-    {
+    match events.until(|e| matches!(e, Event::ShareGone { .. })).await {
         Event::ShareGone { id, reason } => (id, reason),
         _ => unreachable!(),
     }
@@ -171,14 +172,20 @@ async fn no_share(cloud: &TestCloud, user: &User) {
 #[tokio::test]
 async fn share_play_is_off_by_default_and_info_says_so() {
     let cloud = TestCloud::start().await;
-    let info: Info = cloud.request(reqwest::Method::GET, "/v1/info", None, None).await.ok(200).json();
+    let info: Info = cloud
+        .request(reqwest::Method::GET, "/v1/info", None, None)
+        .await
+        .ok(200)
+        .json();
     let share = info.share.expect("info has share");
     assert!(!share.enabled);
     assert_eq!(share.relay_kbps, 6000);
 
     let user = cloud.sign_up("Ann").await;
     let other = cloud.sign_up("Ben").await;
-    invite(&cloud, &user, &other).await.is_error("forbidden", 403);
+    invite(&cloud, &user, &other)
+        .await
+        .is_error("forbidden", 403);
     cloud
         .get("/v1/share", user.token())
         .await
@@ -212,7 +219,11 @@ async fn share_play_is_off_by_default_and_info_says_so() {
         |_| {},
     )
     .await;
-    let info: Info = on.request(reqwest::Method::GET, "/v1/info", None, None).await.ok(200).json();
+    let info: Info = on
+        .request(reqwest::Method::GET, "/v1/info", None, None)
+        .await
+        .ok(200)
+        .json();
     let share = info.share.unwrap();
     assert!(share.enabled);
     assert_eq!(share.relay_kbps, 4500);
@@ -248,7 +259,9 @@ async fn an_invitation_then_accepting_makes_an_active_share() {
     assert_eq!(invitation.from.id, AccountId(p.host.id));
     assert_eq!(invitation.title, "A game");
     assert_eq!(invitation.mode, ShareMode::Watch);
-    let left = invitation.expires.saturating_sub(anyplay_cloud::util::now());
+    let left = invitation
+        .expires
+        .saturating_sub(anyplay_cloud::util::now());
     assert!((55..=61).contains(&left), "expires in {left} s");
     let held: ShareInvitations = p
         .cloud
@@ -266,11 +279,21 @@ async fn an_invitation_then_accepting_makes_an_active_share() {
     assert!(none.invitations.is_empty());
 
     // Before accepting, the guest does not see where the host is. The host sees its own.
-    let seen: Share = p.cloud.get("/v1/share", p.guest.token()).await.ok(200).json();
+    let seen: Share = p
+        .cloud
+        .get("/v1/share", p.guest.token())
+        .await
+        .ok(200)
+        .json();
     assert_eq!(seen.id, made.id);
     assert_eq!(seen.host_endpoint, "");
     assert_eq!(seen.host_relay, None);
-    let host_view: Share = p.cloud.get("/v1/share", p.host.token()).await.ok(200).json();
+    let host_view: Share = p
+        .cloud
+        .get("/v1/share", p.host.token())
+        .await
+        .ok(200)
+        .json();
     assert_eq!(host_view.host_endpoint, endpoint(1));
 
     let accepted: Share = accept(&p.cloud, &p.guest).await.ok(200).json();
@@ -301,7 +324,9 @@ async fn an_invitation_then_accepting_makes_an_active_share() {
         .json();
     assert!(held.invitations.is_empty());
     // Accepting twice is no second share.
-    accept(&p.cloud, &p.guest).await.is_error("bad_request", 400);
+    accept(&p.cloud, &p.guest)
+        .await
+        .is_error("bad_request", 400);
     // The host cannot accept its own invitation.
     accept(&p.cloud, &p.host).await.is_error("forbidden", 403);
 }
@@ -324,7 +349,11 @@ async fn only_the_host_changes_mode_and_path_and_each_change_is_announced() {
         .await
         .is_error("bad_request", 400);
     p.cloud
-        .patch("/v1/share", p.host.token(), json!({"path": "carrier_pigeon"}))
+        .patch(
+            "/v1/share",
+            p.host.token(),
+            json!({"path": "carrier_pigeon"}),
+        )
         .await
         .is_error("bad_request", 400);
 
@@ -394,9 +423,13 @@ async fn the_rules_for_starting_a_share() {
 
     // Not in one party: forbidden. A friend who is not in the party, a stranger.
     let cy = p.cloud.sign_up("Cyra").await;
-    invite(&p.cloud, &p.host, &cy).await.is_error("forbidden", 403);
+    invite(&p.cloud, &p.host, &cy)
+        .await
+        .is_error("forbidden", 403);
     befriend(&p.cloud, &p.host, &cy).await;
-    invite(&p.cloud, &p.host, &cy).await.is_error("forbidden", 403);
+    invite(&p.cloud, &p.host, &cy)
+        .await
+        .is_error("forbidden", 403);
     // Nobody to invite: no such account.
     p.cloud
         .post(
@@ -409,9 +442,13 @@ async fn the_rules_for_starting_a_share() {
 
     // No game running: not_found.
     stop_playing(&p.cloud, &p.host).await;
-    invite(&p.cloud, &p.host, &p.guest).await.is_error("not_found", 404);
+    invite(&p.cloud, &p.host, &p.guest)
+        .await
+        .is_error("not_found", 404);
     // The guest cannot share a game it does not run, either.
-    invite(&p.cloud, &p.guest, &p.host).await.is_error("not_found", 404);
+    invite(&p.cloud, &p.guest, &p.host)
+        .await
+        .is_error("not_found", 404);
     play(&p.cloud, &p.host).await;
 
     // A block between them: forbidden, whoever blocked.
@@ -419,7 +456,9 @@ async fn the_rules_for_starting_a_share() {
         .put(&format!("/v1/blocks/{}", p.host.id), p.guest.token(), None)
         .await
         .ok(204);
-    invite(&p.cloud, &p.host, &p.guest).await.is_error("forbidden", 403);
+    invite(&p.cloud, &p.host, &p.guest)
+        .await
+        .is_error("forbidden", 403);
     no_share(&p.cloud, &p.host).await;
 }
 
@@ -457,7 +496,9 @@ async fn an_account_is_in_one_share_at_a_time() {
     invite(&p.cloud, &p.host, &cy).await.is_error("limit", 409);
     invite(&p.cloud, &cy, &p.guest).await.is_error("limit", 409);
     invite(&p.cloud, &cy, &p.host).await.is_error("limit", 409);
-    invite(&p.cloud, &p.guest, &cy).await.is_error("not_found", 404);
+    invite(&p.cloud, &p.guest, &cy)
+        .await
+        .is_error("not_found", 404);
     accept(&p.cloud, &p.guest).await.ok(200);
     invite(&p.cloud, &p.host, &cy).await.is_error("limit", 409);
 }
@@ -491,7 +532,12 @@ async fn outsiders_get_nothing_and_endpoints_are_not_leaked() {
     assert!(held.invitations.is_empty());
     // The share is untouched and the outsider heard nothing: no invitation, no share, no
     // endpoint.
-    let still: Share = p.cloud.get("/v1/share", p.host.token()).await.ok(200).json();
+    let still: Share = p
+        .cloud
+        .get("/v1/share", p.host.token())
+        .await
+        .ok(200)
+        .json();
     assert_eq!(still.id, made.id);
     assert_eq!(still.mode, ShareMode::Watch);
     p.cloud
@@ -571,19 +617,26 @@ async fn the_host_ends_and_the_guest_declines_or_leaves() {
     // The guest leaves an active share.
     let made = active(&p).await;
     p.cloud.delete("/v1/share", p.guest.token()).await.ok(204);
-    assert_eq!(gone(&mut p.eh).await, (made.id.clone(), ShareGoneReason::Left));
+    assert_eq!(
+        gone(&mut p.eh).await,
+        (made.id.clone(), ShareGoneReason::Left)
+    );
     assert_eq!(gone(&mut p.eg).await, (made.id, ShareGoneReason::Left));
 
     // The host ends one, an invited one as well.
     let made = active(&p).await;
     p.cloud.delete("/v1/share", p.host.token()).await.ok(204);
-    assert_eq!(gone(&mut p.eg).await, (made.id.clone(), ShareGoneReason::Ended));
+    assert_eq!(
+        gone(&mut p.eg).await,
+        (made.id.clone(), ShareGoneReason::Ended)
+    );
     assert_eq!(gone(&mut p.eh).await, (made.id, ShareGoneReason::Ended));
     let made: Share = invite(&p.cloud, &p.host, &p.guest).await.ok(200).json();
     p.cloud.delete("/v1/share", p.host.token()).await.ok(204);
     assert_eq!(gone(&mut p.eh).await, (made.id, ShareGoneReason::Ended));
     assert!(matches!(
-        p.eg.until(|e| matches!(e, Event::ShareInvitationGone { .. })).await,
+        p.eg.until(|e| matches!(e, Event::ShareInvitationGone { .. }))
+            .await,
         Event::ShareInvitationGone { .. }
     ));
     // Accepting what is gone fails, and a new share can start at once.
@@ -607,8 +660,7 @@ async fn the_share_ends_when_the_hosts_game_ends() {
     play(&p.cloud, &p.host).await;
     invite(&p.cloud, &p.host, &p.guest).await.ok(200);
     stop_playing(&p.cloud, &p.host).await;
-    p.eg
-        .until(|e| matches!(e, Event::ShareInvitationGone { .. }))
+    p.eg.until(|e| matches!(e, Event::ShareInvitationGone { .. }))
         .await;
     no_share(&p.cloud, &p.guest).await;
 }
@@ -621,9 +673,11 @@ async fn the_share_ends_when_either_leaves_the_party() {
         .post_empty("/v1/party/leave", p.guest.token())
         .await
         .ok(204);
-    assert_eq!(gone(&mut p.eh).await, (made.id.clone(), ShareGoneReason::Left));
+    assert_eq!(
+        gone(&mut p.eh).await,
+        (made.id.clone(), ShareGoneReason::Left)
+    );
     assert_eq!(gone(&mut p.eg).await, (made.id, ShareGoneReason::Left));
-
 }
 
 #[tokio::test]
@@ -679,14 +733,16 @@ async fn the_share_ends_when_an_account_is_deleted() {
 
 #[tokio::test]
 async fn an_invitation_that_is_not_accepted_in_time_ends_the_share() {
-    let mut p = pair_with(|_| {}, |t| {
-        t.share_invitation_ttl = Duration::from_millis(600);
-    })
+    let mut p = pair_with(
+        |_| {},
+        |t| {
+            t.share_invitation_ttl = Duration::from_millis(600);
+        },
+    )
     .await;
     let made: Share = invite(&p.cloud, &p.host, &p.guest).await.ok(200).json();
     assert_eq!(gone(&mut p.eh).await, (made.id, ShareGoneReason::Timeout));
-    p.eg
-        .until(|e| matches!(e, Event::ShareInvitationGone { .. }))
+    p.eg.until(|e| matches!(e, Event::ShareInvitationGone { .. }))
         .await;
     no_share(&p.cloud, &p.host).await;
     accept(&p.cloud, &p.guest).await.is_error("not_found", 404);
@@ -694,9 +750,12 @@ async fn an_invitation_that_is_not_accepted_in_time_ends_the_share() {
 
 #[tokio::test]
 async fn an_account_without_an_event_connection_for_too_long_ends_the_share() {
-    let mut p = pair_with(|_| {}, |t| {
-        t.share_absent = Duration::from_millis(900);
-    })
+    let mut p = pair_with(
+        |_| {},
+        |t| {
+            t.share_absent = Duration::from_millis(900);
+        },
+    )
     .await;
     let made = active(&p).await;
     // The guest's connection goes; the host stays connected.
@@ -740,6 +799,11 @@ async fn relayed_time_beyond_the_daily_allowance_ends_the_share() {
 }
 
 async fn no_share_gone_yet(p: &Pair) {
-    let share: Value = p.cloud.get("/v1/share", p.host.token()).await.ok(200).json();
+    let share: Value = p
+        .cloud
+        .get("/v1/share", p.host.token())
+        .await
+        .ok(200)
+        .json();
     assert_eq!(share["state"], "active");
 }
