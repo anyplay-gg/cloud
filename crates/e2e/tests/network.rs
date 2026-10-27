@@ -1061,8 +1061,7 @@ async fn a_share_runs_from_invitation_to_end() {
     let waiting = alice
         .wait("the invited share", |event| match event {
             Event::Share {
-                share: Some(view),
-                ..
+                share: Some(view), ..
             } if view.role == ShareRole::Host && view.phase == SharePhase::Invited => {
                 Some(view.clone())
             }
@@ -1093,8 +1092,7 @@ async fn a_share_runs_from_invitation_to_end() {
     let guest_view = bobby
         .wait("the share on the guest's side", |event| match event {
             Event::Share {
-                share: Some(view),
-                ..
+                share: Some(view), ..
             } if view.role == ShareRole::Guest => Some(view.clone()),
             _ => None,
         })
