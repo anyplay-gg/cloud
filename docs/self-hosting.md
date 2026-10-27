@@ -22,7 +22,7 @@ docker compose up -d
 
 Caddy gets certificates and puts TLS in front of the cloud. The cloud creates its signing key in its data volume on the first start and writes the public half next to it; the relay waits for that file and for Caddy's certificate, then starts. Point a launcher at `https://<your cloud host name>`.
 
-For a first try on your own machine, set `MAIL=log` in `.env`: sign-in codes then appear in `docker compose logs cloud`.
+For a first try on your own machine, set `MAIL=log` and `ALLOW_LOG_MAIL=true` in `.env` (the cloud refuses the log mode on a public address otherwise): sign-in codes then appear in `docker compose logs cloud`.
 
 ## Operate it
 

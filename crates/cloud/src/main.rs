@@ -64,6 +64,9 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Healthcheck { url } => anyplay_cloud::cli::healthcheck(&config, url).await,
+        Command::ReplayDeletions { ledger } => {
+            anyplay_cloud::cli::replay_deletions(config, ledger).await
+        }
         Command::Admin { url, action } => anyplay_cloud::cli::admin(&config, url, action).await,
     }
 }

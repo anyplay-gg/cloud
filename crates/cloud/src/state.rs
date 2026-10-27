@@ -582,31 +582,62 @@ impl Inner {
 
     /// Shows that this node is alive and carries out what is due: the connections of dead nodes,
     /// the grace periods, and invitations and challenges that ran out. Every node runs it.
+    ///
+    /// Every step stands alone: one that fails is logged with its name and the others still run,
+    /// so a failing step cannot hold up the deletions or the retention. The sweep returns an
+    /// error only when the node cannot write its heartbeat, which the metrics count as a failed
+    /// sweep.
     pub async fn sweep(&self) -> Result<(), AppError> {
         self.limiter.sweep();
-        self.reload_bans().await?;
+        step("reload bans", self.reload_bans().await);
         let now = util::now_ms();
-        let (offline, gone, leaving) = {
+        let live = async {
             let mut conn = self.db.acquire().await?;
             live::heartbeat(&mut conn, &self.node, now).await?;
+            Ok::<_, AppError>(())
+        }
+        .await;
+        let heartbeat_failed = live.is_err();
+        step("heartbeat", live);
+        let swept = async {
+            let mut conn = self.db.acquire().await?;
             live::sweep_dead_nodes(&mut conn, now - ms(self.tuning.node_timeout)).await?;
             let offline =
                 live::sweep_offline(&mut conn, now - ms(self.tuning.offline_grace)).await?;
             let gone = live::sweep_expired(&mut conn, now).await?;
             let leaving =
                 live::due_to_leave(&mut conn, now - ms(self.tuning.session_grace)).await?;
-            (offline, gone, leaving)
-        };
+            Ok::<_, AppError>((offline, gone, leaving))
+        }
+        .await;
+        let (offline, gone, leaving) = step("live sessions", swept).unwrap_or_default();
         self.invitations_gone(&gone);
-        self.sweep_social(now).await?;
+        step("social", self.sweep_social(now).await);
         self.sweep_deletions().await;
+        self.sweep_deletion_ledger(now).await;
         let mut dirty = offline;
         for account in leaving {
-            dirty.extend(self.leave_everything(account).await?);
+            if let Some(more) = step("leave", self.leave_everything(account).await) {
+                dirty.extend(more);
+            }
         }
         self.refresh_presence(dirty).await;
         self.sweep_moderation().await;
+        if heartbeat_failed {
+            return Err(AppError::internal());
+        }
         Ok(())
+    }
+}
+
+/// Logs a failed sweep step by name and goes on; the result of one that worked.
+fn step<T>(name: &str, result: Result<T, AppError>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::warn!(step = name, error = %error.body.message, "a sweep step failed; the others still run");
+            None
+        }
     }
 }
 
@@ -639,6 +670,49 @@ impl Inner {
                 }
             }
         }
+    }
+
+    /// Forgets the ledger rows of accounts deleted more than [`db::LEDGER_DAYS`] ago, the longest
+    /// a backup is kept.
+    async fn sweep_deletion_ledger(&self, now_ms: i64) {
+        let cut = now_ms.saturating_sub(db::LEDGER_DAYS as i64 * 24 * 60 * 60 * 1000);
+        let result = async {
+            let mut conn = db::acquire_maintenance(&self.db).await?;
+            db::sweep_deleted(&mut conn, cut).await
+        }
+        .await;
+        if let Err(error) = result {
+            tracing::warn!(step = "deletion ledger", %error, "a sweep step failed; the others still run");
+        }
+    }
+
+    /// After a restore: has the accounts deleted since the backup deleted again. `extra` is the
+    /// ledger of the database that was replaced (account ID and deletion time in milliseconds);
+    /// it is added to the ledger of the restored one first, so that the restored database also
+    /// knows these deletions for the next restore. Then every account that the ledger lists and
+    /// that exists is deleted the normal way. Returns how many were deleted and how many failed.
+    pub async fn replay_deletions(&self, extra: &[(u64, i64)]) -> Result<(u64, u64), AppError> {
+        {
+            let mut tx = self.writer.begin_maintenance(&self.db).await?;
+            for (id, at) in extra {
+                db::record_deleted(&mut tx, *id, *at).await?;
+            }
+            tx.commit().await?;
+        }
+        let (mut deleted, mut failed) = (0, 0);
+        for account in db::deleted_but_present(&self.db).await? {
+            match self.delete_account(account).await {
+                Ok(()) => deleted += 1,
+                Err(error) => {
+                    failed += 1;
+                    tracing::error!(
+                        class = error.body.error.as_str(),
+                        "cannot delete an account again"
+                    );
+                }
+            }
+        }
+        Ok((deleted, failed))
     }
 
     /// Deletes moderation data past its retention, at most once an hour per node. A failure is

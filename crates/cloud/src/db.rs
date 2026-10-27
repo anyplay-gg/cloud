@@ -507,8 +507,13 @@ pub async fn insert_account(
     }
 }
 
+/// How long the deletion ledger keeps an account ID: the longest a backup is kept.
+pub const LEDGER_DAYS: u64 = 90;
+
 /// Deletes an account and everything that hangs on it. Bans, the actions against the account
 /// and reports about it stay until their retention ends; reports it filed lose their link to it.
+/// The ID and the time go into the deletion ledger in the same transaction, so that a restored
+/// backup can have the account deleted again (`anyplay-cloud replay-deletions`).
 pub async fn delete_account(writer: &Writer, pool: &Pool, id: u64) -> sqlx::Result<()> {
     let mut tx = writer.begin_maintenance(pool).await?;
     crate::moderation::store::forget_reporter(&mut tx, id).await?;
@@ -517,7 +522,40 @@ pub async fn delete_account(writer: &Writer, pool: &Pool, id: u64) -> sqlx::Resu
         .bind(i(id))
         .execute(&mut *tx)
         .await?;
+    record_deleted(&mut tx, id, crate::util::now_ms()).await?;
     tx.commit().await
+}
+
+/// Writes an account ID into the deletion ledger; one that is listed keeps its first time.
+pub async fn record_deleted(conn: &mut Conn, id: u64, deleted_ms: i64) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO deleted_accounts (account_id, deleted_ms) VALUES ($1, $2) \
+         ON CONFLICT (account_id) DO NOTHING",
+    )
+    .bind(i(id))
+    .bind(deleted_ms)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// The accounts the ledger lists as deleted that exist again, as after a restore.
+pub async fn deleted_but_present(pool: &Pool) -> sqlx::Result<Vec<u64>> {
+    let rows: Vec<(i64,)> = sqlx::query_as(
+        "SELECT a.id FROM accounts a JOIN deleted_accounts d ON d.account_id = a.id ORDER BY a.id",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| u(id)).collect())
+}
+
+/// Forgets the ledger rows older than `cut_ms`.
+pub async fn sweep_deleted(conn: &mut Conn, cut_ms: i64) -> sqlx::Result<u64> {
+    let result = sqlx::query("DELETE FROM deleted_accounts WHERE deleted_ms < $1")
+        .bind(cut_ms)
+        .execute(conn)
+        .await?;
+    Ok(result.rows_affected())
 }
 
 /// When the account will be deleted, if the player asked for it (Unix seconds).

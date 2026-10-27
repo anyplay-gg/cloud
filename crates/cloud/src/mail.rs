@@ -237,12 +237,13 @@ impl Mailer for LogMailer {
 
     fn send_notice<'a>(
         &'a self,
-        to: &'a str,
+        _to: &'a str,
         subject: &'a str,
         _body: &'a str,
     ) -> BoxFuture<'a, Result<(), MailError>> {
         Box::pin(async move {
-            tracing::info!(%to, %subject, "notice (mail = log)");
+            // The recipient stays out of the log: a notice carries no code the developer needs.
+            tracing::info!(%subject, "notice (mail = log)");
             Ok(())
         })
     }

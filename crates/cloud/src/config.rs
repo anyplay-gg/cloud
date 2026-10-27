@@ -90,6 +90,9 @@ pub struct Config {
     pub relays: Vec<String>,
     pub mail: MailMode,
     pub mail_from: String,
+    /// Allows `mail = "log"` on a listen address that is not a loopback address. The log mode
+    /// writes addresses and live codes to the log, so it is for development only.
+    pub allow_log_mail: bool,
     pub smtp_host: Option<String>,
     pub smtp_port: Option<u16>,
     pub smtp_username: Option<String>,
@@ -194,6 +197,7 @@ impl Default for Config {
             relays: Vec::new(),
             mail: MailMode::Log,
             mail_from: "AnyPlay cloud <noreply@localhost>".into(),
+            allow_log_mail: false,
             smtp_host: None,
             smtp_port: None,
             smtp_username: None,
@@ -338,6 +342,9 @@ impl Config {
         }
         if let Some(v) = get("MAIL") {
             self.mail = parse_word("MAIL", &v)?;
+        }
+        if let Some(v) = get("ALLOW_LOG_MAIL") {
+            self.allow_log_mail = parse("ALLOW_LOG_MAIL", &v)?;
         }
         if let Some(v) = get("MAIL_FROM") {
             self.mail_from = v;
@@ -493,6 +500,12 @@ impl Config {
             if !crate::util::is_http_url(url) {
                 bail!("relays: {url:?} is not an http or https URL");
             }
+        }
+        if self.mail == MailMode::Log && !self.listen.ip().is_loopback() && !self.allow_log_mail {
+            bail!(
+                "mail = \"log\" writes addresses and sign-in codes to the log: use it on a loopback \
+                 listen address, or set allow_log_mail = true (ANYPLAY_CLOUD_ALLOW_LOG_MAIL) for development"
+            );
         }
         if self.mail == MailMode::Smtp {
             if self.smtp_host.is_none() {
@@ -832,9 +845,17 @@ impl Default for Tuning {
 mod tests {
     use super::*;
 
+    /// The defaults with the log mail allowed, so that the tests need no loopback address.
+    fn dev() -> Config {
+        Config {
+            allow_log_mail: true,
+            ..Config::default()
+        }
+    }
+
     #[test]
     fn the_tls_mode_follows_the_port_unless_it_is_set() {
-        let mut config = Config::default();
+        let mut config = dev();
         assert_eq!(config.smtp_tls(), SmtpTls::Starttls);
         config.smtp_port = Some(587);
         assert_eq!(config.smtp_tls(), SmtpTls::Starttls);
@@ -853,7 +874,7 @@ mod tests {
 
     #[test]
     fn implicit_is_another_word_for_tls() {
-        let mut config = Config::default();
+        let mut config = dev();
         config
             .apply_env(|name| (name == "SMTP_TLS").then(|| "Implicit".into()))
             .unwrap();
@@ -894,7 +915,7 @@ mod tests {
 
     #[test]
     fn feed_items_are_kept_90_days_unless_set() {
-        let mut config = Config::default();
+        let mut config = dev();
         assert_eq!(config.feed_retention_days, 90);
         config
             .apply_env(|name| match name {
@@ -903,6 +924,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(config.feed_retention_days, 7);
+        config.listen = ([127, 0, 0, 1], 8080).into();
         config.validate().unwrap();
         config.feed_retention_days = 0;
         assert!(config.validate().is_err());
@@ -910,12 +932,12 @@ mod tests {
 
     #[test]
     fn messages_are_kept_30_days_and_new_accounts_wait_a_day_by_default() {
-        let config = Config::default();
+        let config = dev();
         assert_eq!(config.message_retention_days, 30);
         assert_eq!(config.join_code_minutes, 120);
         assert_eq!(config.new_account_hours, 24);
         assert_eq!(config.new_account_friend_requests_per_day, 10);
-        let mut config = Config::default();
+        let mut config = dev();
         config
             .apply_env(|name| match name {
                 "MESSAGE_RETENTION_DAYS" => Some("7".into()),
@@ -929,6 +951,7 @@ mod tests {
         assert_eq!(config.join_code_minutes, 30);
         assert_eq!(config.new_account_hours, 0);
         assert_eq!(config.new_account_friend_requests_per_day, 3);
+        config.listen = ([127, 0, 0, 1], 8080).into();
         config.validate().unwrap();
         config.message_retention_days = 0;
         assert!(config.validate().is_err());
@@ -940,7 +963,7 @@ mod tests {
     #[test]
     fn mistakes_are_refused() {
         assert!(toml::from_str::<Config>("colour = 1").is_err());
-        let mut config = Config::default();
+        let mut config = dev();
         assert!(
             config
                 .apply_env(|n| (n == "LISTEN").then(|| "nope".into()))
@@ -952,24 +975,40 @@ mod tests {
                 .is_err()
         );
 
+        let open_log = Config::default();
+        assert!(
+            open_log.validate().is_err(),
+            "mail = log on a public address is refused"
+        );
+        let dev_log = Config {
+            allow_log_mail: true,
+            ..Config::default()
+        };
+        dev_log.validate().unwrap();
+        let local_log = Config {
+            listen: ([127, 0, 0, 1], 8080).into(),
+            ..Config::default()
+        };
+        local_log.validate().unwrap();
+
         let smtp = Config {
             mail: MailMode::Smtp,
-            ..Config::default()
+            ..dev()
         };
         assert!(smtp.validate().is_err(), "smtp needs a host");
         let short = Config {
             admin_token: Some("short".into()),
-            ..Config::default()
+            ..dev()
         };
         assert!(short.validate().is_err());
         let relay = Config {
             relays: vec!["relay.example".into()],
-            ..Config::default()
+            ..dev()
         };
         assert!(relay.validate().is_err());
         let mysql = Config {
             database_url: Some("mysql://db.example/cloud".into()),
-            ..Config::default()
+            ..dev()
         };
         assert!(
             mysql.validate().is_err(),
@@ -977,12 +1016,12 @@ mod tests {
         );
         let postgres = Config {
             database_url: Some("postgres://cloud@db.example/cloud".into()),
-            ..Config::default()
+            ..dev()
         };
         assert!(postgres.validate().is_ok());
         let lonely = Config {
             nats_url: Some("nats://nats.internal:4222".into()),
-            ..Config::default()
+            ..dev()
         };
         assert!(lonely.validate().is_err(), "a cluster shares its database");
         let cluster = Config {
@@ -990,12 +1029,12 @@ mod tests {
             ..postgres
         };
         assert!(cluster.validate().is_ok());
-        assert!(Config::default().validate().is_ok());
+        assert!(dev().validate().is_ok());
     }
 
     #[test]
     fn the_signing_key_file_comes_from_the_environment_and_must_be_a_file() {
-        let mut config = Config::default();
+        let mut config = dev();
         assert_eq!(config.signing_key_file, None);
         config
             .apply_env(|n| (n == "SIGNING_KEY_FILE").then(|| "/keys/signing.key".into()))
@@ -1004,7 +1043,7 @@ mod tests {
         assert!(config.validate().is_ok());
         let folder = Config {
             signing_key_file: Some(std::env::temp_dir()),
-            ..Config::default()
+            ..dev()
         };
         assert!(folder.validate().is_err());
         let file: Config = toml::from_str(r#"signing_key_file = "/keys/signing.key""#).unwrap();
@@ -1013,7 +1052,7 @@ mod tests {
 
     #[test]
     fn the_local_url_replaces_a_wildcard_address() {
-        assert_eq!(Config::default().local_url(), "http://127.0.0.1:8080");
+        assert_eq!(dev().local_url(), "http://127.0.0.1:8080");
     }
 
     #[test]
@@ -1048,7 +1087,7 @@ mod tests {
     #[test]
     fn the_portal_folder_is_read_and_checked() {
         let dir = tempfile::tempdir().unwrap();
-        let mut config = Config::default();
+        let mut config = dev();
         config
             .apply_env(|name| match name {
                 "PORTAL_DIR" => Some(dir.path().display().to_string()),
@@ -1065,12 +1104,12 @@ mod tests {
             config.validate().is_err(),
             "the portal is served from the origin of the account web"
         );
-        assert_eq!(Config::default().portal_dir, None);
+        assert_eq!(dev().portal_dir, None);
     }
 
     #[test]
     fn an_external_portal_is_read_and_checked() {
-        let mut config = Config::default();
+        let mut config = dev();
         assert!(!config.portal_external);
         config
             .apply_env(|name| match name {
@@ -1090,7 +1129,7 @@ mod tests {
         config.portal_dir = Some(dir.path().into());
         assert!(config.validate().is_err(), "not together with portal_dir");
         assert!(
-            Config::default()
+            dev()
                 .apply_env(|n| (n == "PORTAL_EXTERNAL").then(|| "maybe".into()))
                 .is_err()
         );
@@ -1098,7 +1137,7 @@ mod tests {
 
     #[test]
     fn the_account_web_settings_are_read_and_checked() {
-        let mut config = Config::default();
+        let mut config = dev();
         config
             .apply_env(|name| match name {
                 "PUBLIC_URL" => Some("https://play.example.com".into()),
@@ -1122,12 +1161,12 @@ mod tests {
         config.public_url = None;
         config.legacy_device_days = 400;
         assert!(config.validate().is_err());
-        assert_eq!(Config::default().web_origin(), None);
+        assert_eq!(dev().web_origin(), None);
     }
 
     #[test]
     fn the_refresh_replay_grace_is_read_and_checked() {
-        let mut config = Config::default();
+        let mut config = dev();
         assert_eq!(config.refresh_replay_grace_secs, 120);
         // The name an operator sets is `ANYPLAY_CLOUD_` plus this one.
         config
@@ -1136,7 +1175,7 @@ mod tests {
         assert_eq!(config.refresh_replay_grace_secs, 30);
         config.validate().unwrap();
         assert!(
-            Config::default()
+            dev()
                 .apply_env(|name| (name == "REFRESH_REPLAY_GRACE_SECS").then(|| "soon".into()))
                 .is_err(),
             "not a number"
@@ -1151,7 +1190,7 @@ mod tests {
 
     #[test]
     fn the_connection_settings_are_read_and_checked() {
-        let mut config = Config::default();
+        let mut config = dev();
         assert!(config.discord().is_none() && config.steam_key().is_none());
         config
             .apply_env(|name| match name {
@@ -1183,7 +1222,7 @@ mod tests {
         let empty = Config {
             discord_client_id: Some(String::new()),
             discord_client_secret: Some(String::new()),
-            ..Config::default()
+            ..dev()
         };
         empty.validate().unwrap();
         assert!(empty.discord().is_none());
@@ -1191,7 +1230,7 @@ mod tests {
 
     #[test]
     fn the_minimum_launcher_is_off_unless_set_and_must_be_a_version() {
-        let mut config = Config::default();
+        let mut config = dev();
         assert_eq!(config.min_launcher_version, None);
         assert_eq!(config.min_launcher(), None);
         // The name an operator sets is `ANYPLAY_CLOUD_` plus this one.
@@ -1202,20 +1241,23 @@ mod tests {
         assert_eq!(config.min_launcher().unwrap().as_str(), "0.3.0");
 
         // An empty variable counts as not set, and an empty value in the file is off.
-        let mut config = Config::default();
+        let mut config = dev();
         config
             .apply_env(|name| (name == "MIN_LAUNCHER_VERSION").then(|| "  ".into()))
             .unwrap();
         assert_eq!(config.min_launcher_version, None);
-        let empty: Config = toml::from_str("min_launcher_version = \"\"").unwrap();
+        let empty: Config =
+            toml::from_str("allow_log_mail = true\nmin_launcher_version = \"\"").unwrap();
         empty.validate().unwrap();
         assert_eq!(empty.min_launcher(), None);
-        let file: Config = toml::from_str("min_launcher_version = \"0.3.0-beta.1\"").unwrap();
+        let file: Config =
+            toml::from_str("allow_log_mail = true\nmin_launcher_version = \"0.3.0-beta.1\"")
+                .unwrap();
         file.validate().unwrap();
         assert_eq!(file.min_launcher().unwrap().as_str(), "0.3.0-beta.1");
 
         for bad in ["0.3", "v0.3.0", "0.3.0+build", "latest", "0.3.x"] {
-            let mut config = Config::default();
+            let mut config = dev();
             config
                 .apply_env(|name| (name == "MIN_LAUNCHER_VERSION").then(|| bad.into()))
                 .unwrap();

@@ -43,6 +43,15 @@ pub enum Command {
         #[arg(long)]
         url: Option<String>,
     },
+    /// After a restore: delete again every account that was deleted since the backup. Opens the
+    /// database directly, so run it while the cloud is stopped (deploy/restore.sh does). Reads
+    /// the deletion ledger of the restored database and, with --ledger, the ledger of the
+    /// database it replaced. Exits non-zero when an account could not be deleted.
+    ReplayDeletions {
+        /// A file with one `<account id> <deleted ms>` pair per line, from the replaced database.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+    },
     /// Moderation, through the admin routes of a running cloud. Needs `admin_token`.
     Admin {
         /// Where the cloud listens. Default: the `listen` setting, on this machine.
@@ -425,6 +434,51 @@ fn rule(name: Option<String>) -> Result<Option<Rule>> {
     .transpose()
 }
 
+/// Reads a ledger file: one `<account id> <deleted ms>` pair per line. Blank lines are skipped.
+pub fn read_ledger(text: &str) -> Result<Vec<(u64, i64)>> {
+    let mut entries = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let entry = match (parts.next(), parts.next(), parts.next()) {
+            (Some(id), Some(at), None) => id.parse().ok().zip(at.parse().ok()),
+            _ => None,
+        };
+        entries.push(
+            entry.with_context(|| format!("ledger line {} is not \"<id> <ms>\"", number + 1))?,
+        );
+    }
+    Ok(entries)
+}
+
+/// `replay-deletions`: deletes again the accounts the deletion ledger lists that exist.
+pub async fn replay_deletions(config: Config, ledger: Option<PathBuf>) -> Result<()> {
+    let extra = match ledger {
+        Some(path) => read_ledger(
+            &std::fs::read_to_string(&path)
+                .with_context(|| format!("cannot read {}", path.display()))?,
+        )?,
+        None => Vec::new(),
+    };
+    let mailer = crate::mail::from_config(&config)?;
+    let state = crate::open(config, crate::Tuning::default(), mailer).await?;
+    let (deleted, failed) = state
+        .replay_deletions(&extra)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.body.message))?;
+    println!(
+        "replayed deletions: {deleted} deleted, {failed} failed, {} from the file",
+        extra.len()
+    );
+    if failed > 0 {
+        bail!("{failed} accounts could not be deleted; run the command again");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,6 +530,46 @@ mod tests {
         assert_eq!(
             mail_test_line(&refused),
             "failed: rejected_sender (SMTP 403)\nserver said: domain is not verified"
+        );
+    }
+
+    #[test]
+    fn replay_deletions_reads_a_ledger_file() {
+        let cli = parse(&["replay-deletions", "--ledger", "/ledger/old.txt"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::ReplayDeletions { ledger: Some(_) })
+        ));
+        assert_eq!(
+            read_ledger(
+                "12 1000
+
+  7 2000  
+"
+            )
+            .unwrap(),
+            [(12, 1000), (7, 2000)]
+        );
+        assert!(
+            read_ledger(
+                "12
+"
+            )
+            .is_err()
+        );
+        assert!(
+            read_ledger(
+                "a b
+"
+            )
+            .is_err()
+        );
+        assert!(
+            read_ledger(
+                "1 2 3
+"
+            )
+            .is_err()
         );
     }
 }
