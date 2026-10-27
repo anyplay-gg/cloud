@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - "crates/ticket/**"
+      - "crates/cloud/src/media.rs"
       - "fuzz/**"
       - ".github/workflows/fuzz.yml"
   schedule:
@@ -33,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [ticket_forged, ticket_altered]
+        target: [ticket_forged, ticket_altered, mp4_clip]
     runs-on: ubuntu-latest
     defaults:
       run:
