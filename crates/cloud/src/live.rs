@@ -17,6 +17,7 @@ use anyplay_api::{
 };
 use sqlx::{AnyConnection, FromRow};
 
+use crate::moderation::banhash::BanKey;
 use crate::util::{ct_eq, sha256};
 
 /// A connection of the store's pool or of a transaction (`&mut *tx`).
@@ -41,8 +42,11 @@ pub async fn count_pending(conn: &mut Conn) -> sqlx::Result<i64> {
     Ok(n)
 }
 
+/// Stores a challenge. The code is kept as a keyed hash that also names the challenge
+/// ([`BanKey::code_hash`]): a copy of the database alone does not give the six digits.
 pub async fn insert_challenge(
     conn: &mut Conn,
+    key: &BanKey,
     challenge: &str,
     email: &str,
     code: &str,
@@ -60,7 +64,7 @@ pub async fn insert_challenge(
     )
     .bind(&sha256(challenge.as_bytes())[..])
     .bind(email)
-    .bind(&sha256(code.as_bytes())[..])
+    .bind(&key.code_hash(challenge, code)[..])
     .bind(expires_ms)
     .execute(conn)
     .await?;
@@ -101,6 +105,7 @@ pub enum CodeCheck {
 /// guesses cannot get past `max_tries` between them.
 pub async fn check_code(
     conn: &mut Conn,
+    ban_key: &BanKey,
     challenge: &str,
     code: &str,
     max_tries: u8,
@@ -123,7 +128,13 @@ pub async fn check_code(
         sqlx::query(delete).bind(&key[..]).execute(conn).await?;
         return Ok(CodeCheck::Expired);
     }
-    if !ct_eq(&code_hash, &sha256(code.trim().as_bytes())) {
+    // A challenge made by a node from before the keyed hash (at most ten minutes old) holds a
+    // plain SHA-256 of the code. A row with a keyed hash never equals a plain one, so accepting
+    // both gives an attacker no second chance.
+    let code = code.trim();
+    if !(ct_eq(&code_hash, &ban_key.code_hash(challenge, code))
+        | ct_eq(&code_hash, &sha256(code.as_bytes())))
+    {
         if tries >= i64::from(max_tries) {
             sqlx::query(delete).bind(&key[..]).execute(conn).await?;
         }
@@ -1008,6 +1019,10 @@ mod tests {
 
     const LATER: i64 = 600_000;
 
+    fn test_key() -> BanKey {
+        BanKey::for_test("a-test-key-of-some-length")
+    }
+
     /// A store in a temporary SQLite file with `accounts` accounts, 1 to n.
     async fn store(accounts: u64) -> (Pool, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -1033,6 +1048,7 @@ mod tests {
         let (pool, _dir) = store(0).await;
         insert_challenge(
             &mut pool.acquire().await.unwrap(),
+            &test_key(),
             "c",
             "a@example.com",
             "123456",
@@ -1046,7 +1062,7 @@ mod tests {
                 let pool = pool.clone();
                 tokio::spawn(async move {
                     let mut conn = pool.acquire().await.unwrap();
-                    check_code(&mut conn, "c", &format!("{n:06}"), 5, 0)
+                    check_code(&mut conn, &test_key(), "c", &format!("{n:06}"), 5, 0)
                         .await
                         .unwrap()
                 })
@@ -1061,9 +1077,16 @@ mod tests {
             }
         }
         assert_eq!(wrong, 5, "five tries, however the guesses interleave");
-        let late = check_code(&mut pool.acquire().await.unwrap(), "c", "123456", 5, 0)
-            .await
-            .unwrap();
+        let late = check_code(
+            &mut pool.acquire().await.unwrap(),
+            &test_key(),
+            "c",
+            "123456",
+            5,
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(late, CodeCheck::Unknown, "the challenge is used up");
     }
 
@@ -1071,25 +1094,86 @@ mod tests {
     async fn a_right_code_signs_in_once() {
         let (pool, _dir) = store(0).await;
         let mut conn = pool.acquire().await.unwrap();
-        insert_challenge(&mut conn, "c", "a@example.com", "123456", LATER)
-            .await
-            .unwrap();
+        insert_challenge(
+            &mut conn,
+            &test_key(),
+            "c",
+            "a@example.com",
+            "123456",
+            LATER,
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            check_code(&mut conn, "c", " 123456 ", 5, 0).await.unwrap(),
+            check_code(&mut conn, &test_key(), "c", " 123456 ", 5, 0)
+                .await
+                .unwrap(),
             CodeCheck::Right {
                 email: "a@example.com".into()
             }
         );
         assert_eq!(
-            check_code(&mut conn, "c", "123456", 5, 0).await.unwrap(),
+            check_code(&mut conn, &test_key(), "c", "123456", 5, 0)
+                .await
+                .unwrap(),
             CodeCheck::Unknown
         );
-        insert_challenge(&mut conn, "old", "a@example.com", "123456", 10)
+        insert_challenge(&mut conn, &test_key(), "old", "a@example.com", "123456", 10)
             .await
             .unwrap();
         assert_eq!(
-            check_code(&mut conn, "old", "123456", 5, 20).await.unwrap(),
+            check_code(&mut conn, &test_key(), "old", "123456", 5, 20)
+                .await
+                .unwrap(),
             CodeCheck::Expired
+        );
+    }
+
+    #[tokio::test]
+    async fn a_code_is_stored_keyed_and_a_plain_one_from_an_older_node_still_works() {
+        let (pool, _dir) = store(0).await;
+        let mut conn = pool.acquire().await.unwrap();
+        insert_challenge(
+            &mut conn,
+            &test_key(),
+            "c",
+            "a@example.com",
+            "123456",
+            LATER,
+        )
+        .await
+        .unwrap();
+        let (stored,): (Vec<u8>,) = sqlx::query_as("SELECT code_hash FROM challenges")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        assert_ne!(
+            stored,
+            sha256(b"123456").to_vec(),
+            "not a bare hash of the digits"
+        );
+        assert_eq!(stored, test_key().code_hash("c", "123456").to_vec());
+        // Another key does not open it.
+        let other = BanKey::for_test("another-key-of-some-length");
+        assert_eq!(
+            check_code(&mut conn, &other, "c", "123456", 5, 0)
+                .await
+                .unwrap(),
+            CodeCheck::Wrong
+        );
+        // A row an older node wrote (a plain hash) is still read, for the ten minutes it lives.
+        sqlx::query("UPDATE challenges SET code_hash = $1")
+            .bind(&sha256(b"123456")[..])
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            check_code(&mut conn, &test_key(), "c", "123456", 5, 0)
+                .await
+                .unwrap(),
+            CodeCheck::Right {
+                email: "a@example.com".into()
+            }
         );
     }
 

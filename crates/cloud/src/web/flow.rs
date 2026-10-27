@@ -13,7 +13,7 @@
 use std::net::IpAddr;
 
 use anyplay_api::ErrorCode;
-use axum::extract::{Query, State};
+use axum::extract::{Query, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -112,6 +112,8 @@ fn invalid_request() -> WebError {
 pub async fn authorize(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
     query: Result<Query<AuthorizeQuery>, axum::extract::rejection::QueryRejection>,
 ) -> WebResult {
     let Ok(Query(q)) = query else {
@@ -147,6 +149,25 @@ pub async fn authorize(
         .filter(|d| crate::util::is_label(d, 64))
         .unwrap_or("this PC")
         .to_owned();
+    // This address replaces the browser's session with a new one, so a page of another site must
+    // not be able to send the browser here: that would sign the player out of the account web
+    // (SameSite=Strict only keeps the cookie off the request, it does not stop the new one).
+    // The app's own start is opened by the system (`Sec-Fetch-Site: none`). A request that
+    // another site started gets a page of ours that waits for a click, which is a same-origin
+    // request and goes on.
+    if headers
+        .get("sec-fetch-site")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|site| site == "cross-site")
+    {
+        let href = format!("/web/authorize?{}", raw.unwrap_or_default());
+        return Err(WebError::page(
+            StatusCode::OK,
+            "Continue signing in to AnyPlay?",
+            "AnyPlay on your PC asked for this sign-in, but another website opened this page. If you did not just start a sign-in in AnyPlay, close this tab.",
+        )
+        .with_action(&href, "Continue"));
+    }
     let create = q.intent.as_deref() == Some("create");
     let data = SessionData {
         authorize: Some(Authorize {

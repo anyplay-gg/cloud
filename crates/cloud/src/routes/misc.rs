@@ -20,6 +20,7 @@ pub async fn info(State(state): State<AppState>) -> Json<Info> {
         privacy: state.config.privacy_url.clone(),
         terms: state.config.terms_url.clone(),
         web: state.config.web_origin(),
+        share: None,
     })
 }
 

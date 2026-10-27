@@ -949,16 +949,18 @@ struct Listed2 {
 }
 
 /// `unread` counts the messages of others above the account's read mark that it can see and
-/// that were not unsent.
+/// that were not unsent. The count stops at `anyplay_api::MAX_UNREAD` (the `LIMIT` below, which a
+/// test keeps equal), so a long-unread conversation costs a bounded read, not a scan of its
+/// whole history.
 const LISTED: &str = "SELECT c.id, c.kind, c.name, c.party_id, c.last_seq, c.updated_ms, \
      m.read_seq, \
      CASE WHEN m.state = 0 AND NOT EXISTS (SELECT 1 FROM friends f WHERE f.low = c.pair_low \
      AND f.high = c.pair_high) THEN 1 ELSE 0 END AS request, \
      m.muted, m.pinned, c.rev, \
-     (SELECT COUNT(*) FROM messages u WHERE u.conversation_id = c.id AND u.seq > m.read_seq \
-      AND u.sender <> m.account_id AND u.deleted_ms IS NULL \
+     (SELECT COUNT(*) FROM (SELECT 1 FROM messages u WHERE u.conversation_id = c.id \
+      AND u.seq > m.read_seq AND u.sender <> m.account_id AND u.deleted_ms IS NULL \
       AND NOT EXISTS (SELECT 1 FROM message_hidden h WHERE h.conversation_id = u.conversation_id \
-      AND h.seq = u.seq AND h.account_id = m.account_id)) AS unread \
+      AND h.seq = u.seq AND h.account_id = m.account_id) LIMIT 100) AS capped) AS unread \
      FROM conversation_members m JOIN conversations c ON c.id = m.conversation_id \
      WHERE m.account_id = $1 AND m.state <> 2";
 

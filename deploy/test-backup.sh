@@ -7,7 +7,7 @@
 # 1. A volume with a seeded SQLite database (WAL mode), signing.key and ban.key is backed up;
 #    the archive and manifest are mode 0600; a later change to the volume is not in the archive.
 # 2. The archive is restored into a scratch volume: integrity_check ok and the seeded row count.
-# 3. A damaged archive and a missing manifest are refused; --keep prunes; an unwritable backup
+# 3. A damaged archive and a missing manifest are refused; --keep and --max-age-days prune; an unwritable backup
 #    directory fails before anything is touched.
 # 4. update.sh, run against stand-in repositories and a stand-in docker: with an unwritable backup
 #    directory it exits non-zero before `docker compose build`; with --no-backup it goes on to
@@ -101,6 +101,22 @@ sleep 1; "$here/backup.sh" --no-stop --volume "$vol" --dir "$dir" --keep 2 >/dev
 sleep 1; "$here/backup.sh" --no-stop --volume "$vol" --dir "$dir" --keep 2 >/dev/null
 check "--keep 2 leaves 2 archives and 2 manifests" test "$(find "$dir" -type f | wc -l)" = 4
 check "the oldest archive was the one removed" test ! -e "$archive"
+
+# Age: with a generous count, an archive older than the limit still goes, a younger one stays,
+# and so does a pre-restore copy (its own name, its own rule in restore.sh).
+old_name=anyplay-cloud-$(date -u -d '91 days ago' +%Y%m%dT%H%M%SZ).tar.gz
+young_name=anyplay-cloud-$(date -u -d '89 days ago' +%Y%m%dT%H%M%SZ).tar.gz
+pre_name=anyplay-cloud-pre-restore-$(date -u -d '120 days ago' +%Y%m%dT%H%M%SZ).tar.gz
+for f in "$old_name" "$young_name" "$pre_name"; do : >"$dir/$f"; : >"$dir/$f.sha256"; done
+sleep 1; "$here/backup.sh" --no-stop --volume "$vol" --dir "$dir" --keep 50 >/dev/null
+check "an archive older than 90 days is removed with its manifest" test ! -e "$dir/$old_name" -a ! -e "$dir/$old_name.sha256"
+check "an archive younger than 90 days stays" test -e "$dir/$young_name"
+check "a pre-restore copy is not touched by the backup" test -e "$dir/$pre_name"
+sleep 1; "$here/backup.sh" --no-stop --volume "$vol" --dir "$dir" --keep 50 --max-age-days 30 >/dev/null
+check "--max-age-days 30 removes the 89-day-old archive" test ! -e "$dir/$young_name"
+check "the archives just written stay" test "$(find "$dir" -name 'anyplay-cloud-2*.tar.gz' -size +0 | wc -l)" -ge 1
+refuses "--max-age-days 0 is refused" "$here/backup.sh" --no-stop --volume "$vol" --dir "$dir" --max-age-days 0
+rm -f "$dir/$pre_name" "$dir/$pre_name.sha256"
 
 : >"$work/afile"
 refuses "an unwritable backup directory fails" "$here/backup.sh" --no-stop --volume "$vol" --dir "$work/afile/sub"

@@ -412,6 +412,12 @@ fn on_text(ctx: &Ctx, text: &str) {
         Ok(Event::MissedCall { .. }) => rec.event("missed_call"),
         Ok(Event::MissedCallGone { .. }) => rec.event("missed_call_gone"),
         Ok(Event::CallEnded { .. }) => rec.event("call_ended"),
+        Ok(
+            Event::ShareInvitation { .. }
+            | Event::ShareInvitationGone { .. }
+            | Event::Share { .. }
+            | Event::ShareGone { .. },
+        ) => rec.event("share"),
         Ok(Event::Unknown) | Err(_) => rec.event("unknown"),
     }
 }

@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # Backs up the cloud-data volume (the SQLite database, signing.key and ban.key) into one archive.
 #
-#   cloud/deploy/backup.sh [--dir DIR] [--keep N] [--volume NAME] [--no-stop]
+#   cloud/deploy/backup.sh [--dir DIR] [--keep N] [--max-age-days D] [--volume NAME] [--no-stop]
 #
 # The cloud container stops for the copy, so the SQLite write-ahead log is checkpointed and the
 # archive is consistent, and starts again afterwards, also when the copy failed. The archive is
 # written under a temporary name, synced and then renamed, so a partial file never looks like a
 # backup. Next to it goes <archive>.sha256. Both are mode 0600. Afterwards only the newest N
-# archives (default 14) stay. Exit status is non-zero when anything went wrong.
+# archives (default 14) stay, and none older than D days (default 90, the longest the privacy
+# notice says deleted data can stay in a backup; the age is read from the archive's name).
+# Exit status is non-zero when anything went wrong.
 # Restoring and the restore drill: restore.sh. Details: docs/deploy.md.
 #
 #   --dir DIR       where the archives go (default $ANYPLAY_BACKUP_DIR, else deploy/backups)
 #   --keep N        archives to keep (default $ANYPLAY_BACKUP_KEEP, else 14)
+#   --max-age-days D  remove archives older than D days (default $ANYPLAY_BACKUP_RETAIN_DAYS, else 90)
 #   --volume NAME   the volume to copy (default $ANYPLAY_CLOUD_VOLUME, else anyplay_cloud-data)
 #   --no-stop       do not stop the cloud; only for a volume that nothing writes to (tests)
 #
@@ -21,7 +24,7 @@
 set -Eeuo pipefail
 
 main() {
-  local here dir=${ANYPLAY_BACKUP_DIR:-} keep=${ANYPLAY_BACKUP_KEEP:-14} \
+  local here dir=${ANYPLAY_BACKUP_DIR:-} keep=${ANYPLAY_BACKUP_KEEP:-14} retain=${ANYPLAY_BACKUP_RETAIN_DAYS:-90} \
     volume=${ANYPLAY_CLOUD_VOLUME:-anyplay_cloud-data} stop=1 \
     image=${ANYPLAY_BACKUP_IMAGE:-python:3.13-alpine@sha256:bf12ecc0bea3f171d55145dd02c78b5eeb09f30ee2ac9cc2b4c9e4e8f5e30741}
   wait=${ANYPLAY_BACKUP_TIMEOUT:-120} # wait, tmp, stopped: global, the EXIT trap runs after main has returned
@@ -29,20 +32,22 @@ main() {
   # shellcheck source=backup-env.sh
   . "$here/backup-env.sh"
   anyplay_backup_env "$here"
-  dir=${dir:-${ANYPLAY_BACKUP_DIR:-}} keep=${ANYPLAY_BACKUP_KEEP:-$keep} volume=${ANYPLAY_CLOUD_VOLUME:-$volume} \
+  dir=${dir:-${ANYPLAY_BACKUP_DIR:-}} keep=${ANYPLAY_BACKUP_KEEP:-$keep} retain=${ANYPLAY_BACKUP_RETAIN_DAYS:-$retain} volume=${ANYPLAY_CLOUD_VOLUME:-$volume} \
     image=${ANYPLAY_BACKUP_IMAGE:-$image}
   while [ $# -gt 0 ]; do
     case $1 in
       --dir) dir=${2:?--dir needs a folder}; shift 2 ;;
       --keep) keep=${2:?--keep needs a number}; shift 2 ;;
+      --max-age-days) retain=${2:?--max-age-days needs a number}; shift 2 ;;
       --volume) volume=${2:?--volume needs a name}; shift 2 ;;
       --no-stop) stop=0; shift ;;
-      -h|--help) sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
+      -h|--help) sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
       *) echo "unknown argument: $1 (see --help)" >&2; return 2 ;;
     esac
   done
   [ -n "$dir" ] || dir=$here/backups
   case $keep in '' | *[!0-9]* | 0) echo "--keep must be a number of at least 1" >&2; return 2 ;; esac
+  case $retain in '' | *[!0-9]* | 0) echo "--max-age-days must be a number of at least 1" >&2; return 2 ;; esac
 
   log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*"; }
   die() { log "ERROR: $*" >&2; exit 1; }
@@ -133,6 +138,20 @@ main() {
     log "removing old backup $old"
     rm -f "${dir:?}/${old:?}" "${dir:?}/${old:?}.sha256"
   done < <(find "$dir" -maxdepth 1 -type f -printf '%f\n' | grep -E '^anyplay-cloud-[0-9]{8}T[0-9]{6}Z\.tar\.gz$' | sort -r | tail -n +"$((keep + 1))")
+  # Retention by age: a count alone keeps archives for as long as no new one is made, and the
+  # privacy notice says deleted data leaves the backups after $retain days. The names are UTC
+  # times of a fixed width, so they compare as text; the archive just written is never old.
+  local cutoff stamp_old
+  cutoff=$(date -u -d "$retain days ago" +%Y%m%dT%H%M%SZ) || die "cannot work out the age limit"
+  while IFS= read -r old; do
+    [ -n "$old" ] || continue
+    [ "$old" != "$name" ] || continue
+    stamp_old=${old#anyplay-cloud-}
+    stamp_old=${stamp_old%.tar.gz}
+    [[ "$stamp_old" < "$cutoff" ]] || continue
+    log "removing backup $old, older than $retain days"
+    rm -f "${dir:?}/${old:?}" "${dir:?}/${old:?}.sha256"
+  done < <(find "$dir" -maxdepth 1 -type f -printf '%f\n' | grep -E '^anyplay-cloud-[0-9]{8}T[0-9]{6}Z\.tar\.gz$' | sort)
   printf '%s\n' "$dir/$name"
 }
 
