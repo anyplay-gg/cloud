@@ -14,6 +14,8 @@ services:
     # The instance's own details (operator, address, contact), from deploy/.env. See docs/deploy.md.
     environment:
       SITE_URL: ${SITE_URL:-}
+      # The status page (/status) asks the cloud here, over the compose network.
+      CLOUD_URL: ${CLOUD_URL:-http://cloud:8080}
       LEGAL_OPERATOR_NAME: ${LEGAL_OPERATOR_NAME:-}
       LEGAL_OPERATOR_STREET: ${LEGAL_OPERATOR_STREET:-}
       LEGAL_OPERATOR_CITY: ${LEGAL_OPERATOR_CITY:-}
