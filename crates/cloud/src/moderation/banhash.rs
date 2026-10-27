@@ -79,6 +79,19 @@ impl BanKey {
         hmac_sha256(&self.0, email.as_bytes())
     }
 
+    /// The hash that keeps a sign-in code: HMAC-SHA-256 under this key of a fixed label, the
+    /// challenge and the code. The challenge in it makes the same six digits hash differently
+    /// for every challenge, and the key keeps a copy of the database from being tried against
+    /// the million possible codes.
+    pub fn code_hash(&self, challenge: &str, code: &str) -> [u8; 32] {
+        let mut message = Vec::with_capacity(32 + challenge.len() + code.len());
+        message.extend_from_slice(b"anyplay-signin-code-v1\0");
+        message.extend_from_slice(challenge.as_bytes());
+        message.push(0);
+        message.extend_from_slice(code.as_bytes());
+        hmac_sha256(&self.0, &message)
+    }
+
     /// The hash an older version stored.
     pub fn legacy(email: &str) -> [u8; 32] {
         sha256(email.as_bytes())
@@ -165,6 +178,20 @@ mod tests {
             hex,
             "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
         );
+    }
+
+    #[test]
+    fn a_code_hash_depends_on_key_challenge_and_code() {
+        let a = BanKey::for_test("a-secret-of-some-length");
+        let b = BanKey::for_test("another-secret-of-length");
+        let hash = a.code_hash("c1", "123456");
+        assert_eq!(hash, a.code_hash("c1", "123456"));
+        assert_ne!(hash, b.code_hash("c1", "123456"));
+        assert_ne!(hash, a.code_hash("c2", "123456"));
+        assert_ne!(hash, a.code_hash("c1", "123457"));
+        assert_ne!(hash, sha256(b"123456"));
+        // The address hash of the same bytes is a different value: the label separates them.
+        assert_ne!(a.code_hash("", "x"), a.hash("x"));
     }
 
     #[test]

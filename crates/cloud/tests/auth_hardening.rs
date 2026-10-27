@@ -114,10 +114,13 @@ async fn wrong_codes_count_per_address_over_all_its_codes() {
     // and a spelling of the same address shares the count.
     for email in ["kim@example.com", "kim+again@example.com"] {
         let (challenge, code) = cloud.ask_for_code(email).await;
-        cloud
-            .enter_code(&challenge.challenge, &code, "pc")
-            .await
-            .is_error("rate_limited", 429);
+        let refused = cloud.enter_code(&challenge.challenge, &code, "pc").await;
+        refused.is_error("rate_limited", 429);
+        // The player is told how long it lasts and that a passkey still works.
+        let message = refused.body["message"].as_str().unwrap();
+        assert!(message.contains("for the next 60 minutes"), "{message}");
+        assert!(message.contains("passkey still works"), "{message}");
+        assert!(refused.headers.contains_key("retry-after"));
     }
     // The answer to asking for a code is the same as before.
     ask(&cloud, "kim@example.com").await.ok(200);

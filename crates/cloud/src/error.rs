@@ -84,6 +84,14 @@ impl AppError {
         error
     }
 
+    /// Like [`AppError::rate_limited`] with words of its own, for a limit the player can do
+    /// something about.
+    pub fn rate_limited_saying(message: impl Into<String>, retry_after: u64) -> Self {
+        let mut error = Self::new(ErrorCode::RateLimited, message);
+        error.retry_after = Some(retry_after.max(1));
+        error
+    }
+
     pub fn rate_limited(retry_after: u64) -> Self {
         let mut error = Self::new(ErrorCode::RateLimited, "Too many requests. Wait a moment.");
         error.retry_after = Some(retry_after.max(1));

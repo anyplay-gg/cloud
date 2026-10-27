@@ -216,7 +216,7 @@ pub struct WebError {
     status: StatusCode,
     title: String,
     message: String,
-    action: Option<(&'static str, &'static str)>,
+    action: Option<(String, String)>,
     redirect: Option<&'static str>,
 }
 
@@ -232,8 +232,8 @@ impl WebError {
     }
 
     /// Adds a button to the page.
-    pub fn with_action(mut self, href: &'static str, label: &'static str) -> Self {
-        self.action = Some((href, label));
+    pub fn with_action(mut self, href: &str, label: &str) -> Self {
+        self.action = Some((href.to_owned(), label.to_owned()));
         self
     }
 
@@ -317,7 +317,14 @@ impl IntoResponse for WebError {
             terms_url: None,
             notice: None,
         };
-        let html = pages::error(&ctx, &self.title, &self.message, self.action);
+        let html = pages::error(
+            &ctx,
+            &self.title,
+            &self.message,
+            self.action
+                .as_ref()
+                .map(|(href, label)| (href.as_str(), label.as_str())),
+        );
         (self.status, html_headers(), html).into_response()
     }
 }

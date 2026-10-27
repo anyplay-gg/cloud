@@ -653,6 +653,53 @@ async fn a_new_version_of_the_terms_is_asked_for_at_the_next_web_sign_in() {
 }
 
 #[tokio::test]
+async fn another_site_cannot_send_the_browser_to_authorize_and_sign_it_out() {
+    let cloud = TestCloud::start().await;
+    let alec = cloud.sign_up("Alec").await;
+    let browser = Browser::new(&cloud);
+    assert_eq!(
+        browser.sign_in_by_code(&alec.email).await.location(),
+        "/web/account"
+    );
+    let challenge = pkce::challenge(&pkce::new_verifier());
+    let path = authorize_path(REDIRECT, STATE, &challenge, "sign_in");
+    let with_site = |site: &'static str| {
+        browser.send(
+            browser
+                .client
+                .get(browser.url(&path))
+                .header("sec-fetch-site", site),
+        )
+    };
+
+    // A page of another site started the request: the session stays, and the player is asked.
+    let asked = with_site("cross-site").await;
+    assert_eq!(asked.status, 200);
+    assert!(asked.header("set-cookie").is_none(), "no new session");
+    let text = asked.text();
+    assert!(text.contains("Continue signing in"), "{text}");
+    assert!(text.contains("href=\"/web/authorize?client=net"), "{text}");
+    assert_eq!(browser.get("/web/account").await.status, 200, "still in");
+
+    // The app opens the address itself (`none`), and the player's own click is `same-origin`.
+    for site in ["none", "same-origin", "same-site"] {
+        let started = with_site(site).await;
+        assert_eq!(started.status, 303, "{site}");
+        assert!(started.header("set-cookie").is_some(), "{site}");
+    }
+    // A cross-site request that is not valid is still refused, not asked about.
+    let bad = browser
+        .send(
+            browser
+                .client
+                .get(browser.url("/web/authorize?client=net"))
+                .header("sec-fetch-site", "cross-site"),
+        )
+        .await;
+    assert_eq!(bad.status, 400);
+}
+
+#[tokio::test]
 async fn a_wrong_code_is_explained_and_too_many_end_the_challenge() {
     let cloud = TestCloud::start().await;
     let alec = cloud.sign_up("Alec").await;

@@ -144,7 +144,15 @@ pub async fn start_email_challenge(
             return Err(AppError::rate_limited(60));
         }
         let expires_ms = now_ms() + ttl.as_millis() as i64;
-        live::insert_challenge(&mut conn, &challenge, &email, &code, expires_ms).await?;
+        live::insert_challenge(
+            &mut conn,
+            &state.ban_key,
+            &challenge,
+            &email,
+            &code,
+            expires_ms,
+        )
+        .await?;
     }
     // The same mail goes out whether or not the address has an account.
     let sent = crate::mail::within(
@@ -158,6 +166,25 @@ pub async fn start_email_challenge(
         return Err(AppError::internal());
     }
     Ok((challenge, email))
+}
+
+/// What the player is told when the wrong codes of an address are used up: how long it lasts,
+/// and that a passkey needs no code.
+fn code_lockout(seconds: u64) -> AppError {
+    AppError::rate_limited_saying(code_lockout_text(seconds), seconds)
+}
+
+fn code_lockout_text(seconds: u64) -> String {
+    let wait = if seconds <= 90 {
+        "a minute".to_owned()
+    } else if seconds < 90 * 60 {
+        format!("{} minutes", seconds.div_ceil(60))
+    } else {
+        format!("{} hours", seconds.div_ceil(3600))
+    };
+    format!(
+        "Too many wrong codes for this e-mail address. No code works for it for the next {wait}. Signing in with a passkey still works."
+    )
 }
 
 /// Checks a typed code against its challenge. Returns the verified address.
@@ -177,10 +204,11 @@ pub async fn check_challenge(state: &AppState, challenge: &str, code: &str) -> R
         state
             .limiter
             .blocked(key, rates.code_failures_per_address)
-            .map_err(AppError::rate_limited)?;
+            .map_err(code_lockout)?;
     }
     let check = live::check_code(
         &mut *state.db.acquire().await?,
+        &state.ban_key,
         challenge,
         code,
         state.tuning.code_tries,
@@ -694,6 +722,27 @@ pub async fn signout(State(state): State<AppState>, auth: Auth) -> Result<Status
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lockout_says_how_long_and_that_a_passkey_works() {
+        for (seconds, wait) in [
+            (1, "a minute"),
+            (90, "a minute"),
+            (91, "2 minutes"),
+            (600, "10 minutes"),
+            (3599, "60 minutes"),
+            (5399, "90 minutes"),
+            (5400, "2 hours"),
+            (7200, "2 hours"),
+        ] {
+            let text = code_lockout_text(seconds);
+            assert!(
+                text.contains(&format!("for the next {wait}.")),
+                "{seconds}: {text}"
+            );
+            assert!(text.contains("passkey still works"), "{text}");
+        }
+    }
 
     #[test]
     fn reserved_handles_are_matched_without_regard_to_case() {

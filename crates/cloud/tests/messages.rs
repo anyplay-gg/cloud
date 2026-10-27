@@ -262,14 +262,19 @@ async fn message_text_is_bounded() {
         " \n\t ".to_owned(),
         "ä".repeat(MAX_MESSAGE_CHARS + 1),
         "bell\u{7}".to_owned(),
+        // Direction overrides and isolates could reorder what is read after them.
+        "safe\u{202E}txt.exe".to_owned(),
+        "a\u{2066}b".to_owned(),
     ] {
         say(&cloud, &alec, id, &bad)
             .await
             .is_error("bad_request", 400);
     }
+    // The plain direction marks stay: right-to-left writers need them.
+    say(&cloud, &alec, id, "shalom\u{200F}!").await.ok(200);
     // Line breaks are fine, and what was stored comes back as it was written.
     say(&cloud, &alec, id, "two\nlines").await.ok(200);
-    assert_eq!(texts(&cloud, &bea, id).await[1], "two\nlines");
+    assert_eq!(texts(&cloud, &bea, id).await[2], "two\nlines");
     cloud
         .post(
             &format!("/v1/conversations/{id}/messages"),

@@ -61,6 +61,15 @@ fn push_all(state: &AppState, accounts: impl IntoIterator<Item = u64>, event: &E
     }
 }
 
+/// `anyplay_api::is_message_text` plus the direction overrides (U+202A-202E, U+2066-2069) that
+/// network#108 refuses; the check lives here until `network.ref` moves past that change.
+fn message_text_ok(text: &str) -> bool {
+    is_message_text(text)
+        && !text
+            .chars()
+            .any(|c| matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
+}
+
 pub async fn list(State(state): State<AppState>, auth: Auth) -> Result<Json<Conversations>> {
     let all = chat::conversations_of(&mut *state.db.acquire().await?, auth.account).await?;
     let (requests, conversations) = all.into_iter().partition(|c| c.request);
@@ -333,7 +342,7 @@ pub async fn send(
     ApiJson(request): ApiJson<SendMessage>,
 ) -> Result<Json<Message>> {
     ensure_not_muted(&state, auth.account).await?;
-    if !is_message_text(&request.text) {
+    if !message_text_ok(&request.text) {
         return Err(AppError::bad_request(
             "A message has 1 to 2000 characters and is not only white space.",
         ));
@@ -653,7 +662,7 @@ pub async fn edit(
     ApiJson(request): ApiJson<EditMessage>,
 ) -> Result<Json<Message>> {
     ensure_not_muted(&state, auth.account).await?;
-    if !is_message_text(&request.text) {
+    if !message_text_ok(&request.text) {
         return Err(AppError::bad_request(
             "A message has 1 to 2000 characters and is not only white space.",
         ));

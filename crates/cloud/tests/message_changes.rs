@@ -632,6 +632,72 @@ async fn unread_is_counted_by_the_cloud_and_is_the_same_on_every_device() {
 }
 
 #[tokio::test]
+async fn the_unread_count_stops_at_the_cap() {
+    let cloud = cloud().await;
+    let (alec, bea) = cloud.friends("Alec", "Bea").await;
+    let chat = open(&cloud, &alec, &[&bea]).await;
+    say(&cloud, &alec, &chat.id, "first").await;
+    // A long unread history, written straight to the store (the send limit would take minutes).
+    // Recent, or the retention sweep would take the rows away mid-test.
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    for seq in 2..=150_i64 {
+        sqlx::query(
+            "INSERT INTO messages (conversation_id, seq, sender, body, created_ms) \
+             VALUES ($1, $2, $3, 'x', $4)",
+        )
+        .bind(&chat.id)
+        .bind(seq)
+        .bind(alec.id as i64)
+        .bind(created)
+        .execute(&cloud.state.db)
+        .await
+        .unwrap();
+    }
+    sqlx::query("UPDATE conversations SET last_seq = 150 WHERE id = $1")
+        .bind(&chat.id)
+        .execute(&cloud.state.db)
+        .await
+        .unwrap();
+    let capped = 100;
+    assert_eq!(conversation(&cloud, &bea, &chat.id).await.unread, capped);
+    let listed = cloud
+        .get("/v1/conversations", bea.token())
+        .await
+        .ok(200)
+        .json::<anyplay_api::Conversations>();
+    assert_eq!(listed.conversations[0].unread, capped);
+    // Under the cap the count is exact again.
+    cloud
+        .put(
+            &format!("/v1/conversations/{}/read", chat.id),
+            bea.token(),
+            Some(json!({"seq": 100})),
+        )
+        .await
+        .ok(204);
+    assert_eq!(conversation(&cloud, &bea, &chat.id).await.unread, 50);
+}
+
+#[tokio::test]
+async fn an_edit_may_not_add_a_direction_override() {
+    let cloud = cloud().await;
+    let (alec, bea) = cloud.friends("Alec", "Bea").await;
+    let chat = open(&cloud, &alec, &[&bea]).await;
+    let sent = say(&cloud, &alec, &chat.id, "photo.png").await;
+    cloud
+        .patch(
+            &format!("/v1/conversations/{}/messages/{}", chat.id, sent.seq),
+            alec.token(),
+            json!({"text": "photo\u{202E}gpj.exe"}),
+        )
+        .await
+        .is_error("bad_request", 400);
+}
+
+#[tokio::test]
 async fn a_direct_message_is_delivered_when_the_other_device_fetches_it() {
     let cloud = cloud().await;
     let (alec, bea) = cloud.friends("Alec", "Bea").await;
