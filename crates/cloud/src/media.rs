@@ -132,6 +132,8 @@ static DECODERS: Semaphore = Semaphore::const_new(2);
 
 /// The longest a whole upload may take, from the first byte to the last.
 pub const UPLOAD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// The longest an upload may go without a single byte arriving.
+pub const UPLOAD_IDLE: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// What a file turned out to be.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,6 +225,9 @@ fn inspect_clip(path: &Path) -> Result<Meta, Refused> {
 
 /// The largest `moov` box read into memory.
 const MAX_MOOV: u64 = 16 * 1024 * 1024;
+/// The most top-level boxes read before a `moov` must have turned up. A real file has a handful;
+/// a file of millions of empty boxes would keep a thread seeking.
+const MAX_TOP_BOXES: u32 = 1024;
 
 /// Reads the top-level boxes of an MP4 file: it must start with `ftyp` and hold a `moov` with a
 /// movie header; the length comes from `mvhd`, the picture size from the first `tkhd` with one.
@@ -230,6 +235,7 @@ pub fn read_mp4<R: std::io::Read + std::io::Seek>(file: &mut R) -> Result<Meta, 
     let end = file.seek(SeekFrom::End(0)).map_err(|_| Refused::Broken)?;
     let mut at = 0u64;
     let mut first = true;
+    let mut boxes_seen = 0u32;
     while at + 8 <= end {
         file.seek(SeekFrom::Start(at))
             .map_err(|_| Refused::Broken)?;
@@ -246,7 +252,7 @@ pub fn read_mp4<R: std::io::Read + std::io::Seek>(file: &mut R) -> Result<Meta, 
         } else if size == 0 {
             size = end - at;
         }
-        if size < header || at + size > end {
+        if size < header || size > end - at {
             return Err(Refused::Broken);
         }
         if first && &kind != b"ftyp" {
@@ -262,7 +268,12 @@ pub fn read_mp4<R: std::io::Read + std::io::Seek>(file: &mut R) -> Result<Meta, 
             file.read_exact(&mut moov).map_err(|_| Refused::Broken)?;
             return parse_moov(&moov);
         }
+        // `size <= end - at` above, so this cannot wrap and always moves forward.
         at += size;
+        boxes_seen += 1;
+        if boxes_seen > MAX_TOP_BOXES {
+            return Err(Refused::Broken);
+        }
     }
     Err(Refused::Broken)
 }
@@ -458,14 +469,14 @@ pub async fn of_message(
     .await
 }
 
-/// The bytes of the unexpired files an account sent that were not unsent.
-pub async fn active_bytes(conn: &mut Conn, account: u64, now_ms: i64) -> sqlx::Result<u64> {
+/// The bytes of the files an account sent that are still on disk. An unsent or expired file
+/// counts until the sweep has deleted it (an unsent one is held for a report first), so that
+/// sending and unsending cannot fill the disk past the quota.
+pub async fn stored_bytes(conn: &mut Conn, account: u64) -> sqlx::Result<u64> {
     let (n,): (i64,) = sqlx::query_as(
-        "SELECT COALESCE(CAST(SUM(bytes) AS BIGINT), 0) FROM media WHERE uploader_id = $1 AND removed_ms IS NULL \
-         AND expires_ms > $2",
+        "SELECT COALESCE(CAST(SUM(bytes) AS BIGINT), 0) FROM media WHERE uploader_id = $1",
     )
     .bind(i(account))
-    .bind(now_ms)
     .fetch_one(conn)
     .await?;
     Ok(u(n))
@@ -580,6 +591,7 @@ impl Inner {
                 .await?
             };
             let n = ids.len() as i64;
+            let mut deleted = 0;
             for (id,) in ids {
                 if let Err(error) = store.delete(&id) {
                     tracing::error!(%error, "cannot delete a media file; trying again later");
@@ -589,9 +601,12 @@ impl Inner {
                     .bind(&id)
                     .execute(&self.db)
                     .await?;
-                total += 1;
+                deleted += 1;
             }
-            if n < BATCH {
+            total += deleted;
+            // A batch that deleted nothing would be selected again for ever (a read-only disk,
+            // say): stop, the next sweep tries again.
+            if n < BATCH || deleted == 0 {
                 return Ok(total);
             }
         }
@@ -667,5 +682,69 @@ mod tests {
             read_mp4(&mut std::io::Cursor::new(no_moov)),
             Err(Refused::Broken)
         );
+    }
+
+    /// Runs `read_mp4` on its own thread, so that a loop that never ends fails the test instead of
+    /// hanging it.
+    fn read_within_a_second(data: Vec<u8>) -> Result<Meta, Refused> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_mp4(&mut std::io::Cursor::new(data)));
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(1))
+            .expect("read_mp4 did not return")
+    }
+
+    #[test]
+    fn a_box_size_that_wraps_the_offset_is_refused() {
+        // A second box whose 64-bit size added to its offset wraps to zero: without the check the
+        // reader would jump back to the start and read the same boxes for ever.
+        let mut data = boxed(b"ftyp", b"isom\0\0\0\0isom");
+        let at = data.len() as u64;
+        data.extend_from_slice(&1u32.to_be_bytes());
+        data.extend_from_slice(b"free");
+        data.extend_from_slice(&(u64::MAX - at + 1).to_be_bytes());
+        data.extend_from_slice(&[0; 16]);
+        assert_eq!(read_within_a_second(data), Err(Refused::Broken));
+    }
+
+    #[test]
+    fn a_file_of_endless_empty_boxes_is_refused() {
+        let mut data = boxed(b"ftyp", b"isom\0\0\0\0isom");
+        for _ in 0..100_000 {
+            data.extend(boxed(b"free", &[]));
+        }
+        data.extend(boxed(b"moov", &[]));
+        assert_eq!(read_within_a_second(data), Err(Refused::Broken));
+    }
+
+    #[test]
+    fn damaged_clips_never_panic_or_hang() {
+        // A small deterministic mutation fuzz (xorshift): flip, cut and extend a valid clip.
+        let base = mp4(10);
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..20_000 {
+            let mut data = base.clone();
+            for _ in 0..(next() % 6) {
+                let at = (next() % data.len() as u64) as usize;
+                data[at] = match next() % 3 {
+                    0 => 0xff,
+                    1 => 0,
+                    _ => next() as u8,
+                };
+            }
+            match next() % 4 {
+                0 => data.truncate((next() % data.len() as u64) as usize),
+                1 => data.extend(std::iter::repeat_n(0xff, (next() % 64) as usize)),
+                _ => {}
+            }
+            let _ = read_mp4(&mut std::io::Cursor::new(data));
+        }
     }
 }
