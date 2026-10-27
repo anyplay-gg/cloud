@@ -794,6 +794,10 @@ pub struct Tuning {
     pub share_minute: Duration,
     pub ping_interval: Duration,
     pub sweep_interval: Duration,
+    /// How long two accounts must share a party or a session before the pair is remembered.
+    pub played_with_min: Duration,
+    /// How often a node looks for pairs to remember.
+    pub played_with_every: Duration,
     /// How long a node may miss its heartbeat before its connections count as closed.
     pub node_timeout: Duration,
     pub rates: Rates,
@@ -870,6 +874,8 @@ impl Default for Tuning {
             share_minute: Duration::from_secs(60),
             ping_interval: Duration::from_secs(20),
             sweep_interval: Duration::from_secs(5),
+            played_with_min: Duration::from_secs(anyplay_api::PLAYED_WITH_MIN_SECS),
+            played_with_every: Duration::from_secs(60),
             node_timeout: Duration::from_secs(30),
             rates: Rates::default(),
             feed_items_per_day: 100,

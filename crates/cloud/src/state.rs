@@ -100,6 +100,8 @@ pub struct Inner {
     pub ban_key: crate::moderation::banhash::BanKey,
     /// When this node last ran the retention sweep of moderation data, in Unix seconds.
     pub retention_at: std::sync::atomic::AtomicU64,
+    /// When this node last recorded who has played together, in Unix milliseconds.
+    pub played_with_at: std::sync::atomic::AtomicI64,
     /// Starts the transactions of [`Inner::begin_write`].
     pub writer: db::Writer,
     /// Web Push, when the cloud has a VAPID key.
@@ -682,6 +684,7 @@ impl Inner {
         let (offline, gone, leaving) = step("live sessions", swept).unwrap_or_default();
         self.invitations_gone(&gone);
         step("social", self.sweep_social(now).await);
+        step("played with", self.sweep_played_with(now).await);
         step("shares", self.sweep_shares(now).await);
         self.sweep_deletions().await;
         self.sweep_deletion_ledger(now).await;

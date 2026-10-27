@@ -285,6 +285,14 @@ pub fn router() -> Router<AppState> {
             get(social::my_appear_offline).put(social::set_appear_offline),
         )
         .route(
+            "/me/played-with",
+            get(social::my_played_with).delete(social::clear_played_with),
+        )
+        .route(
+            "/me/played-with/remember",
+            get(social::my_remember_played_with).put(social::set_remember_played_with),
+        )
+        .route(
             "/me/public-profile",
             get(social::my_public_profile).put(social::set_public_profile),
         )

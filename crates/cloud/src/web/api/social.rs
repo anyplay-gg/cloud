@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use anyplay_api::{
     AppearOffline, Count, FriendRequest, Grade, Part, Privacy, Profile, ProfileUpdate,
-    RUN_REPORTS_MIN, TrophyLevel, Verdict, VerdictCounts,
+    RUN_REPORTS_MIN, RememberPlayedWith, TrophyLevel, Verdict, VerdictCounts,
 };
 use axum::Json;
 use axum::extract::{Path, Request, State};
@@ -24,7 +24,7 @@ use crate::db;
 use crate::error::AppError;
 use crate::http::{ApiJson, Auth, ClientIp};
 use crate::links;
-use crate::routes::{accounts, friends, profiles, trophies};
+use crate::routes::{accounts, friends, played_with, profiles, trophies};
 use crate::state::AppState;
 use crate::visibility::{Relation, public_page, viewing_as};
 use crate::web::existing;
@@ -170,6 +170,39 @@ pub async fn set_appear_offline(
 ) -> ApiResult {
     Ok(
         accounts::set_appear_offline(State(state), auth_of(&member), ApiJson(body))
+            .await?
+            .into_response(),
+    )
+}
+
+/// `GET /me/played-with`
+pub async fn my_played_with(State(state): State<AppState>, member: Member) -> ApiResult {
+    Ok(played_with::list(State(state), auth_of(&member))
+        .await?
+        .into_response())
+}
+
+/// `DELETE /me/played-with`
+pub async fn clear_played_with(State(state): State<AppState>, member: Member) -> ApiResult {
+    played_with::clear(State(state), auth_of(&member)).await?;
+    done()
+}
+
+/// `GET /me/played-with/remember`
+pub async fn my_remember_played_with(State(state): State<AppState>, member: Member) -> ApiResult {
+    Ok(played_with::get_remember(State(state), auth_of(&member))
+        .await?
+        .into_response())
+}
+
+/// `PUT /me/played-with/remember`
+pub async fn set_remember_played_with(
+    State(state): State<AppState>,
+    member: Member,
+    ApiJson(body): ApiJson<RememberPlayedWith>,
+) -> ApiResult {
+    Ok(
+        played_with::set_remember(State(state), auth_of(&member), ApiJson(body))
             .await?
             .into_response(),
     )
