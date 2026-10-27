@@ -6,20 +6,26 @@ mod common;
 use anyplay_cloud::db;
 use common::TestCloud;
 
-async fn ledger(cloud: &TestCloud) -> Vec<(i64, i64)> {
-    sqlx::query_as("SELECT account_id, deleted_ms FROM deleted_accounts ORDER BY account_id")
-        .fetch_all(&cloud.state.db)
-        .await
-        .unwrap()
+/// The ledger rows of these accounts. The tests may share one PostgreSQL database, so they look
+/// only at the IDs they made.
+async fn ledger(cloud: &TestCloud, ids: &[i64]) -> Vec<(i64, i64)> {
+    let mut rows: Vec<(i64, i64)> =
+        sqlx::query_as("SELECT account_id, deleted_ms FROM deleted_accounts ORDER BY account_id")
+            .fetch_all(&cloud.state.db)
+            .await
+            .unwrap();
+    rows.retain(|row| ids.contains(&row.0));
+    rows
 }
 
 #[tokio::test]
 async fn a_deleted_account_goes_into_the_ledger() {
     let cloud = TestCloud::start().await;
     let (alec, bob) = (cloud.sign_up("Alec").await, cloud.sign_up("Bob").await);
-    assert!(ledger(&cloud).await.is_empty());
+    let ids = [alec.id as i64, bob.id as i64];
+    assert!(ledger(&cloud, &ids).await.is_empty());
     cloud.delete_account_now(&alec).await;
-    let rows = ledger(&cloud).await;
+    let rows = ledger(&cloud, &ids).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].0, alec.id as i64);
     assert!(rows[0].1 > 0);
@@ -35,10 +41,12 @@ async fn a_deleted_account_goes_into_the_ledger() {
 async fn a_replay_deletes_what_the_ledger_lists() {
     let cloud = TestCloud::start().await;
     let (bob, carol) = (cloud.sign_up("Bob").await, cloud.sign_up("Carol").await);
+    // Recent, so that the sweep another test runs in the same database keeps the rows.
+    let recent = anyplay_cloud::util::now_ms() - 1000;
     // As after a restore: the account exists, and the ledger of the replaced database names it.
     let (deleted, failed) = cloud
         .state
-        .replay_deletions(&[(bob.id, 1_000), (999_999, 2_000)])
+        .replay_deletions(&[(bob.id, recent), (777_000_001, recent + 1)])
         .await
         .unwrap();
     assert_eq!((deleted, failed), (1, 0));
@@ -55,9 +63,9 @@ async fn a_replay_deletes_what_the_ledger_lists() {
             .is_some()
     );
     // The ledger keeps the first time and also knows the ID that did not exist here.
-    let rows = ledger(&cloud).await;
+    let rows = ledger(&cloud, &[bob.id as i64, 777_000_001]).await;
     assert_eq!(rows.len(), 2);
-    assert!(rows.contains(&(bob.id as i64, 1_000)));
+    assert!(rows.contains(&(bob.id as i64, recent)));
     // Running it again changes nothing.
     assert_eq!(cloud.state.replay_deletions(&[]).await.unwrap(), (0, 0));
 }
@@ -69,10 +77,10 @@ async fn the_sweep_forgets_ledger_rows_after_90_days() {
     let now = anyplay_cloud::util::now_ms();
     cloud
         .state
-        .replay_deletions(&[(1, now - 91 * day), (2, now - 89 * day)])
+        .replay_deletions(&[(777_000_011, now - 91 * day), (777_000_012, now - 89 * day)])
         .await
         .unwrap();
     cloud.state.sweep().await.unwrap();
-    let rows = ledger(&cloud).await;
-    assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), [2]);
+    let rows = ledger(&cloud, &[777_000_011, 777_000_012]).await;
+    assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), [777_000_012]);
 }
