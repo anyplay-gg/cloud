@@ -137,6 +137,33 @@ impl FromRequestParts<AppState> for ClientIp {
     }
 }
 
+/// The key a per-address limit counts under. An IPv4 address counts alone; an IPv6 address counts
+/// with the rest of its /64, because one subscriber gets a whole /64 and could otherwise use a
+/// new address for every request.
+pub fn rate_key(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => {
+            // An IPv4 address in IPv6 clothes counts as the IPv4 address.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return v4.to_string();
+            }
+            let o = v6.octets();
+            let prefix = std::net::Ipv6Addr::new(
+                u16::from_be_bytes([o[0], o[1]]),
+                u16::from_be_bytes([o[2], o[3]]),
+                u16::from_be_bytes([o[4], o[5]]),
+                u16::from_be_bytes([o[6], o[7]]),
+                0,
+                0,
+                0,
+                0,
+            );
+            format!("{prefix}/64")
+        }
+    }
+}
+
 /// A JSON body of at most 64 KiB, read with our own errors.
 pub struct ApiJson<T>(pub T);
 
@@ -167,5 +194,22 @@ pub fn parse_id(text: &str) -> Result<u64, AppError> {
     match text.parse::<u64>() {
         Ok(id) if (1..=anyplay_api::MAX_ACCOUNT_ID).contains(&id) => Ok(id),
         _ => Err(AppError::not_found()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_ipv6_address_counts_with_its_64_and_an_ipv4_address_alone() {
+        let key = |text: &str| rate_key(text.parse().unwrap());
+        assert_eq!(key("203.0.113.7"), "203.0.113.7");
+        assert_eq!(
+            key("2001:db8:1:1::1"),
+            key("2001:db8:1:1:ffff:eeee:dddd:cccc")
+        );
+        assert_ne!(key("2001:db8:1:1::1"), key("2001:db8:1:2::1"));
+        assert_eq!(key("::ffff:203.0.113.7"), "203.0.113.7");
     }
 }

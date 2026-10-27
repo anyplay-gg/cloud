@@ -756,6 +756,8 @@ pub struct Tuning {
     /// How long a passkey ceremony may take, from the browser asking to the authenticator
     /// answering.
     pub ceremony_ttl: Duration,
+    /// How long the rarity counts of a title are reused before they are counted again.
+    pub rarity_ttl: Duration,
     /// A browser session younger than this may do sensitive things (remove a passkey, sign out
     /// everywhere, delete the account); an older one signs in again first.
     pub fresh_for: Duration,
@@ -819,6 +821,7 @@ impl Default for Tuning {
             web_max: Duration::from_secs(4 * 60 * 60),
             link_ttl: Duration::from_secs(60),
             ceremony_ttl: Duration::from_secs(5 * 60),
+            rarity_ttl: Duration::from_secs(60),
             fresh_for: Duration::from_secs(15 * 60),
             deletion_grace: Duration::from_secs(30 * 24 * 60 * 60),
             link_pending_ttl: Duration::from_secs(5 * 60),

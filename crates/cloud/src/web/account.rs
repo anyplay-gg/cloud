@@ -147,7 +147,7 @@ pub async fn sign_out_device(
     Path(id): Path<String>,
     WebForm(form): WebForm<CsrfForm>,
 ) -> WebResult {
-    let (session, account) = posted(&state, &headers, &form.csrf, false).await?;
+    let (session, account) = posted(&state, &headers, &form.csrf, true).await?;
     let device = crate::http::parse_id(&id)?;
     if db::device_owner(&state.db, device).await? != Some(account.id()) {
         return Err(AppError::not_found().into());
@@ -174,7 +174,10 @@ pub async fn sign_out_everywhere(
 
 /// A copy of everything the cloud stores about the account.
 pub async fn export(State(state): State<AppState>, headers: HeaderMap) -> WebResult {
-    let (_, account) = signed_in(&state, &headers).await?;
+    let (session, account) = signed_in(&state, &headers).await?;
+    if !session.fresh(state.tuning.fresh_for) {
+        return Err(WebError::fresh());
+    }
     let data = crate::routes::accounts::export_json(&state, account.id()).await?;
     let body = serde_json::to_vec_pretty(&data).unwrap_or_default();
     let mut response = (StatusCode::OK, body).into_response();

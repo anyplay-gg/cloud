@@ -78,6 +78,7 @@ pub async fn events(
         },
     };
     Ok(upgrade
+        .max_frame_size(MAX_CLIENT_MESSAGE)
         .max_message_size(MAX_CLIENT_MESSAGE)
         .on_upgrade(move |socket| async move {
             match verdict {

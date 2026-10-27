@@ -385,7 +385,11 @@ pub fn metrics_router(state: AppState) -> Router {
 }
 
 /// Routes whose address holds a secret. The log shows their template, not the address.
-const SECRET_PATHS: [&str; 2] = [path::JOIN_CODE_REDEEM, "/web/api/v1/join/{code}"];
+const SECRET_PATHS: [&str; 3] = [
+    path::JOIN_CODE_REDEEM,
+    "/web/api/v1/join/{code}",
+    "/web/api/v1/link/{code}",
+];
 
 /// Logs each request's method, path, status and time, and counts it by route. Query strings and
 /// bodies are left out.

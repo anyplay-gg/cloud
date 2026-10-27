@@ -421,13 +421,24 @@ pub async fn existing(state: &AppState, headers: &HeaderMap) -> Result<Option<Se
 }
 
 /// The session of the browser, or a new one for a sign-in in progress.
-pub async fn visit(state: &AppState, headers: &HeaderMap) -> Result<Visit, WebError> {
+pub async fn visit(
+    state: &AppState,
+    ip: std::net::IpAddr,
+    headers: &HeaderMap,
+) -> Result<Visit, WebError> {
     if let Some(session) = existing(state, headers).await? {
         return Ok(Visit {
             session,
             token: None,
         });
     }
+    // A page load without a cookie costs a row; it counts in the same bucket as `GET /session`.
+    limit_ip(
+        state,
+        "session",
+        ip,
+        state.tuning.rates.portal_sessions_per_ip,
+    )?;
     Ok(fresh_visit(state, SessionData::default()).await?)
 }
 
@@ -520,7 +531,7 @@ pub fn limit_ip(
     state
         .limiter
         .hit(
-            &format!("{name}:ip:{ip}"),
+            &format!("{name}:ip:{}", crate::http::rate_key(ip)),
             limit,
             state.tuning.rates.auth_window,
         )
@@ -611,7 +622,7 @@ pub fn limit_ip_api(
     state
         .limiter
         .hit(
-            &format!("{name}:ip:{ip}"),
+            &format!("{name}:ip:{}", crate::http::rate_key(ip)),
             limit,
             state.tuning.rates.auth_window,
         )

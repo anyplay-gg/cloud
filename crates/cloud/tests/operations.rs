@@ -497,6 +497,12 @@ async fn a_banned_person_cannot_start_over_with_the_same_address() {
         .enter_code(&challenge.challenge, &code, "pc")
         .await
         .is_error("banned", 403);
+    // So does a tag added to the name, which the same mailbox receives.
+    let (challenge, code) = cloud.ask_for_code("sam+again@example.com").await;
+    cloud
+        .enter_code(&challenge.challenge, &code, "pc")
+        .await
+        .is_error("banned", 403);
     // Another address is a different matter.
     cloud.sign_up("Other").await;
     // Lifting the ban lets the person back in.

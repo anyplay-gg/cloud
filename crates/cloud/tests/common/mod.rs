@@ -248,11 +248,15 @@ pub fn fast_tuning() -> Tuning {
         // slowly it runs; the tests of the grace itself shorten it.
         session_grace: Duration::from_secs(30),
         sweep_interval: Duration::from_millis(100),
+        // Counted afresh every time, so that a test sees its own uploads at once.
+        rarity_ttl: Duration::ZERO,
         rates: Rates {
             email_per_address: 100,
             email_per_ip: 10_000,
             code_per_ip: 10_000,
             refresh_per_device: 10_000,
+            refresh_per_ip: 1_000_000,
+            email_global: 1_000_000,
             account: 1_000_000,
             report_per_account: 1_000_000,
             appeal_per_account: 1_000_000,
@@ -495,7 +499,9 @@ impl TestCloud {
     /// Deletes the account the way the player does and lets the grace period pass: asks for the
     /// deletion, then makes it due and runs the sweep.
     pub async fn delete_account_now(&self, user: &User) {
-        let answer = self.delete("/v1/me", user.token()).await.ok(200);
+        let key = anyplay_proof::DeviceKey::generate();
+        let device = self.sign_in_keyed(&user.email, "deleter", &key).await;
+        let answer = self.delete_me(&device.tokens.access, &key).await.ok(200);
         assert!(answer.body["deletion"]["at"].is_u64(), "{}", answer.body);
         sqlx::query("UPDATE accounts SET deletion_at = 1 WHERE id = $1")
             .bind(user.id as i64)
@@ -537,6 +543,75 @@ impl TestCloud {
         match answer {
             CodeAnswer::SignedIn { tokens, me } => SignedIn { tokens, me },
             other => panic!("expected a sign-in, got {other:?}"),
+        }
+    }
+
+    /// Signs in with a device that holds `key`, which requests like `DELETE /v1/me` must prove.
+    pub async fn sign_in_keyed(
+        &self,
+        email: &str,
+        device: &str,
+        key: &anyplay_proof::DeviceKey,
+    ) -> SignedIn {
+        let (challenge, code) = self.ask_for_code(email).await;
+        let reply = self
+            .request(
+                Method::POST,
+                "/v1/auth/code",
+                None,
+                Some(json!(CodeRequest {
+                    challenge: challenge.challenge,
+                    code,
+                    device: Device {
+                        name: device.into(),
+                        platform: Platform::Linux,
+                        key: Some(key.public()),
+                    },
+                })),
+            )
+            .await
+            .ok(200);
+        match reply.json() {
+            CodeAnswer::SignedIn { tokens, me } => SignedIn { tokens, me },
+            other => panic!("expected a sign-in, got {other:?}"),
+        }
+    }
+
+    /// `DELETE /v1/me` with a proof made by `key` over `token`.
+    pub async fn delete_me(&self, token: &str, key: &anyplay_proof::DeviceKey) -> Reply {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let proof = anyplay_proof::make(
+            key,
+            &anyplay_proof::Subject {
+                method: "DELETE",
+                path: anyplay_api::path::ME,
+                credential: token,
+            },
+            at,
+        );
+        let response = self
+            .http
+            .delete(format!("http://{}{}", self.base, anyplay_api::path::ME))
+            .bearer_auth(token)
+            .header(anyplay_proof::HEADER, proof)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let text = response.text().await.unwrap();
+        let body = if text.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(&text).unwrap_or(Value::String(text))
+        };
+        Reply {
+            status,
+            headers,
+            body,
         }
     }
 
