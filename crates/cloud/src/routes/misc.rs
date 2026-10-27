@@ -24,6 +24,48 @@ pub async fn info(State(state): State<AppState>) -> Json<Info> {
     })
 }
 
+/// What a net service says when a tunnel has settled on a path.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TunnelPath {
+    /// `direct` or `relay`.
+    kind: String,
+    /// The tunnel started on a relay and moved to a direct path. Only meaningful with `direct`.
+    #[serde(default)]
+    upgraded: bool,
+}
+
+/// `POST /v1/tunnels/path`: the kind of path one tunnel settled on. The cloud only counts it
+/// (`anyplay_cloud_tunnel_paths_total`); it stores nothing about who, with whom or when, so the
+/// report measures how often players reach each other directly without recording anyone.
+pub async fn tunnel_path(
+    State(state): State<AppState>,
+    auth: Auth,
+    ApiJson(report): ApiJson<TunnelPath>,
+) -> Result<StatusCode> {
+    let direct = match report.kind.as_str() {
+        "direct" => true,
+        "relay" => false,
+        _ => return Err(AppError::bad_request("kind is direct or relay.")),
+    };
+    if report.upgraded && !direct {
+        return Err(AppError::bad_request(
+            "Only a direct path can be an upgrade.",
+        ));
+    }
+    let rates = &state.tuning.rates;
+    state
+        .limiter
+        .hit(
+            &format!("tunnels:path:{}", auth.account),
+            rates.run_reports,
+            rates.run_report_window,
+        )
+        .map_err(AppError::rate_limited)?;
+    state.metrics.tunnel_path(direct, report.upgraded);
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn set_presence(
     State(state): State<AppState>,
     auth: Auth,

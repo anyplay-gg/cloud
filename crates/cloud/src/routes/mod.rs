@@ -45,6 +45,8 @@ pub const HEALTH: &str = "/healthz";
 pub const READY: &str = "/readyz";
 /// The public status of each part of the service.
 pub const STATUS: &str = "/v1/status";
+/// A net service reports the kind of path one tunnel settled on.
+pub const TUNNEL_PATH: &str = "/v1/tunnels/path";
 
 pub fn router(state: AppState) -> Router {
     let mut router = Router::new()
@@ -68,6 +70,7 @@ pub fn router(state: AppState) -> Router {
         .route(path::FRIEND_REQUEST_ACCEPT, post(friends::accept))
         .route(path::BLOCK, put(friends::block).delete(friends::unblock))
         .route(path::PRESENCE, put(misc::set_presence))
+        .route(TUNNEL_PATH, post(misc::tunnel_path))
         .route(
             path::APPEAR_OFFLINE,
             get(accounts::get_appear_offline).put(accounts::set_appear_offline),
