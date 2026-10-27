@@ -358,6 +358,21 @@ Tables `feed_items`, `feed_members`, `feed_reactions`, `feed_firsts` (0017). Ite
 
 **Voice audio never reaches the cloud.** It runs over QUIC on the iroh tunnel between the net services, directly or through the AnyPlay relay, end-to-end encrypted. The cloud stores only the voice flag, endpoint and relay. There are no recordings and no call log beyond missed calls. The endpoint key and the preferred virtual address (derived from the account ID) stay the same across sessions.
 
+### 7.4a Played with recently
+
+| What | Detail |
+|---|---|
+| Tables | `played_with` (account, the other account, time of the last meeting in milliseconds, title ID and title of the session, null after a party; one row per direction) and `accounts.remember_played_with` (the switch, default on), migration 0032. |
+| Purpose | A player sees the people they shared a party or a session with, to add a friend, look at a profile or block. |
+| Basis (proposed) | Art. 6(1)(b) for the feature; the player can turn it off. |
+| How | About once a minute each node looks at who is a member of the same party or session now and has been for at least 120 seconds (`played_with_min`), and writes the pair for each account that has the switch on and no block with the other. |
+| Who sees it | Only the account itself, through `GET /v1/me/played-with` (and the portal). The other person is never told; nothing appears on a profile, card or page. |
+| Kept | 30 days from the last meeting and at most 50 people per account; a sweep deletes the rest. The player can clear the list at once (`DELETE /v1/me/played-with`) and turn the remembering off; off keeps what is there until cleared. |
+| On deletion | Rows cascade with either account. |
+| Export | `played_with` (the other account, time, title) and `remember_played_with`. |
+
+**Privacy page:** the privacy notice names it (web `privacy.tsx`).
+
 ### 7.5 Presence and "Appear offline"
 
 `presence` holds online, activity (title ID, title, version), `last_seen_ms` (never sent to anyone) and a revision; one row per account, overwritten; the activity is cleared when going offline. `accounts.appear_offline` (0020) makes friends see the account as offline and stops "first played" items. Presence is not in the export.

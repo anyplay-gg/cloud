@@ -36,6 +36,7 @@ pub mod metrics;
 pub mod moderation;
 pub mod news;
 pub mod party;
+pub mod played_with;
 pub mod push;
 pub mod routes;
 pub mod share;
@@ -175,6 +176,7 @@ pub async fn open(
         draining: std::sync::atomic::AtomicBool::new(false),
         ban_key,
         retention_at: std::sync::atomic::AtomicU64::new(0),
+        played_with_at: std::sync::atomic::AtomicI64::new(0),
         writer,
         push,
     });

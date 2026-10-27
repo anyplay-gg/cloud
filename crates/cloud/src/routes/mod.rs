@@ -31,6 +31,7 @@ pub mod messages;
 pub mod misc;
 pub mod moderation;
 pub mod parties;
+pub mod played_with;
 pub mod profiles;
 pub mod runs;
 pub mod sessions;
@@ -67,6 +68,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             path::APPEAR_OFFLINE,
             get(accounts::get_appear_offline).put(accounts::set_appear_offline),
+        )
+        .route(
+            path::PLAYED_WITH,
+            get(played_with::list).delete(played_with::clear),
+        )
+        .route(
+            path::PLAYED_WITH_REMEMBER,
+            get(played_with::get_remember).put(played_with::set_remember),
         )
         .route(
             "/v1/me/public-profile",

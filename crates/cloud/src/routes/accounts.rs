@@ -136,6 +136,13 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
         (conversations, messages, party)
     };
     let lfg = crate::lfg::export(&mut *state.db.acquire().await?, account_id).await?;
+    let (played_with, remember_played_with) = {
+        let mut conn = state.db.acquire().await?;
+        (
+            crate::played_with::export(&mut conn, account_id).await?,
+            crate::played_with::remembers(&mut conn, account_id).await?,
+        )
+    };
     let media_sent = crate::routes::media::export(state, account_id).await?;
     let passkeys = crate::web::store::passkeys_of(&state.db, account_id).await?;
     let notifications = crate::push::subscriptions_of(&state.db, account_id).await?;
@@ -187,6 +194,8 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
         })).collect::<Vec<_>>(),
         "privacy": privacy,
         "public_profile": db::public_profile(&state.db, account_id).await?,
+        "remember_played_with": remember_played_with,
+        "played_with": played_with,
         "linked_accounts": linked.iter().map(|l| json!({
             "provider": l.provider, "external_id": l.external_id,
             "display_name": l.display_name, "visibility": l.audience,
