@@ -88,6 +88,9 @@ pub struct Config {
     pub nats_url: Option<String>,
     pub name: String,
     pub relays: Vec<String>,
+    /// An address the cloud asks to see whether the website answers, for `GET /v1/status`, such
+    /// as `http://web:3000/`. Without it the status reports the website as unknown.
+    pub status_web_url: Option<String>,
     pub mail: MailMode,
     pub mail_from: String,
     /// Allows `mail = "log"` on a listen address that is not a loopback address. The log mode
@@ -205,6 +208,7 @@ impl Default for Config {
             nats_url: None,
             name: "AnyPlay cloud".into(),
             relays: Vec::new(),
+            status_web_url: None,
             mail: MailMode::Log,
             mail_from: "AnyPlay cloud <noreply@localhost>".into(),
             allow_log_mail: false,
@@ -356,6 +360,9 @@ impl Config {
         }
         if let Some(v) = get("NAME") {
             self.name = v;
+        }
+        if let Some(v) = get("STATUS_WEB_URL") {
+            self.status_web_url = Some(v);
         }
         if let Some(v) = get("RELAYS") {
             self.relays = v
@@ -542,6 +549,11 @@ impl Config {
             if !crate::util::is_http_url(url) {
                 bail!("relays: {url:?} is not an http or https URL");
             }
+        }
+        if let Some(url) = &self.status_web_url
+            && !crate::util::is_http_url(url)
+        {
+            bail!("status_web_url: {url:?} is not an http or https URL");
         }
         if self.mail == MailMode::Log && !self.listen.ip().is_loopback() && !self.allow_log_mail {
             bail!(

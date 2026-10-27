@@ -44,11 +44,14 @@ pub const HEALTH: &str = "/healthz";
 /// Answers while the node can take players: its store answers, NATS is connected when it has
 /// one, and it is not draining.
 pub const READY: &str = "/readyz";
+/// The public status of each part of the service.
+pub const STATUS: &str = "/v1/status";
 
 pub fn router(state: AppState) -> Router {
     let mut router = Router::new()
         .route(HEALTH, get(|| async { "ok" }))
         .route(READY, get(ready))
+        .route(STATUS, get(crate::status::status))
         .route(path::INFO, get(misc::info))
         .route(path::AUTH_EMAIL, post(auth::email))
         .route(path::AUTH_CODE, post(auth::code))

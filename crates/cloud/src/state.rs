@@ -106,6 +106,8 @@ pub struct Inner {
     pub writer: db::Writer,
     /// Web Push, when the cloud has a VAPID key.
     pub push: Option<crate::push::Pusher>,
+    /// The last answer of `GET /v1/status`.
+    pub status: crate::status::StatusCache,
 }
 
 fn ms(duration: Duration) -> i64 {
