@@ -33,6 +33,7 @@ use crate::http::count_request;
 use crate::state::AppState;
 
 pub mod account;
+pub mod boards;
 pub mod flow;
 pub mod join;
 pub mod link;
@@ -319,6 +320,9 @@ pub fn router() -> Router<AppState> {
         .route("/users/{name}/trophies", get(social::user_trophies))
         .route("/users/{name}/compare/{title}", get(social::user_compare))
         .route("/compatibility", get(social::compatibility))
+        // Leaderboards
+        .route("/titles/{title}/boards", get(boards::of_title))
+        .route("/boards/{title}/{board}", get(boards::board))
         .layer(middleware::from_fn(require_json));
     Router::new().nest(BASE, api)
 }

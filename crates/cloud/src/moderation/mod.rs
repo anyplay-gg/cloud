@@ -56,6 +56,11 @@ impl Actor {
         self.id
     }
 
+    /// The name the actor acts under: a moderator's handle, or `operator`.
+    pub fn handle(&self) -> &str {
+        &self.handle
+    }
+
     pub fn is_operator(&self) -> bool {
         self.id.is_none()
     }

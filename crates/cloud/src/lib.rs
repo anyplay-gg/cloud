@@ -36,6 +36,7 @@ pub mod metrics;
 pub mod moderation;
 pub mod news;
 pub mod party;
+pub mod leaderboards;
 pub mod played_with;
 pub mod push;
 pub mod routes;

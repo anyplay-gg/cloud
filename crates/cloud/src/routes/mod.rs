@@ -20,6 +20,7 @@ use crate::state::AppState;
 pub mod accounts;
 pub mod admin;
 pub mod auth;
+pub mod boards;
 pub mod discord;
 pub mod events;
 pub mod feed;
@@ -174,6 +175,20 @@ pub fn router(state: AppState) -> Router {
         .route(path::CONVERSATION_TYPING, put(messages::typing))
         .route(path::CONVERSATION_SETTINGS, patch(messages::settings))
         .route(path::CONVERSATION_READ, put(messages::mark_read));
+    // Leaderboards (network spec/cloud-api.md, ADR 0040)
+    router = router
+        .route(path::MY_SCORE, put(boards::submit))
+        .route(
+            path::SCORE_PRIVACY,
+            get(boards::get_privacy).put(boards::set_privacy),
+        )
+        .route(path::TITLE_BOARDS, get(boards::of_title))
+        .route(path::BOARD, get(boards::top))
+        .route(path::BOARD_AROUND, get(boards::around))
+        .route(path::BOARD_FRIENDS, get(boards::friends))
+        .route(path::MOD_BOARD, put(boards::configure))
+        .route(path::MOD_BOARD_ENTRY, delete(boards::remove))
+        .route(path::MOD_BOARD_ENTRY_RESTORE, post(boards::restore));
     // Share play (network spec/share-play.md)
     router = router
         .route("/v1/shares", post(shares::create))

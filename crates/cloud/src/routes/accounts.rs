@@ -143,6 +143,13 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
             crate::played_with::remembers(&mut conn, account_id).await?,
         )
     };
+    let (scores, score_audience) = {
+        let mut conn = state.db.acquire().await?;
+        (
+            crate::leaderboards::export(&mut conn, account_id).await?,
+            crate::leaderboards::audience(&mut conn, account_id).await?,
+        )
+    };
     let media_sent = crate::routes::media::export(state, account_id).await?;
     let passkeys = crate::web::store::passkeys_of(&state.db, account_id).await?;
     let notifications = crate::push::subscriptions_of(&state.db, account_id).await?;
@@ -196,6 +203,8 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
         "public_profile": db::public_profile(&state.db, account_id).await?,
         "remember_played_with": remember_played_with,
         "played_with": played_with,
+        "scores": scores,
+        "scores_shown_to": score_audience,
         "linked_accounts": linked.iter().map(|l| json!({
             "provider": l.provider, "external_id": l.external_id,
             "display_name": l.display_name, "visibility": l.audience,

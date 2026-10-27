@@ -328,7 +328,7 @@ pub async fn my_trophies(State(state): State<AppState>, member: Member) -> ApiRe
 
 /// The account a signed-in, not banned browser session belongs to, if the request has one. The
 /// public pages work without.
-async fn viewer(state: &AppState, headers: &HeaderMap) -> Option<u64> {
+pub(super) async fn viewer(state: &AppState, headers: &HeaderMap) -> Option<u64> {
     let session = existing(state, headers).await.ok().flatten()?;
     let account = session.account?;
     state.ban_of(account).is_none().then_some(account)
