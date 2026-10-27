@@ -1,4 +1,4 @@
--- The schema of migrations/sqlite/0030_shares.sql for PostgreSQL.
+-- The schema of migrations/sqlite/0031_shares.sql for PostgreSQL.
 CREATE TABLE shares (
     id             TEXT   PRIMARY KEY,
     invitation     TEXT   NOT NULL,
