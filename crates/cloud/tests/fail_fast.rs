@@ -4,88 +4,7 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use anyplay_api::{CodeAnswer, SignedIn};
-use common::{Reply, TestCloud, User};
-use reqwest::Method;
-use serde_json::{Value, json};
-
-/// A request that is asked again while the answer is 429. A pool of two connections with a
-/// short acquire timeout is starved by the cloud's own background work now and then (the sweep,
-/// the heartbeat), most often on a slow runner, so the setup of these tests must not depend on
-/// the pool being free at that moment. What the tests assert is about the state they make
-/// themselves: [`hold`] takes the whole pool, and only then is anything measured.
-async fn until_served(
-    cloud: &TestCloud,
-    method: Method,
-    path: &str,
-    token: Option<&str>,
-    body: Option<Value>,
-) -> Reply {
-    let until = Instant::now() + Duration::from_secs(30);
-    loop {
-        let reply = cloud
-            .request(method.clone(), path, token, body.clone())
-            .await;
-        if reply.status != 429 || Instant::now() > until {
-            return reply;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// `TestCloud::sign_up`, patient with a starved pool.
-async fn sign_up(cloud: &TestCloud, handle: &str) -> User {
-    let email = format!("{}@example.com", handle.to_lowercase());
-    let asked = until_served(
-        cloud,
-        Method::POST,
-        "/v1/auth/email",
-        None,
-        Some(json!({ "email": email })),
-    )
-    .await
-    .ok(200);
-    let challenge = asked.body["challenge"].as_str().unwrap().to_owned();
-    let code = cloud.mail.last_code(&email).expect("a mail was sent");
-    let answer: CodeAnswer = until_served(
-        cloud,
-        Method::POST,
-        "/v1/auth/code",
-        None,
-        Some(json!({
-            "challenge": challenge,
-            "code": code,
-            "device": TestCloud::device("first pc"),
-        })),
-    )
-    .await
-    .ok(200)
-    .json();
-    let CodeAnswer::NewAccount { signup, .. } = answer else {
-        panic!("expected a new account for {email}");
-    };
-    let signed_in: SignedIn = until_served(
-        cloud,
-        Method::POST,
-        "/v1/auth/signup",
-        None,
-        Some(json!({
-            "signup": signup,
-            "handle": handle,
-            "age_confirmed": true,
-            "device": TestCloud::device("test pc"),
-        })),
-    )
-    .await
-    .ok(200)
-    .json();
-    User {
-        email,
-        id: signed_in.me.id.0,
-        handle: signed_in.me.handle,
-        tokens: signed_in.tokens,
-    }
-}
+use common::TestCloud;
 
 /// Takes both connections of the two-connection pool, waiting for the cloud's own background
 /// work to give them back first. From here on the pool is empty by the test's own doing, not by
@@ -122,7 +41,7 @@ async fn starved(acquire_ms: u64, request_secs: u64) -> TestCloud {
 #[tokio::test]
 async fn a_starved_pool_answers_429_with_retry_after_within_the_acquire_timeout() {
     let cloud = starved(500, 30).await;
-    let a = sign_up(&cloud, "Alec").await;
+    let a = cloud.sign_up_patiently("Alec").await;
     let held = hold(&cloud).await;
     let started = Instant::now();
     let reply = cloud.get("/v1/friends", a.token()).await;
@@ -165,7 +84,7 @@ async fn a_starved_pool_answers_429_with_retry_after_within_the_acquire_timeout(
 async fn the_request_timeout_answers_503_with_retry_after() {
     // The pool would wait 10 s; the request gives up after 1.
     let cloud = starved(10_000, 1).await;
-    let a = sign_up(&cloud, "Alec").await;
+    let a = cloud.sign_up_patiently("Alec").await;
     let _held = hold(&cloud).await;
     let started = Instant::now();
     let reply = cloud.get("/v1/friends", a.token()).await;
@@ -178,7 +97,7 @@ async fn the_request_timeout_answers_503_with_retry_after() {
 #[tokio::test]
 async fn the_event_connection_is_not_cut_by_the_request_timeout() {
     let cloud = starved(5000, 1).await;
-    let a = sign_up(&cloud, "Alec").await;
+    let a = cloud.sign_up_patiently("Alec").await;
     let mut events = cloud.events(a.token()).await;
     // Past the request timeout the socket is still open: it only ends by a close frame.
     let ended = events.next_within(Duration::from_millis(2500)).await;
@@ -197,7 +116,7 @@ async fn requests_over_the_cap_are_shed_with_503() {
         |_| {},
     )
     .await;
-    let a = sign_up(&cloud, "Alec").await;
+    let a = cloud.sign_up_patiently("Alec").await;
     let _held = hold(&cloud).await;
     // The first request takes the one place and waits for the pool; the second is turned away.
     let slow = tokio::spawn({
@@ -231,7 +150,7 @@ async fn the_health_checks_answer_when_the_cap_is_full() {
         |_| {},
     )
     .await;
-    let a = sign_up(&cloud, "Alec").await;
+    let a = cloud.sign_up_patiently("Alec").await;
     let _held = hold(&cloud).await;
     let slow = tokio::spawn({
         let (base, token) = (cloud.base.clone(), a.token().to_owned());
@@ -273,7 +192,7 @@ async fn the_health_checks_answer_when_the_cap_is_full() {
 async fn a_write_that_ran_into_the_request_timeout_still_finishes() {
     // The pool would wait 10 s for the write; the request gives up after 1 s, the write does not.
     let cloud = starved(10_000, 1).await;
-    let a = sign_up(&cloud, "Alec").await;
+    let a = cloud.sign_up_patiently("Alec").await;
     let held = hold(&cloud).await;
     let started = Instant::now();
     let reply = cloud

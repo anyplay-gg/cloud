@@ -10,7 +10,7 @@
 pub mod portal;
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyplay_api::{
     ApiError, CodeAnswer, CodeRequest, Device, EmailAnswer, EmailRequest, Event, Platform,
@@ -524,6 +524,84 @@ impl TestCloud {
             panic!("expected a new account for {email}");
         };
         let signed_in: SignedIn = self.try_sign_up(&signup, handle, true).await.ok(200).json();
+        User {
+            email,
+            id: signed_in.me.id.0,
+            handle: signed_in.me.handle,
+            tokens: signed_in.tokens,
+        }
+    }
+
+    /// A request that is asked again while the answer is 429. A pool of two connections with a
+    /// short acquire timeout is starved by the cloud's own background work now and then (the sweep,
+    /// the heartbeat), most often on a slow runner, so the setup of these tests must not depend on
+    /// the pool being free at that moment. What the tests assert is about the state they make
+    /// themselves: `hold` in fail_fast.rs takes the whole pool, and only then is anything measured.
+    pub async fn until_served(
+        &self,
+        method: Method,
+        path: &str,
+        token: Option<&str>,
+        body: Option<Value>,
+    ) -> Reply {
+        let until = Instant::now() + Duration::from_secs(30);
+        loop {
+            let reply = self
+                .request(method.clone(), path, token, body.clone())
+                .await;
+            if reply.status != 429 || Instant::now() > until {
+                return reply;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// `TestCloud::sign_up`, patient with a starved pool.
+    pub async fn sign_up_patiently(&self, handle: &str) -> User {
+        let email = format!("{}@example.com", handle.to_lowercase());
+        let asked = self
+            .until_served(
+                Method::POST,
+                "/v1/auth/email",
+                None,
+                Some(json!({ "email": email })),
+            )
+            .await
+            .ok(200);
+        let challenge = asked.body["challenge"].as_str().unwrap().to_owned();
+        let code = self.mail.last_code(&email).expect("a mail was sent");
+        let answer: CodeAnswer = self
+            .until_served(
+                Method::POST,
+                "/v1/auth/code",
+                None,
+                Some(json!({
+                    "challenge": challenge,
+                    "code": code,
+                    "device": TestCloud::device("first pc"),
+                })),
+            )
+            .await
+            .ok(200)
+            .json();
+        let CodeAnswer::NewAccount { signup, .. } = answer else {
+            panic!("expected a new account for {email}");
+        };
+        let signed_in: SignedIn = self
+            .until_served(
+                Method::POST,
+                "/v1/auth/signup",
+                None,
+                Some(json!({
+                    "signup": signup,
+                    "handle": handle,
+                    "age_confirmed": true,
+                    "device": TestCloud::device("test pc"),
+                })),
+            )
+            .await
+            .ok(200)
+            .json();
         User {
             email,
             id: signed_in.me.id.0,
