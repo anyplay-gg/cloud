@@ -361,6 +361,79 @@ async fn a_block_hides_items_in_both_directions() {
 }
 
 #[tokio::test]
+async fn the_feed_follows_the_trophy_and_playtime_settings_and_hides_secrets_and_blocked_names() {
+    let cloud = TestCloud::start().await;
+    let (alec, sam) = cloud.friends("Alec", "Sam").await;
+    let kim = cloud.sign_up("Kim").await;
+    put_item(
+        &cloud,
+        &sam,
+        NewItem::Trophy {
+            title_id: GAME.into(),
+            number: 1,
+            grade: Grade::Gold,
+        },
+    )
+    .await;
+    put_item(
+        &cloud,
+        &sam,
+        NewItem::Trophy {
+            title_id: GAME.into(),
+            number: 2,
+            grade: Grade::Bronze,
+        },
+    )
+    .await;
+    played_item(&cloud, &sam, OTHER).await;
+    let seen = feed(&cloud, &alec).await;
+    assert_eq!(of_kind(&seen, "trophy").len(), 2);
+    assert_eq!(played(&seen), [OTHER]);
+
+    // A trophy that became secret is gone for friends and stays for its owner.
+    cloud
+        .put(
+            &format!("/v1/me/trophies/{GAME}/secret"),
+            sam.token(),
+            Some(json!({"numbers": [2]})),
+        )
+        .await
+        .ok(200);
+    assert_eq!(of_kind(&feed(&cloud, &alec).await, "trophy").len(), 1);
+    assert_eq!(of_kind(&feed(&cloud, &sam).await, "trophy").len(), 2);
+
+    // The settings of the owner decide, not only the feed setting.
+    cloud
+        .put(
+            "/v1/me/privacy",
+            sam.token(),
+            Some(json!({"trophies": "nobody", "playtime": "nobody"})),
+        )
+        .await
+        .ok(200);
+    let seen = feed(&cloud, &alec).await;
+    assert!(of_kind(&seen, "trophy").is_empty());
+    assert!(played(&seen).is_empty());
+    let own = feed(&cloud, &sam).await;
+    assert_eq!(of_kind(&own, "trophy").len(), 2);
+    assert_eq!(played(&own), [OTHER]);
+
+    // A friend item does not name an account the viewer blocked.
+    put_item(&cloud, &sam, NewItem::Friend { with: kim.id }).await;
+    let names_kim = |feed: &Feed| {
+        feed.items
+            .iter()
+            .any(|i| matches!(&i.event, FeedEvent::Friend { with } if with.id.0 == kim.id))
+    };
+    assert!(names_kim(&feed(&cloud, &alec).await));
+    cloud
+        .put(&format!("/v1/blocks/{}", kim.id), alec.token(), None)
+        .await
+        .ok(204);
+    assert!(!names_kim(&feed(&cloud, &alec).await));
+}
+
+#[tokio::test]
 async fn a_party_item_belongs_to_its_members() {
     let cloud = TestCloud::start().await;
     let lead = cloud.sign_up("Lead").await;

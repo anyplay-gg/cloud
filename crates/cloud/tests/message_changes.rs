@@ -959,3 +959,59 @@ async fn a_message_can_be_edited_only_so_often_and_the_export_lists_reactions() 
     let export: Value = cloud.get("/v1/me/export", bea.token()).await.ok(200).body;
     assert_eq!(export["message_reactions"][0]["reaction"], "wow");
 }
+
+#[tokio::test]
+async fn edits_unsends_and_read_marks_do_not_cross_a_block_in_a_group() {
+    let cloud = cloud().await;
+    let hub = cloud.sign_up("Hub").await;
+    let (bea, cyd) = (cloud.sign_up("Bea").await, cloud.sign_up("Cyd").await);
+    for pal in [&bea, &cyd] {
+        befriend(&cloud, &hub, pal).await;
+    }
+    let group = open(&cloud, &hub, &[&bea, &cyd]).await;
+    let one = say(&cloud, &hub, &group.id, "first").await;
+    let two = say(&cloud, &hub, &group.id, "second").await;
+    cloud
+        .put(&format!("/v1/blocks/{}", hub.id), cyd.token(), None)
+        .await
+        .ok(204);
+    let mut eb = cloud.events(bea.token()).await;
+    let mut ec = cloud.events(cyd.token()).await;
+    let mut eh = cloud.events(hub.token()).await;
+
+    edit(&cloud, &hub, &group.id, one.seq, "first!")
+        .await
+        .ok(200);
+    unsend(&cloud, &hub, &group.id, two.seq).await.ok(200);
+    eb.until(|e| matches!(e, Event::MessageUpdate { .. })).await;
+    nothing_like(&mut ec, |e| matches!(e, Event::MessageUpdate { .. })).await;
+
+    // Reading is not told across the block either way.
+    cloud
+        .put(
+            &format!("/v1/conversations/{}/read", group.id),
+            cyd.token(),
+            Some(json!({"seq": 2})),
+        )
+        .await
+        .ok(204);
+    nothing_like(&mut eh, |e| matches!(e, Event::Read { .. })).await;
+    // ...and its mark is not in the conversation the blocked account reads.
+    let seen = conversation(&cloud, &hub, &group.id).await;
+    assert!(seen.marks.iter().all(|m| m.account.0 != cyd.id));
+}
+
+#[tokio::test]
+async fn a_conversation_with_too_many_accounts_is_refused_at_once() {
+    let cloud = cloud().await;
+    let hub = cloud.sign_up("Hub").await;
+    let accounts: Vec<u64> = (1..=5000).collect();
+    cloud
+        .post(
+            "/v1/conversations",
+            hub.token(),
+            json!({"accounts": accounts}),
+        )
+        .await
+        .is_error("bad_request", 400);
+}

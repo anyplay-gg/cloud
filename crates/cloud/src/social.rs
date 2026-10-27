@@ -117,12 +117,42 @@ impl Inner {
     /// longest-standing member; the last member ends the party, with its invitations and chat.
     /// Returns whether the account was a member.
     pub async fn remove_party_member(&self, id: &str, account: u64) -> Result<bool, AppError> {
+        self.remove_party_member_by(id, account, None).await
+    }
+
+    /// [`Self::remove_party_member`] for `by`, the leader who removes another member: the leader
+    /// check is made under the party's lock.
+    pub async fn remove_party_member_by(
+        &self,
+        id: &str,
+        account: u64,
+        by: Option<u64>,
+    ) -> Result<bool, AppError> {
         let mut tx = self.begin_write().await?;
         let Some(mut party) = party::lock_party(&mut tx, id).await? else {
-            return Ok(false);
+            return if by.is_some() {
+                Err(AppError::not_found())
+            } else {
+                Ok(false)
+            };
         };
+        if let Some(by) = by {
+            if !party.is_member(by) {
+                return Err(AppError::not_found());
+            }
+            if party.leader() != by {
+                return Err(AppError::forbidden("Only the leader can remove members."));
+            }
+            if account == by {
+                return Err(AppError::bad_request("Leave the party instead."));
+            }
+        }
         if !party.is_member(account) {
-            return Ok(false);
+            return if by.is_some() {
+                Err(AppError::not_found())
+            } else {
+                Ok(false)
+            };
         }
         party::delete_member(&mut tx, id, account).await?;
         chat::delete_member(&mut tx, &party.conversation, account).await?;

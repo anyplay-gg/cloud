@@ -966,7 +966,29 @@ const LISTED_MEMBERS: &str = "SELECT m.conversation_id, m.account_id, a.handle, 
      m.read_seq, m.delivered_seq \
      FROM conversation_members m JOIN accounts a ON a.id = m.account_id";
 
-fn assemble(listed: Vec<Listed>, members: Vec<Listed2>, me: u64) -> Vec<Conversation> {
+/// Every account that blocked `account` or that it blocked.
+async fn blocks_around(
+    conn: &mut Conn,
+    account: u64,
+) -> sqlx::Result<std::collections::HashSet<u64>> {
+    let rows: Vec<(i64, i64)> =
+        sqlx::query_as("SELECT blocker, blocked FROM blocks WHERE blocker = $1 OR blocked = $1")
+            .bind(i(account))
+            .fetch_all(conn)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(a, b)| if u(a) == account { u(b) } else { u(a) })
+        .collect())
+}
+
+/// The marks of members a block lies between are left out: they do not cross it.
+fn assemble(
+    listed: Vec<Listed>,
+    members: Vec<Listed2>,
+    me: u64,
+    blocked: &std::collections::HashSet<u64>,
+) -> Vec<Conversation> {
     listed
         .into_iter()
         .map(|c| {
@@ -991,6 +1013,7 @@ fn assemble(listed: Vec<Listed>, members: Vec<Listed2>, me: u64) -> Vec<Conversa
                     .filter(|m| {
                         m.state == ACCEPTED
                             && u(m.account_id) != me
+                            && !blocked.contains(&u(m.account_id))
                             && (m.read_seq > 0 || m.delivered_seq > 0)
                     })
                     .map(|m| ReadMark {
@@ -1026,9 +1049,10 @@ pub async fn conversations_of(conn: &mut Conn, account: u64) -> sqlx::Result<Vec
          (SELECT conversation_id FROM conversation_members WHERE account_id = $1 AND state <> 2)"
     )))
     .bind(i(account))
-    .fetch_all(conn)
+    .fetch_all(&mut *conn)
     .await?;
-    Ok(assemble(listed, members, account)
+    let blocked = blocks_around(conn, account).await?;
+    Ok(assemble(listed, members, account, &blocked)
         .into_iter()
         // A request with no message yet is not shown: the other side only opened it.
         .filter(|c| !c.request || c.last > 0)
@@ -1051,9 +1075,12 @@ pub async fn conversation_of(
         "{LISTED_MEMBERS} WHERE m.conversation_id = $1"
     )))
     .bind(id)
-    .fetch_all(conn)
+    .fetch_all(&mut *conn)
     .await?;
-    Ok(assemble(listed, members, account).into_iter().next())
+    let blocked = blocks_around(conn, account).await?;
+    Ok(assemble(listed, members, account, &blocked)
+        .into_iter()
+        .next())
 }
 
 // Sweeps, deletion and export

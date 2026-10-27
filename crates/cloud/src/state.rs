@@ -39,6 +39,43 @@ pub struct AuthCache {
     pub valid_from: HashMap<u64, u64>,
 }
 
+/// What the rarity of a title's trophies counted to: the players and, by trophy number, how many
+/// earned it.
+pub type RarityCounts = Arc<(i64, Vec<(i64, i64)>)>;
+
+/// The most titles whose rarity a node holds.
+const RARITY_TITLES: usize = 256;
+
+/// The rarity counts of titles, each kept for a short time so that a popular title is counted
+/// once in a while and not once per request. Other nodes are not told: the time alone keeps it
+/// right.
+#[derive(Default)]
+pub struct RarityCache {
+    titles: std::sync::Mutex<HashMap<String, (Instant, RarityCounts)>>,
+}
+
+impl RarityCache {
+    /// The counts for `title` that are younger than `ttl`.
+    pub fn get(&self, title: &str, ttl: Duration) -> Option<RarityCounts> {
+        let titles = self.titles.lock().unwrap_or_else(|e| e.into_inner());
+        let (at, counts) = titles.get(title)?;
+        (at.elapsed() < ttl).then(|| Arc::clone(counts))
+    }
+
+    /// Keeps the counts for `title`. Past [`RARITY_TITLES`] titles the stale ones go, and when
+    /// none is stale the table starts again.
+    pub fn put(&self, title: &str, ttl: Duration, counts: RarityCounts) {
+        let mut titles = self.titles.lock().unwrap_or_else(|e| e.into_inner());
+        if titles.len() >= RARITY_TITLES && !titles.contains_key(title) {
+            titles.retain(|_, (at, _)| at.elapsed() < ttl);
+            if titles.len() >= RARITY_TITLES {
+                titles.clear();
+            }
+        }
+        titles.insert(title.to_owned(), (Instant::now(), counts));
+    }
+}
+
 pub struct Inner {
     pub config: Config,
     pub tuning: Tuning,
@@ -48,6 +85,8 @@ pub struct Inner {
     pub mailer: Arc<dyn Mailer>,
     pub limiter: RateLimiter,
     pub cache: RwLock<AuthCache>,
+    /// Trophy rarity per title, for `tuning.rarity_ttl`.
+    pub rarity: RarityCache,
     pub news: News,
     /// The account web, when the cloud has a public address.
     pub web: Option<crate::web::Web>,
@@ -322,12 +361,42 @@ impl Inner {
     /// member; the last member closes the session. Returns the accounts whose presence may have
     /// changed.
     pub async fn remove_member(&self, id: &str, account: u64) -> Result<Vec<u64>, AppError> {
+        self.remove_member_by(id, account, None).await
+    }
+
+    /// [`Self::remove_member`] for `by`, the leader who removes another member: the leader
+    /// check is made under the session's lock, so a leader who handed over meanwhile cannot kick.
+    pub async fn remove_member_by(
+        &self,
+        id: &str,
+        account: u64,
+        by: Option<u64>,
+    ) -> Result<Vec<u64>, AppError> {
         let mut tx = self.begin_write().await?;
         let Some(mut session) = live::lock_session(&mut tx, id).await? else {
-            return Ok(Vec::new());
+            return if by.is_some() {
+                Err(AppError::not_found())
+            } else {
+                Ok(Vec::new())
+            };
         };
+        if let Some(by) = by {
+            if !session.is_member(by) {
+                return Err(AppError::not_found());
+            }
+            if session.leader() != by {
+                return Err(AppError::forbidden("Only the leader can remove members."));
+            }
+            if account == by {
+                return Err(AppError::bad_request("Leave the session instead."));
+            }
+        }
         if !session.is_member(account) {
-            return Ok(Vec::new());
+            return if by.is_some() {
+                Err(AppError::not_found())
+            } else {
+                Ok(Vec::new())
+            };
         }
         live::delete_member(&mut tx, id, account).await?;
         session.members.retain(|m| m.account_id as u64 != account);
@@ -582,34 +651,65 @@ impl Inner {
 
     /// Shows that this node is alive and carries out what is due: the connections of dead nodes,
     /// the grace periods, and invitations and challenges that ran out. Every node runs it.
+    ///
+    /// Every step stands alone: one that fails is logged with its name and the others still run,
+    /// so a failing step cannot hold up the deletions or the retention. The sweep returns an
+    /// error only when the node cannot write its heartbeat, which the metrics count as a failed
+    /// sweep.
     pub async fn sweep(&self) -> Result<(), AppError> {
         self.limiter.sweep();
-        self.reload_bans().await?;
+        step("reload bans", self.reload_bans().await);
         let now = util::now_ms();
-        let (offline, gone, leaving) = {
+        let live = async {
             let mut conn = self.db.acquire().await?;
             live::heartbeat(&mut conn, &self.node, now).await?;
+            Ok::<_, AppError>(())
+        }
+        .await;
+        let heartbeat_failed = live.is_err();
+        step("heartbeat", live);
+        let swept = async {
+            let mut conn = self.db.acquire().await?;
             live::sweep_dead_nodes(&mut conn, now - ms(self.tuning.node_timeout)).await?;
             let offline =
                 live::sweep_offline(&mut conn, now - ms(self.tuning.offline_grace)).await?;
             let gone = live::sweep_expired(&mut conn, now).await?;
             let leaving =
                 live::due_to_leave(&mut conn, now - ms(self.tuning.session_grace)).await?;
-            (offline, gone, leaving)
-        };
+            Ok::<_, AppError>((offline, gone, leaving))
+        }
+        .await;
+        let (offline, gone, leaving) = step("live sessions", swept).unwrap_or_default();
         self.invitations_gone(&gone);
-        self.sweep_social(now).await?;
-        self.sweep_shares(now).await?;
+        step("social", self.sweep_social(now).await);
+        step("shares", self.sweep_shares(now).await);
         self.sweep_deletions().await;
+        self.sweep_deletion_ledger(now).await;
         // An account that went offline plays nothing: a share of its game ends.
         self.check_shares(&offline).await;
         let mut dirty = offline;
         for account in leaving {
-            dirty.extend(self.leave_everything(account).await?);
+            if let Some(more) = step("leave", self.leave_everything(account).await) {
+                dirty.extend(more);
+            }
         }
         self.refresh_presence(dirty).await;
         self.sweep_moderation().await;
+        if heartbeat_failed {
+            return Err(AppError::internal());
+        }
         Ok(())
+    }
+}
+
+/// Logs a failed sweep step by name and goes on; the result of one that worked.
+fn step<T>(name: &str, result: Result<T, AppError>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::warn!(step = name, error = %error.body.message, "a sweep step failed; the others still run");
+            None
+        }
     }
 }
 
@@ -642,6 +742,49 @@ impl Inner {
                 }
             }
         }
+    }
+
+    /// Forgets the ledger rows of accounts deleted more than [`db::LEDGER_DAYS`] ago, the longest
+    /// a backup is kept.
+    async fn sweep_deletion_ledger(&self, now_ms: i64) {
+        let cut = now_ms.saturating_sub(db::LEDGER_DAYS as i64 * 24 * 60 * 60 * 1000);
+        let result = async {
+            let mut conn = db::acquire_maintenance(&self.db).await?;
+            db::sweep_deleted(&mut conn, cut).await
+        }
+        .await;
+        if let Err(error) = result {
+            tracing::warn!(step = "deletion ledger", %error, "a sweep step failed; the others still run");
+        }
+    }
+
+    /// After a restore: has the accounts deleted since the backup deleted again. `extra` is the
+    /// ledger of the database that was replaced (account ID and deletion time in milliseconds);
+    /// it is added to the ledger of the restored one first, so that the restored database also
+    /// knows these deletions for the next restore. Then every account that the ledger lists and
+    /// that exists is deleted the normal way. Returns how many were deleted and how many failed.
+    pub async fn replay_deletions(&self, extra: &[(u64, i64)]) -> Result<(u64, u64), AppError> {
+        {
+            let mut tx = self.writer.begin_maintenance(&self.db).await?;
+            for (id, at) in extra {
+                db::record_deleted(&mut tx, *id, *at).await?;
+            }
+            tx.commit().await?;
+        }
+        let (mut deleted, mut failed) = (0, 0);
+        for account in db::deleted_but_present(&self.db).await? {
+            match self.delete_account(account).await {
+                Ok(()) => deleted += 1,
+                Err(error) => {
+                    failed += 1;
+                    tracing::error!(
+                        class = error.body.error.as_str(),
+                        "cannot delete an account again"
+                    );
+                }
+            }
+        }
+        Ok((deleted, failed))
     }
 
     /// Deletes moderation data past its retention, at most once an hour per node. A failure is

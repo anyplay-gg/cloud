@@ -347,3 +347,19 @@ async fn a_listing_can_be_reported_and_a_ban_closes_it() {
         .ok(200);
     assert!(board(&cloud, &ben, "").await.is_empty());
 }
+
+#[tokio::test]
+async fn listings_posted_at_once_never_pass_the_open_limit() {
+    let cloud = TestCloud::start().await;
+    let ann = cloud.sign_up("Ann").await;
+    let posts = (1..=6).map(|n| {
+        post(
+            &cloud,
+            &ann,
+            json!({"title_id": format!("GAME0000{n}"), "mode": "lan", "slots": 1}),
+        )
+    });
+    let replies = futures_util::future::join_all(posts).await;
+    let made = replies.iter().filter(|r| r.status == 200).count();
+    assert_eq!(made, 3, "three listings at most, however the requests race");
+}

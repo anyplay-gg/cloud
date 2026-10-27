@@ -265,6 +265,22 @@ pub async fn report(state: &AppState, id: u64) -> Result<ReportView> {
     Ok(report_view(&row))
 }
 
+/// A moderator never works on a case about themselves, and only the operator works on one about
+/// another moderator.
+async fn guard_target(conn: &mut crate::live::Conn, actor: &Actor, target: u64) -> Result<()> {
+    if actor.id == Some(target) {
+        return Err(AppError::forbidden(
+            "You cannot decide a case about yourself.",
+        ));
+    }
+    if !actor.is_operator() && store::moderator_since(conn, target).await?.is_some() {
+        return Err(AppError::forbidden(
+            "Only the operator can act on a moderator.",
+        ));
+    }
+    Ok(())
+}
+
 /// Decides a report without an action.
 pub async fn dismiss(state: &AppState, actor: &Actor, id: u64, reason: &str) -> Result<ReportView> {
     let reason = valid_reason(reason)?;
@@ -272,6 +288,11 @@ pub async fn dismiss(state: &AppState, actor: &Actor, id: u64, reason: &str) -> 
     let row = store::report(&mut tx, id)
         .await?
         .ok_or_else(AppError::not_found)?;
+    if actor.id == Some(row.reported as u64) {
+        return Err(AppError::forbidden(
+            "You cannot decide a report about yourself.",
+        ));
+    }
     let decision = store::Decision {
         outcome: ReportOutcome::Dismissed.as_str(),
         now: now(),
@@ -433,6 +454,7 @@ pub async fn lift(state: &AppState, actor: &Actor, id: u64, reason: &str) -> Res
     let row = store::action(&mut tx, id)
         .await?
         .ok_or_else(AppError::not_found)?;
+    guard_target(&mut tx, actor, row.account_id as u64).await?;
     let ban_lifted = lift_in(&mut tx, actor, &row, &reason)
         .await?
         .ok_or_else(|| AppError::limit("This action was lifted already."))?;
@@ -652,11 +674,7 @@ pub async fn decide_appeal(
     if row.appeal_status.as_deref() != Some("open") {
         return Err(AppError::limit("This appeal is decided already."));
     }
-    if actor.id == Some(row.account_id as u64) {
-        return Err(AppError::forbidden(
-            "You cannot decide an appeal about yourself.",
-        ));
-    }
+    guard_target(&mut tx, actor, row.account_id as u64).await?;
     if actor.id == row.actor.map(|a| a as u64)
         && store::other_moderators(&mut tx, actor.id).await? > 0
     {

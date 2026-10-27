@@ -32,6 +32,14 @@ fn title_id(text: &str) -> Result<&str> {
     }
 }
 
+fn trophy_limit() -> AppError {
+    AppError::limit(format!(
+        "An account keeps trophies of at most {} titles and {} trophies.",
+        db::MAX_TROPHY_TITLES,
+        db::MAX_TROPHY_ROWS
+    ))
+}
+
 pub async fn upload(
     State(state): State<AppState>,
     auth: Auth,
@@ -57,14 +65,17 @@ pub async fn upload(
             ));
         }
     }
-    let added = db::add_trophies(
+    let Some(added) = db::add_trophies(
         &state.writer,
         &state.db,
         auth.account,
         title,
         &upload.trophies,
     )
-    .await?;
+    .await?
+    else {
+        return Err(trophy_limit());
+    };
     // The feed hears of trophies that are new and fresh, but not of secret ones; it never fails
     // the upload.
     let secret = db::secret_numbers(&state.db, auth.account, title).await?;
@@ -127,8 +138,11 @@ pub async fn mark_secret(
 ) -> Result<Json<SecretsChanged>> {
     let title = title_id(&title)?;
     check_numbers(&body.numbers)?;
-    let changed =
-        db::mark_secret(&state.writer, &state.db, auth.account, title, &body.numbers).await?;
+    let Some(changed) =
+        db::mark_secret(&state.writer, &state.db, auth.account, title, &body.numbers).await?
+    else {
+        return Err(trophy_limit());
+    };
     Ok(Json(SecretsChanged { changed }))
 }
 
@@ -219,8 +233,23 @@ pub async fn rarity(
     Path(title): Path<String>,
 ) -> Result<Json<Rarity>> {
     let title = title_id(&title)?;
-    let players = db::title_players(&state.db, title).await?;
-    // Few players would let a count point at one person.
+    let ttl = state.tuning.rarity_ttl;
+    let counts = match state.rarity.get(title, ttl) {
+        Some(counts) => counts,
+        None => {
+            let players = db::title_players(&state.db, title).await?;
+            // Few players would let a count point at one person, so no list is read or kept.
+            let earned = if players < i64::from(RARITY_MIN_PLAYERS) {
+                Vec::new()
+            } else {
+                db::title_rarity(&state.db, title).await?
+            };
+            let counts = std::sync::Arc::new((players, earned));
+            state.rarity.put(title, ttl, counts.clone());
+            counts
+        }
+    };
+    let (players, earned) = (counts.0, &counts.1);
     if players < i64::from(RARITY_MIN_PLAYERS) {
         return Ok(Json(Rarity {
             title_id: title.to_owned(),
@@ -228,10 +257,9 @@ pub async fn rarity(
             trophies: Vec::new(),
         }));
     }
-    let trophies = db::title_rarity(&state.db, title)
-        .await?
-        .into_iter()
-        .filter_map(|(number, earned_by)| {
+    let trophies = earned
+        .iter()
+        .filter_map(|&(number, earned_by)| {
             Some(TrophyRarity {
                 number: u16::try_from(number).ok()?,
                 earned_by: u32::try_from(earned_by).unwrap_or(u32::MAX),

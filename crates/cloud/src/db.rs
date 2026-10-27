@@ -507,8 +507,13 @@ pub async fn insert_account(
     }
 }
 
+/// How long the deletion ledger keeps an account ID: the longest a backup is kept.
+pub const LEDGER_DAYS: u64 = 90;
+
 /// Deletes an account and everything that hangs on it. Bans, the actions against the account
 /// and reports about it stay until their retention ends; reports it filed lose their link to it.
+/// The ID and the time go into the deletion ledger in the same transaction, so that a restored
+/// backup can have the account deleted again (`anyplay-cloud replay-deletions`).
 pub async fn delete_account(writer: &Writer, pool: &Pool, id: u64) -> sqlx::Result<()> {
     let mut tx = writer.begin_maintenance(pool).await?;
     crate::moderation::store::forget_reporter(&mut tx, id).await?;
@@ -517,7 +522,40 @@ pub async fn delete_account(writer: &Writer, pool: &Pool, id: u64) -> sqlx::Resu
         .bind(i(id))
         .execute(&mut *tx)
         .await?;
+    record_deleted(&mut tx, id, crate::util::now_ms()).await?;
     tx.commit().await
+}
+
+/// Writes an account ID into the deletion ledger; one that is listed keeps its first time.
+pub async fn record_deleted(conn: &mut Conn, id: u64, deleted_ms: i64) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO deleted_accounts (account_id, deleted_ms) VALUES ($1, $2) \
+         ON CONFLICT (account_id) DO NOTHING",
+    )
+    .bind(i(id))
+    .bind(deleted_ms)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// The accounts the ledger lists as deleted that exist again, as after a restore.
+pub async fn deleted_but_present(pool: &Pool) -> sqlx::Result<Vec<u64>> {
+    let rows: Vec<(i64,)> = sqlx::query_as(
+        "SELECT a.id FROM accounts a JOIN deleted_accounts d ON d.account_id = a.id ORDER BY a.id",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| u(id)).collect())
+}
+
+/// Forgets the ledger rows older than `cut_ms`.
+pub async fn sweep_deleted(conn: &mut Conn, cut_ms: i64) -> sqlx::Result<u64> {
+    let result = sqlx::query("DELETE FROM deleted_accounts WHERE deleted_ms < $1")
+        .bind(cut_ms)
+        .execute(conn)
+        .await?;
+    Ok(result.rows_affected())
 }
 
 /// When the account will be deleted, if the player asked for it (Unix seconds).
@@ -1155,36 +1193,101 @@ pub(crate) fn audience_of(name: &str) -> anyplay_api::Audience {
     }
 }
 
-/// Records the trophies in one step. A trophy recorded already keeps its first time and grade.
-/// Returns the records that are new, in the order given.
+/// The most titles an account keeps trophy records (or secret marks) for.
+pub const MAX_TROPHY_TITLES: i64 = 500;
+/// The most trophy records an account keeps, and the most secret marks.
+pub const MAX_TROPHY_ROWS: i64 = 50_000;
+/// Rows per INSERT statement, so that the bound values stay far below every store's limit.
+const INSERT_CHUNK: usize = 100;
+
+/// `($1,$2),($3,$4)` for `rows` rows of `columns` values, numbered from 1.
+fn value_marks(rows: usize, columns: usize) -> String {
+    (0..rows)
+        .map(|row| {
+            let marks = (1..=columns)
+                .map(|column| format!("${}", row * columns + column))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("({marks})")
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// How many rows and distinct titles `table` holds for the account.
+async fn held(
+    conn: &mut sqlx::AnyConnection,
+    table: &'static str,
+    account: u64,
+) -> sqlx::Result<(i64, i64)> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT COUNT(*), COUNT(DISTINCT title_id) FROM {table} WHERE account_id = $1"
+    )))
+    .bind(i(account))
+    .fetch_one(conn)
+    .await
+}
+
+/// Records the trophies in one step, in batches. A trophy recorded already keeps its first time
+/// and grade. Returns the records that are new, in the order given, or `None`, storing nothing,
+/// when the account would pass [`MAX_TROPHY_TITLES`] or [`MAX_TROPHY_ROWS`].
 pub async fn add_trophies(
     writer: &Writer,
     pool: &Pool,
     account: u64,
     title_id: &str,
     trophies: &[anyplay_api::Trophy],
-) -> sqlx::Result<Vec<anyplay_api::Trophy>> {
+) -> sqlx::Result<Option<Vec<anyplay_api::Trophy>>> {
+    // The first record of a number counts, as it did when each was inserted on its own.
+    let mut seen = HashSet::new();
+    let unique: Vec<&anyplay_api::Trophy> =
+        trophies.iter().filter(|t| seen.insert(t.number)).collect();
+    if unique.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
     let mut tx = writer.begin(pool).await?;
-    let mut added = Vec::new();
-    for trophy in trophies {
-        let new = sqlx::query(
-            "INSERT INTO trophies (account_id, title_id, number, grade, earned) \
-             VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
-        )
-        .bind(i(account))
-        .bind(title_id)
-        .bind(i64::from(trophy.number))
-        .bind(grade_name(trophy.grade))
-        .bind(i(trophy.earned))
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        if new > 0 {
-            added.push(*trophy);
+    let (rows, titles) = held(&mut tx, "trophies", account).await?;
+    if titles >= MAX_TROPHY_TITLES {
+        let (known,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM trophies WHERE account_id = $1 AND title_id = $2")
+                .bind(i(account))
+                .bind(title_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if known == 0 {
+            return Ok(None);
         }
     }
+    let mut new_numbers = HashSet::new();
+    for chunk in unique.chunks(INSERT_CHUNK) {
+        let sql = format!(
+            "INSERT INTO trophies (account_id, title_id, number, grade, earned) VALUES {} \
+             ON CONFLICT DO NOTHING RETURNING number",
+            value_marks(chunk.len(), 5)
+        );
+        let mut query = sqlx::query_as::<_, (i64,)>(sqlx::AssertSqlSafe(sql));
+        for trophy in chunk {
+            query = query
+                .bind(i(account))
+                .bind(title_id)
+                .bind(i64::from(trophy.number))
+                .bind(grade_name(trophy.grade))
+                .bind(i(trophy.earned));
+        }
+        new_numbers.extend(query.fetch_all(&mut *tx).await?.into_iter().map(|(n,)| n));
+    }
+    if rows + new_numbers.len() as i64 > MAX_TROPHY_ROWS {
+        // Dropping the transaction takes the inserts back.
+        return Ok(None);
+    }
     tx.commit().await?;
-    Ok(added)
+    Ok(Some(
+        unique
+            .into_iter()
+            .filter(|t| new_numbers.contains(&i64::from(t.number)))
+            .copied()
+            .collect(),
+    ))
 }
 
 /// The condition that keeps the records of `trophies` that `viewer` may see: all of the viewer's
@@ -1231,31 +1334,48 @@ pub async fn trophies_in_title(
 }
 
 /// Marks trophy numbers of a title as secret. A number marked already keeps its state (a
-/// revealed one stays revealed). Returns how many are newly marked.
+/// revealed one stays revealed). Returns how many are newly marked, or `None`, marking nothing,
+/// when the account would pass [`MAX_TROPHY_TITLES`] titles or [`MAX_TROPHY_ROWS`] marks.
 pub async fn mark_secret(
     writer: &Writer,
     pool: &Pool,
     account: u64,
     title_id: &str,
     numbers: &[u16],
-) -> sqlx::Result<u32> {
+) -> sqlx::Result<Option<u32>> {
+    let mut seen = HashSet::new();
+    let unique: Vec<u16> = numbers
+        .iter()
+        .copied()
+        .filter(|n| seen.insert(*n))
+        .collect();
+    if unique.is_empty() {
+        return Ok(Some(0));
+    }
     let mut tx = writer.begin(pool).await?;
     let mut changed = 0;
-    for number in numbers {
-        let new = sqlx::query(
-            "INSERT INTO trophy_secrets (account_id, title_id, number, revealed) \
-             VALUES ($1, $2, $3, 0) ON CONFLICT DO NOTHING",
-        )
-        .bind(i(account))
-        .bind(title_id)
-        .bind(i64::from(*number))
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        changed += u32::from(new > 0);
+    for chunk in unique.chunks(INSERT_CHUNK) {
+        let sql = format!(
+            "INSERT INTO trophy_secrets (account_id, title_id, number, revealed) VALUES {} \
+             ON CONFLICT DO NOTHING RETURNING number",
+            value_marks(chunk.len(), 4)
+        );
+        let mut query = sqlx::query_as::<_, (i64,)>(sqlx::AssertSqlSafe(sql));
+        for number in chunk {
+            query = query
+                .bind(i(account))
+                .bind(title_id)
+                .bind(i64::from(*number))
+                .bind(0_i64);
+        }
+        changed += query.fetch_all(&mut *tx).await?.len() as u32;
+    }
+    let (rows, titles) = held(&mut tx, "trophy_secrets", account).await?;
+    if rows > MAX_TROPHY_ROWS || titles > MAX_TROPHY_TITLES {
+        return Ok(None);
     }
     tx.commit().await?;
-    Ok(changed)
+    Ok(Some(changed))
 }
 
 /// Reveals secret trophies. Returns how many were secret until now.

@@ -167,6 +167,7 @@ pub async fn open(
         mailer,
         limiter: limits::RateLimiter::default(),
         cache: RwLock::new(cache),
+        rarity: state::RarityCache::default(),
         news,
         web,
         node,
