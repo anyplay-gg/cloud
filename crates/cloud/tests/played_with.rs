@@ -212,6 +212,7 @@ async fn the_switch_stops_new_entries_and_clearing_empties_only_ones_own_list() 
     set(true).await.ok(200);
     sweep(&cloud).await;
     assert_eq!(list(&cloud, &a).await.people.len(), 1);
+    // Ben cleared while they were together, so the look does not put Ann back.
     assert_eq!(list(&cloud, &b).await.people.len(), 0);
     // Turning it off keeps the list until the player clears it.
     set(false).await.ok(200);
@@ -260,17 +261,13 @@ async fn entries_go_with_either_account() {
 #[tokio::test]
 async fn an_account_keeps_the_newest_50_of_the_last_30_days() {
     let cloud = quick().await;
-    let me = cloud.sign_up("Me").await;
+    let me = cloud.sign_up("Mina").await;
     let now_ms = anyplay_cloud::util::now_ms();
     let day = 24 * 60 * 60 * 1000;
     // Q00 is the oldest of 53 recent people; two more are past 30 days.
     for n in 0..55_i64 {
         let other = cloud.sign_up(&format!("Q{n:02}")).await;
-        let age = if n >= 53 {
-            31 * day
-        } else {
-            (53 - n) * 1000
-        };
+        let age = if n >= 53 { 31 * day } else { (53 - n) * 1000 };
         sqlx::query("INSERT INTO played_with (account_id, other_id, last_ms) VALUES ($1, $2, $3)")
             .bind(me.id as i64)
             .bind(other.id as i64)
@@ -340,5 +337,31 @@ async fn the_portal_serves_the_same_list_and_switch() {
         false
     );
     portal.delete("/me/played-with").await.ok(200);
-    assert_eq!(portal.get("/me/played-with").await.ok(200)["people"], json!([]));
+    assert_eq!(
+        portal.get("/me/played-with").await.ok(200)["people"],
+        json!([])
+    );
+}
+
+#[tokio::test]
+async fn a_pair_that_comes_together_after_clearing_is_remembered_again() {
+    let cloud = quick().await;
+    let (a, b) = cloud.friends("Ann", "Ben").await;
+    let first = play_session(&cloud, &a, &b).await;
+    sweep(&cloud).await;
+    cloud.delete("/v1/me/played-with", a.token()).await.ok(204);
+    // Still together from before the clearing: not put back.
+    sweep(&cloud).await;
+    assert!(list(&cloud, &a).await.people.is_empty());
+    // A new session later: the clearing is behind them.
+    for user in [&a, &b] {
+        cloud
+            .post_empty(&format!("/v1/sessions/{}/leave", first.id), user.token())
+            .await
+            .ok(204);
+    }
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    play_session(&cloud, &a, &b).await;
+    sweep(&cloud).await;
+    assert_eq!(list(&cloud, &a).await.people.len(), 1);
 }

@@ -24,7 +24,7 @@ pub async fn list(State(state): State<AppState>, auth: Auth) -> Result<Json<Play
 /// `DELETE /v1/me/played-with`: empties the list.
 pub async fn clear(State(state): State<AppState>, auth: Auth) -> Result<StatusCode> {
     let mut conn = state.db.acquire().await?;
-    played_with::clear(&mut conn, auth.account).await?;
+    played_with::clear(&mut conn, auth.account, now_ms()).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

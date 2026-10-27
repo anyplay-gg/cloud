@@ -17,3 +17,5 @@ CREATE INDEX played_with_last ON played_with (last_ms);
 
 -- 1 while the cloud records new entries for the account ("Remember people I play with").
 ALTER TABLE accounts ADD COLUMN remember_played_with INTEGER NOT NULL DEFAULT 1;
+-- When the player last cleared the list: people who were already together then are not put back.
+ALTER TABLE accounts ADD COLUMN played_with_cleared_ms INTEGER NOT NULL DEFAULT 0;

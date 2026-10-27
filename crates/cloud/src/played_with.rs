@@ -44,18 +44,21 @@ pub async fn record(conn: &mut Conn, now_ms: i64, min_secs: i64) -> sqlx::Result
                                        ORDER BY t.pref DESC, t.seen DESC) AS n \
              FROM ( \
                  SELECT a.account_id AS me, b.account_id AS other, s.title_id AS title_id, \
-                        s.title AS title, 1 AS pref, s.created AS seen \
+                        s.title AS title, 1 AS pref, s.created AS seen, \
+                        CASE WHEN a.joined > b.joined THEN a.joined ELSE b.joined END AS began \
                  FROM members a \
                  JOIN members b ON b.session_id = a.session_id AND b.account_id <> a.account_id \
                  JOIN sessions s ON s.id = a.session_id \
                  WHERE a.joined <= $1 AND b.joined <= $1 \
                  UNION ALL \
-                 SELECT a.account_id, b.account_id, CAST(NULL AS TEXT), CAST(NULL AS TEXT), 0, 0 \
+                 SELECT a.account_id, b.account_id, CAST(NULL AS TEXT), CAST(NULL AS TEXT), 0, 0, \
+                        CASE WHEN a.joined > b.joined THEN a.joined ELSE b.joined END \
                  FROM party_members a \
                  JOIN party_members b ON b.party_id = a.party_id AND b.account_id <> a.account_id \
                  WHERE a.joined <= $1 AND b.joined <= $1 \
              ) AS t \
              JOIN accounts r ON r.id = t.me AND r.remember_played_with = 1 \
+                            AND t.began * 1000 > r.played_with_cleared_ms \
              WHERE NOT EXISTS ( \
                  SELECT 1 FROM blocks k \
                  WHERE (k.blocker = t.me AND k.blocked = t.other) \
@@ -152,10 +155,17 @@ pub async fn list(conn: &mut Conn, account: u64, now_ms: i64) -> sqlx::Result<Pl
     })
 }
 
-/// Empties the account's list. The entries other accounts hold of it stay theirs.
-pub async fn clear(conn: &mut Conn, account: u64) -> sqlx::Result<()> {
+/// Empties the account's list. The entries other accounts hold of it stay theirs. People who
+/// are together with the account right now are not put back: only a pair that comes together
+/// after the clearing is remembered again.
+pub async fn clear(conn: &mut Conn, account: u64, now_ms: i64) -> sqlx::Result<()> {
     sqlx::query("DELETE FROM played_with WHERE account_id = $1")
         .bind(i(account))
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("UPDATE accounts SET played_with_cleared_ms = $2 WHERE id = $1")
+        .bind(i(account))
+        .bind(now_ms)
         .execute(conn)
         .await?;
     Ok(())
@@ -183,8 +193,8 @@ pub async fn set_remember(conn: &mut Conn, account: u64, on: bool) -> sqlx::Resu
 
 /// For the export: the account's entries, newest first, with the other account's ID and handle.
 pub async fn export(conn: &mut Conn, account: u64) -> sqlx::Result<Vec<serde_json::Value>> {
-    let rows: Vec<(i64, String, i64, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT p.other_id, a.handle, p.last_ms, p.title_id, p.title \
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT p.other_id, a.handle, p.last_ms, p.title_id, p.title, CAST(0 AS BIGINT) AS friend \
          FROM played_with p JOIN accounts a ON a.id = p.other_id \
          WHERE p.account_id = $1 ORDER BY p.last_ms DESC, p.other_id",
     )
@@ -193,10 +203,10 @@ pub async fn export(conn: &mut Conn, account: u64) -> sqlx::Result<Vec<serde_jso
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, handle, last_ms, title_id, title)| {
+        .map(|row| {
             serde_json::json!({
-                "account": {"id": id, "handle": handle},
-                "last": last_ms / 1000, "title_id": title_id, "title": title,
+                "account": {"id": row.other_id, "handle": row.handle},
+                "last": row.last_ms / 1000, "title_id": row.title_id, "title": row.title,
             })
         })
         .collect())
