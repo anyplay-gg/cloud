@@ -89,6 +89,12 @@ pub async fn create(
     ApiJson(request): ApiJson<CreateConversation>,
 ) -> Result<Json<Conversation>> {
     ensure_not_muted(&state, auth.account).await?;
+    // Checked before the quadratic de-duplication below.
+    if request.accounts.len() > usize::from(MAX_GROUP_MEMBERS) {
+        return Err(AppError::bad_request(
+            "A group has at most 32 members, you included.",
+        ));
+    }
     let mut others: Vec<u64> = Vec::new();
     for account in &request.accounts {
         if account.0 == auth.account {
@@ -591,12 +597,8 @@ async fn revise(conn: &mut Conn, id: &str, seq: u64) -> Result<u64> {
     Ok(rev)
 }
 
-/// Tells everyone who may see the message that it changed.
-fn announce(state: &AppState, id: &str, seq: u64, rev: u64, target: &Target) {
-    announce_except(state, id, seq, rev, target, &[]);
-}
-
-/// Like [`announce`], leaving out members for whom the change is invisible.
+/// Tells everyone who may see the message that it changed, leaving out members for whom the
+/// change is invisible.
 fn announce_except(
     state: &AppState,
     id: &str,
@@ -689,7 +691,10 @@ pub async fn edit(
     }
     tx.commit().await?;
     if let Some(rev) = revision {
-        announce(&state, &id, seq, rev, &target);
+        // Members a block lies between and the author do not hear of the change.
+        let blocked =
+            chat::blocked_members(&mut *state.db.acquire().await?, &id, auth.account).await?;
+        announce_except(&state, &id, seq, rev, &target, &blocked);
     }
     reread(&state, &id, &target, seq).await
 }
@@ -725,7 +730,10 @@ pub async fn unsend(
         }
     }
     if let Some(rev) = revision {
-        announce(&state, &id, seq, rev, &target);
+        // Members a block lies between and the author do not hear of the change.
+        let blocked =
+            chat::blocked_members(&mut *state.db.acquire().await?, &id, auth.account).await?;
+        announce_except(&state, &id, seq, rev, &target, &blocked);
     }
     reread(&state, &id, &target, seq).await
 }
@@ -878,15 +886,17 @@ pub async fn mark_read(
     let seq = request.seq.min(conversation.last());
     if chat::set_read(&mut conn, &id, auth.account, seq).await? {
         let event = Event::Read {
-            conversation: id,
+            conversation: id.clone(),
             account: AccountId(auth.account),
             seq,
         };
         // A member who has not accepted the conversation keeps its marks to its own devices.
         if me.state == ACCEPTED {
+            // Members a block lies between do not hear of it.
+            let blocked = chat::blocked_members(&mut conn, &id, auth.account).await?;
             let told = members
                 .iter()
-                .filter(|m| m.state == ACCEPTED)
+                .filter(|m| m.state == ACCEPTED && !blocked.contains(&m.id()))
                 .map(|m| m.id());
             push_all(&state, told, &event);
         } else {

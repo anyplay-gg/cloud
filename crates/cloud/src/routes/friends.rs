@@ -263,6 +263,16 @@ pub async fn block(
     let gone =
         crate::party::take_between(&mut *state.db.acquire().await?, auth.account, them).await?;
     state.party_invitations_gone(&gone);
+    // Whoever blocks a member of their party leaves it.
+    let mine = crate::party::party_id_of(&mut *state.db.acquire().await?, auth.account).await?;
+    if let Some(party) = mine
+        && crate::party::party_id_of(&mut *state.db.acquire().await?, them)
+            .await?
+            .as_deref()
+            == Some(party.as_str())
+    {
+        state.remove_party_member(&party, auth.account).await?;
+    }
     state.forget_missed_between(auth.account, them).await?;
     state.news.push(auth.account, &Event::Friends);
     // The blocked account learns only what it would see anyway: a friend or request is gone.

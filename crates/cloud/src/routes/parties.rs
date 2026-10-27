@@ -343,16 +343,10 @@ pub async fn kick(
     let party = party_of(&state, auth.account)
         .await?
         .ok_or_else(AppError::not_found)?;
-    if party.leader() != auth.account {
-        return Err(AppError::forbidden("Only the leader can remove members."));
-    }
-    if target == auth.account {
-        return Err(AppError::bad_request("Leave the party instead."));
-    }
-    if !party.is_member(target) {
-        return Err(AppError::not_found());
-    }
-    state.remove_party_member(&party.row.id, target).await?;
+    // The leader is checked again under the party's lock.
+    state
+        .remove_party_member_by(&party.row.id, target, Some(auth.account))
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

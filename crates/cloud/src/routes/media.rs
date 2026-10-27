@@ -74,10 +74,10 @@ async fn check_pair(
             "Screenshots and clips can only be sent to a friend.",
         ));
     }
-    if chat::blocked_either(conn, me, other.id()).await? {
-        return Err(AppError::forbidden("You cannot send this to this account."));
-    }
-    if !chat::are_friends(conn, me, other.id()).await? {
+    // A block answers as a missing friendship does, so the error does not tell them apart.
+    if !chat::are_friends(conn, me, other.id()).await?
+        || chat::blocked_either(conn, me, other.id()).await?
+    {
         return Err(AppError::forbidden(
             "Screenshots and clips can only be sent to a friend.",
         ));

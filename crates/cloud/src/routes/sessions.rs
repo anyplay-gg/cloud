@@ -254,7 +254,7 @@ pub async fn join(
     // 1. Blocks, in either direction, between the joiner and any member.
     let members = session.member_ids();
     if db::blocked_between_any(&mut tx, auth.account, &members).await? {
-        return Err(AppError::forbidden("You cannot join this session."));
+        return Err(AppError::not_found());
     }
     // 2. Visibility.
     let invited =
@@ -388,24 +388,10 @@ pub async fn remove_member(
     Path((id, account)): Path<(String, String)>,
 ) -> Result<StatusCode> {
     let target = parse_id(&account)?;
-    {
-        let session = live::session(&mut *state.db.acquire().await?, &id)
-            .await?
-            .ok_or_else(AppError::not_found)?;
-        if !session.is_member(auth.account) {
-            return Err(AppError::not_found());
-        }
-        if session.leader() != auth.account {
-            return Err(AppError::forbidden("Only the leader can remove members."));
-        }
-        if target == auth.account {
-            return Err(AppError::bad_request("Leave the session instead."));
-        }
-        if !session.is_member(target) {
-            return Err(AppError::not_found());
-        }
-    }
-    let dirty = state.remove_member(&id, target).await?;
+    // The leader is checked under the session's lock.
+    let dirty = state
+        .remove_member_by(&id, target, Some(auth.account))
+        .await?;
     state.refresh_presence(dirty).await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -462,9 +448,15 @@ pub(crate) async fn open_invitations(
     let id = &session.row.id;
     let mut sent = Vec::new();
     let mut new = Vec::new();
+    // Nobody is invited who blocked or was blocked by the inviter or a member.
+    let mut circle = session.member_ids();
+    circle.push(from.0);
     for to in to {
         let to_id = to.0;
         if sent.contains(&to) || !eligible(to_id) || session.is_member(to_id) {
+            continue;
+        }
+        if db::blocked_between_any(tx, to_id, &circle).await? {
             continue;
         }
         if live::is_invited(tx, to_id, id, None).await? {

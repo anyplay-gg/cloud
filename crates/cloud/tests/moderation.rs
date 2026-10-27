@@ -327,6 +327,47 @@ async fn a_moderator_cannot_act_on_themselves_or_on_another_moderator() {
 }
 
 #[tokio::test]
+async fn a_moderator_cannot_lift_or_dismiss_cases_about_themselves_or_another_moderator() {
+    let cloud = cloud().await;
+    let mona = moderator(&cloud, "Mona").await;
+    let max = moderator(&cloud, "Max").await;
+    let kim = cloud.sign_up("Kim").await;
+    // The operator warns Max; Mona may not take that back.
+    let warning = take_action(
+        &cloud,
+        ADMIN,
+        json!({"account": max.id, "kind": "warning", "rule": "other", "reason": "Him."}),
+    )
+    .await;
+    let lift = format!("/v1/moderation/actions/{}/lift", warning.statement.id);
+    cloud
+        .post(&lift, mona.token(), json!({"reason": "Fine."}))
+        .await
+        .is_error("forbidden", 403);
+    // Nor Max himself.
+    cloud
+        .post(&lift, max.token(), json!({"reason": "Fine."}))
+        .await
+        .is_error("forbidden", 403);
+    cloud
+        .post(&lift, ADMIN, json!({"reason": "Fine."}))
+        .await
+        .ok(200);
+    // A report about a moderator is not dismissed by that moderator.
+    file_report(&cloud, &kim, &mona).await;
+    let id = queue(&cloud, max.token(), "open").await[0].id;
+    cloud
+        .post(
+            &format!("/v1/moderation/reports/{id}/dismiss"),
+            mona.token(),
+            json!({"reason": "Nothing."}),
+        )
+        .await
+        .is_error("forbidden", 403);
+    assert_eq!(queue(&cloud, max.token(), "open").await.len(), 1);
+}
+
+#[tokio::test]
 async fn the_operator_token_acts_under_the_name_operator() {
     let cloud = cloud().await;
     let target = cloud.sign_up("Sam").await;
