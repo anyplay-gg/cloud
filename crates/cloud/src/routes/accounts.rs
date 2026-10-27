@@ -1,6 +1,6 @@
 //! The signed-in account and lookups of other accounts.
 
-use anyplay_api::{Account, AccountId, AppearOffline, Me};
+use anyplay_api::{Account, AccountId, AppearOffline, Me, path};
 use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
@@ -76,7 +76,14 @@ pub async fn set_public_profile(
 
 /// Schedules the deletion of the account for the end of the grace period and signs every device
 /// out, this one too. The answer holds the time; the player cancels on the web portal.
-pub async fn delete_me(State(state): State<AppState>, auth: Auth) -> Result<Json<Value>> {
+pub async fn delete_me(
+    State(state): State<AppState>,
+    auth: Auth,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>> {
+    // Like the link to the account web, this needs the device key, so a copied access token
+    // cannot start it.
+    crate::binding::require_proof(&state, auth.device, &headers, "DELETE", path::ME).await?;
     let at = state.schedule_deletion(auth.account, None).await?;
     Ok(Json(json!({"deletion": {"at": at}})))
 }

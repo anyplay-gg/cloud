@@ -15,6 +15,17 @@ pub struct Rates {
     pub auth_window: Duration,
     pub refresh_per_device: u32,
     pub refresh_window: Duration,
+    /// Refreshes per client address and `refresh_ip_window`. Generous: many players can share one.
+    pub refresh_per_ip: u32,
+    pub refresh_ip_window: Duration,
+    /// Sign-in codes the whole cloud issues per `email_global_window`, so that a flood cannot
+    /// fill the store with waiting challenges.
+    pub email_global: u32,
+    pub email_global_window: Duration,
+    /// Wrong codes counted for one e-mail address over all its challenges per
+    /// `code_failure_window`; past it the address gets no code check until the window ends.
+    pub code_failures_per_address: u32,
+    pub code_failure_window: Duration,
     pub account: u32,
     pub account_window: Duration,
     pub admin_per_ip: u32,
@@ -91,6 +102,12 @@ impl Default for Rates {
             auth_window: Duration::from_secs(15 * 60),
             refresh_per_device: 30,
             refresh_window: Duration::from_secs(60 * 60),
+            refresh_per_ip: 60,
+            refresh_ip_window: Duration::from_secs(60),
+            email_global: 600,
+            email_global_window: Duration::from_secs(60),
+            code_failures_per_address: 10,
+            code_failure_window: Duration::from_secs(60 * 60),
             account: 120,
             account_window: Duration::from_secs(60),
             admin_per_ip: 60,
@@ -175,6 +192,20 @@ impl RateLimiter {
         }
         entry.count += 1;
         Ok(())
+    }
+
+    /// Whether a key is over its limit, without counting. Over the limit it answers with the
+    /// seconds to wait.
+    pub fn blocked(&self, key: &str, limit: u32) -> Result<(), u64> {
+        let now = Instant::now();
+        let windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
+        match windows.get(key) {
+            Some(w) if now.duration_since(w.started) < w.length && w.count >= limit => {
+                let left = w.length.saturating_sub(now.duration_since(w.started));
+                Err(left.as_secs() + u64::from(left.subsec_nanos() > 0))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Forgets windows that have ended.
