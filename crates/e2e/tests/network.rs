@@ -841,3 +841,341 @@ async fn friends_play_together_by_broadcast_and_the_session_ends_with_its_host()
         })
         .await;
 }
+
+/// A running cloud with a relay, and the mail it sends.
+struct Running {
+    url: String,
+    mail: Arc<MemoryMailer>,
+    journal: Journal,
+    _relay: iroh_relay::server::Server,
+    _data: tempfile::TempDir,
+}
+
+/// Starts a cloud. Share play is off in a cloud's default setup; only a caller that asks for it
+/// gets it.
+async fn start_cloud(share_enabled: bool) -> Running {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let data = tempfile::tempdir().unwrap();
+    let (signer, _) = anyplay_cloud::load_signing_key(data.path()).unwrap();
+    let (relay, relay_url, journal) = relay(&signer).await;
+    let mail = Arc::new(MemoryMailer::default());
+    let config = Config {
+        data_dir: data.path().to_path_buf(),
+        name: "End-to-end cloud".into(),
+        relays: vec![relay_url],
+        new_account_hours: 0,
+        share_enabled,
+        ..Config::default()
+    };
+    let state = open(config, Tuning::default(), mail.clone()).await.unwrap();
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(serve(listener, state, std::future::pending()));
+    Running {
+        url,
+        mail,
+        journal,
+        _relay: relay,
+        _data: data,
+    }
+}
+
+/// Signs an existing account in on one more device, as a plain API client, and returns its access
+/// token. The net service keeps its own token to itself.
+async fn api_token(cloud: &Running, email: &str) -> String {
+    use anyplay_control::anyplay_api::{
+        CodeAnswer, CodeRequest, Device, EmailAnswer, EmailRequest, Platform,
+    };
+    let http = reqwest::Client::new();
+    let asked: EmailAnswer = http
+        .post(format!("{}/v1/auth/email", cloud.url))
+        .json(&EmailRequest {
+            email: email.into(),
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let code = cloud.mail.last_code(email).expect("no code mailed");
+    let answer: CodeAnswer = http
+        .post(format!("{}/v1/auth/code", cloud.url))
+        .json(&CodeRequest {
+            challenge: asked.challenge,
+            code,
+            device: Device {
+                name: "API client".into(),
+                platform: Platform::Linux,
+                key: None,
+            },
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    match answer {
+        CodeAnswer::SignedIn { tokens, .. } => tokens.access,
+        other => panic!("expected a sign-in for {email}, got {other:?}"),
+    }
+}
+
+/// One call to the cloud's API as the holder of `token`: the status and the JSON body (null when
+/// there is none).
+async fn api(
+    cloud: &Running,
+    method: reqwest::Method,
+    path: &str,
+    token: &str,
+    body: Option<serde_json::Value>,
+) -> (u16, serde_json::Value) {
+    let mut request = reqwest::Client::new()
+        .request(method, format!("{}{path}", cloud.url))
+        .bearer_auth(token);
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let reply = request.send().await.unwrap();
+    let status = reply.status().as_u16();
+    let bytes = reply.bytes().await.unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+/// Share play from the invitation to its end: two party members, the host's invitation, the
+/// guest's acceptance, the mode changing and the host stopping. Both net services follow what
+/// the cloud tells them; the calls a launcher would make with a share worker are made as a plain
+/// API client, because the test has no worker to encode or decode a picture.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_share_runs_from_invitation_to_end() {
+    use anyplay_control::anyplay_api::{Share, ShareMode, ShareState};
+    use anyplay_control::{SharePhase, ShareRole};
+    use reqwest::Method;
+
+    let cloud = start_cloud(true).await;
+    let mut alice = Launcher::start("Alice", false, cloud.journal.clone()).await;
+    let mut bobby = Launcher::start("Bobby", false, cloud.journal.clone()).await;
+    let alice_id = alice
+        .sign_up(&cloud.url, &cloud.mail, "alice@example.org", "Alice")
+        .await;
+    let bobby_id = bobby
+        .sign_up(&cloud.url, &cloud.mail, "bobby@example.org", "Bobby")
+        .await;
+
+    // They are friends, and Bobby is in Alice's party.
+    alice
+        .ok(Command::AddFriend {
+            handle: "bobby".into(),
+        })
+        .await;
+    bobby
+        .friends("the request", |l| {
+            l.incoming.iter().any(|r| r.account.id == alice_id)
+        })
+        .await;
+    bobby.ok(Command::Accept { account: alice_id }).await;
+    alice
+        .friends("the new friend", |l| {
+            l.friends.iter().any(|f| f.account.id == bobby_id)
+        })
+        .await;
+    alice
+        .ok(Command::PartyInvite {
+            accounts: vec![bobby_id],
+            call: false,
+        })
+        .await;
+    let party_invitation = bobby
+        .wait("the party invitation", |event| match event {
+            Event::PartyInvitation { invitation } => Some(invitation.id.clone()),
+            _ => None,
+        })
+        .await;
+    bobby
+        .ok(Command::PartyAnswer {
+            id: party_invitation,
+            accept: true,
+        })
+        .await;
+    // Both net services know the party before the share begins: a share with someone outside
+    // the party they hold would end at once.
+    for launcher in [&mut alice, &mut bobby] {
+        launcher
+            .wait("the party of two", |event| match event {
+                Event::Party { party: Some(party) } if party.members.len() == 2 => Some(()),
+                _ => None,
+            })
+            .await;
+    }
+
+    // Alice plays, and Bobby sees it: the cloud shares only a game that is running.
+    let _game = alice.start_game(None).await;
+    bobby
+        .friends("Alice playing", |l| {
+            l.friends
+                .iter()
+                .any(|f| f.account.id == alice_id && f.presence.activity.is_some())
+        })
+        .await;
+
+    let alice_token = api_token(&cloud, "alice@example.org").await;
+    let bobby_token = api_token(&cloud, "bobby@example.org").await;
+    let host_endpoint = "01".repeat(32);
+    let guest_endpoint = "02".repeat(32);
+
+    // The host invites the guest. The guest's launcher shows the invitation, the host's shows
+    // that the guest has not answered.
+    let (status, body) = api(
+        &cloud,
+        Method::POST,
+        "/v1/shares",
+        &alice_token,
+        Some(serde_json::json!({
+            "to": bobby_id.0,
+            "mode": "watch",
+            "endpoint": host_endpoint,
+        })),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let invited: Share = serde_json::from_value(body).unwrap();
+    assert_eq!(invited.state, ShareState::Invited);
+    assert_eq!(invited.mode, ShareMode::Watch);
+    assert_eq!(invited.host.id, alice_id);
+    assert_eq!(invited.guest.id, bobby_id);
+    assert_eq!(invited.title_id, TITLE);
+
+    let invitation = bobby
+        .wait("the share invitation", |event| match event {
+            Event::ShareInvitation { invitation } => Some(invitation.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(invitation.share, invited.id);
+    assert_eq!(invitation.from.id, alice_id);
+    assert_eq!(invitation.mode, ShareMode::Watch);
+    let waiting = alice
+        .wait("the invited share", |event| match event {
+            Event::Share {
+                share: Some(view),
+                ..
+            } if view.role == ShareRole::Host && view.phase == SharePhase::Invited => {
+                Some(view.clone())
+            }
+            _ => None,
+        })
+        .await;
+    assert_eq!(waiting.id, invited.id);
+    assert_eq!(waiting.peer.id, bobby_id);
+
+    // The guest accepts and names its own endpoint. Its launcher shows the share.
+    let (status, body) = api(
+        &cloud,
+        Method::POST,
+        "/v1/share/accept",
+        &bobby_token,
+        Some(serde_json::json!({
+            "endpoint": guest_endpoint,
+            "relay": "https://relay.example.com",
+        })),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let active: Share = serde_json::from_value(body).unwrap();
+    assert_eq!(active.id, invited.id);
+    assert_eq!(active.state, ShareState::Active);
+    assert_eq!(active.host_endpoint, host_endpoint);
+    assert_eq!(active.guest_endpoint, guest_endpoint);
+    let guest_view = bobby
+        .wait("the share on the guest's side", |event| match event {
+            Event::Share {
+                share: Some(view),
+                ..
+            } if view.role == ShareRole::Guest => Some(view.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(guest_view.id, invited.id);
+    assert_eq!(guest_view.peer.id, alice_id);
+
+    // Only the host changes the mode, and the guest sees the change.
+    let (status, _) = api(
+        &cloud,
+        Method::PATCH,
+        "/v1/share",
+        &bobby_token,
+        Some(serde_json::json!({"mode": "together"})),
+    )
+    .await;
+    assert_eq!(status, 403);
+    let mut revision = active.revision;
+    for (name, mode) in [
+        ("hand_over", ShareMode::HandOver),
+        ("together", ShareMode::Together),
+    ] {
+        let (status, body) = api(
+            &cloud,
+            Method::PATCH,
+            "/v1/share",
+            &alice_token,
+            Some(serde_json::json!({"mode": name})),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let changed: Share = serde_json::from_value(body).unwrap();
+        assert_eq!(changed.mode, mode);
+        assert!(changed.revision > revision, "the revision did not rise");
+        revision = changed.revision;
+        let (status, body) = api(&cloud, Method::GET, "/v1/share", &bobby_token, None).await;
+        assert_eq!(status, 200, "{body}");
+        let seen: Share = serde_json::from_value(body).unwrap();
+        assert_eq!(seen.mode, mode);
+        assert_eq!(seen.state, ShareState::Active);
+    }
+
+    // The host stops: the guest is told, and the cloud holds no share for either of them.
+    let (status, _) = api(&cloud, Method::DELETE, "/v1/share", &alice_token, None).await;
+    assert_eq!(status, 204);
+    bobby
+        .wait("the end of the share", |event| match event {
+            Event::Notice { code, .. } if code == "share_ended" => Some(()),
+            _ => None,
+        })
+        .await;
+    for token in [&alice_token, &bobby_token] {
+        let (status, _) = api(&cloud, Method::GET, "/v1/share", token, None).await;
+        assert_eq!(status, 404);
+    }
+}
+
+/// A cloud that did not switch share play on refuses every call for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cloud_without_share_play_refuses_a_share() {
+    use reqwest::Method;
+
+    let cloud = start_cloud(false).await;
+    let mut alice = Launcher::start("Alice", false, cloud.journal.clone()).await;
+    alice
+        .sign_up(&cloud.url, &cloud.mail, "alice@example.org", "Alice")
+        .await;
+    let token = api_token(&cloud, "alice@example.org").await;
+    let (status, _) = api(
+        &cloud,
+        Method::POST,
+        "/v1/shares",
+        &token,
+        Some(serde_json::json!({
+            "to": 1,
+            "mode": "watch",
+            "endpoint": "01".repeat(32),
+        })),
+    )
+    .await;
+    assert_eq!(status, 403);
+    let (status, _) = api(&cloud, Method::GET, "/v1/share", &token, None).await;
+    assert_eq!(status, 403);
+}
