@@ -949,8 +949,7 @@ struct Listed2 {
 }
 
 /// `unread` counts the messages of others above the account's read mark that it can see and
-/// that were not unsent. The count stops at `anyplay_api::MAX_UNREAD` (the `LIMIT` below, which a
-/// test keeps equal), so a long-unread conversation costs a bounded read, not a scan of its
+/// that were not unsent. The count stops at 100 (the `LIMIT` below; network#108 names it `MAX_UNREAD`), so a long-unread conversation costs a bounded read, not a scan of its
 /// whole history.
 const LISTED: &str = "SELECT c.id, c.kind, c.name, c.party_id, c.last_seq, c.updated_ms, \
      m.read_seq, \

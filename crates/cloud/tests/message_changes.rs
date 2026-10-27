@@ -638,6 +638,11 @@ async fn the_unread_count_stops_at_the_cap() {
     let chat = open(&cloud, &alec, &[&bea]).await;
     say(&cloud, &alec, &chat.id, "first").await;
     // A long unread history, written straight to the store (the send limit would take minutes).
+    // Recent, or the retention sweep would take the rows away mid-test.
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
     for seq in 2..=150_i64 {
         sqlx::query(
             "INSERT INTO messages (conversation_id, seq, sender, body, created_ms) \
@@ -646,7 +651,7 @@ async fn the_unread_count_stops_at_the_cap() {
         .bind(&chat.id)
         .bind(seq)
         .bind(alec.id as i64)
-        .bind(1_000 + seq)
+        .bind(created)
         .execute(&cloud.state.db)
         .await
         .unwrap();
@@ -656,7 +661,7 @@ async fn the_unread_count_stops_at_the_cap() {
         .execute(&cloud.state.db)
         .await
         .unwrap();
-    let capped = anyplay_api::MAX_UNREAD;
+    let capped = 100;
     assert_eq!(conversation(&cloud, &bea, &chat.id).await.unread, capped);
     let listed = cloud
         .get("/v1/conversations", bea.token())
