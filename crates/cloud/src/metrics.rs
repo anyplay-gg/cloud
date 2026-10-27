@@ -104,6 +104,12 @@ pub struct Metrics {
     sweeps: AtomicU64,
     sweep_failures: AtomicU64,
     last_sweep_micros: AtomicU64,
+    /// Tunnels that settled on a direct or a relayed path, as players' net services report them,
+    /// and how many of those moved from a relay to a direct path. Counts only: no account, no
+    /// address, no time.
+    tunnel_direct: AtomicU64,
+    tunnel_relay: AtomicU64,
+    tunnel_upgrades: AtomicU64,
 }
 
 /// What [`Metrics::render`] needs from the rest of the node.
@@ -124,6 +130,19 @@ impl Metrics {
         let timed = requests.entry((route.to_owned(), status)).or_default();
         timed.count += 1;
         timed.seconds += took.as_secs_f64();
+    }
+
+    /// One tunnel settled on a path. `upgraded`: it started on a relay and moved to a direct path.
+    pub fn tunnel_path(&self, direct: bool, upgraded: bool) {
+        let counter = if direct {
+            &self.tunnel_direct
+        } else {
+            &self.tunnel_relay
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+        if upgraded {
+            self.tunnel_upgrades.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub fn sweep(&self, took: Duration, ok: bool) {
@@ -183,6 +202,27 @@ impl Metrics {
                 pruned,
             );
         }
+        let _ = writeln!(
+            out,
+            "# HELP anyplay_cloud_tunnel_paths_total Tunnels players reported, by the kind of path they settled on."
+        );
+        let _ = writeln!(out, "# TYPE anyplay_cloud_tunnel_paths_total counter");
+        let _ = writeln!(
+            out,
+            "anyplay_cloud_tunnel_paths_total{{kind=\"direct\"}} {}",
+            self.tunnel_direct.load(Ordering::Relaxed)
+        );
+        let _ = writeln!(
+            out,
+            "anyplay_cloud_tunnel_paths_total{{kind=\"relay\"}} {}",
+            self.tunnel_relay.load(Ordering::Relaxed)
+        );
+        counter(
+            &mut out,
+            "anyplay_cloud_tunnel_upgrades_total",
+            "Reported tunnels that moved from a relay to a direct path.",
+            self.tunnel_upgrades.load(Ordering::Relaxed),
+        );
         counter(
             &mut out,
             "anyplay_cloud_sweeps_total",
