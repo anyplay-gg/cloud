@@ -57,18 +57,26 @@ async fn upload(
     content_type: &str,
     body: Vec<u8>,
 ) -> Reply {
-    let response = cloud
-        .http
-        .post(format!(
-            "http://{}/v1/conversations/{conversation}/media",
-            cloud.base
-        ))
-        .bearer_auth(user.token())
-        .header("content-type", content_type)
-        .body(body)
-        .send()
-        .await
-        .unwrap();
+    // The upload slots are shared by every test of this process: wait for one when all are taken.
+    let mut response;
+    loop {
+        response = cloud
+            .http
+            .post(format!(
+                "http://{}/v1/conversations/{conversation}/media",
+                cloud.base
+            ))
+            .bearer_auth(user.token())
+            .header("content-type", content_type)
+            .body(body.clone())
+            .send()
+            .await
+            .unwrap();
+        if response.status().as_u16() != 429 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
     let status = response.status().as_u16();
     let headers = response.headers().clone();
     let text = response.text().await.unwrap();
