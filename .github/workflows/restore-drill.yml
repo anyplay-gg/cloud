@@ -1,0 +1,111 @@
+name: restore-drill
+
+# A backup counts only when it restores. This workflow seeds a cloud (three accounts, a friendship, a
+# party), takes a snapshot of it while it is running (deploy/snapshot.py, SQLite's online backup),
+# checks and restores the archive with deploy/restore.sh into a scratch volume, unpacks it into a clean
+# folder, starts a new cloud on it and asks it for the sign-in, the friends and the party
+# (crates/cloud/tests/restore_drill.rs). It runs on every pull request and once a week, so a change
+# that makes old data unreadable, or a snapshot that stops being consistent, shows up here first.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: cloud
+      - id: network-pin
+        name: Read the pinned network revision
+        shell: bash
+        run: |
+          ref=$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/cloud/network.ref")
+          [[ $ref =~ ^[0-9a-f]{40}$ ]] || { echo "network.ref must hold one full commit SHA" >&2; exit 1; }
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: anyplaynet/network
+          ref: ${{ steps.network-pin.outputs.ref }}
+          path: network
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: cloud
+      - name: Build the drill
+        working-directory: cloud
+        run: cargo test -p anyplay-cloud --test restore_drill --no-run
+      - name: Seed a cloud and snapshot it while it runs
+        working-directory: cloud
+        env:
+          ANYPLAY_DRILL: seed
+        run: |
+          set -euo pipefail
+          drill=$RUNNER_TEMP/drill
+          mkdir -p "$drill/live" "$drill/backups"
+          export ANYPLAY_DRILL_DATA=$drill/live ANYPLAY_DRILL_ARCHIVE=$drill/backups/anyplay-cloud-20261027T040000Z.tar.gz ANYPLAY_DRILL_STATE=$drill/state.json
+          start=$SECONDS
+          cargo test -p anyplay-cloud --test restore_drill drill_seed -- --nocapture
+          echo "seed_seconds=$((SECONDS - start))" >> "$GITHUB_ENV"
+          echo "DRILL=$drill" >> "$GITHUB_ENV"
+          ls -l "$drill/backups"
+      - name: Check the archive and restore it into a scratch volume
+        working-directory: cloud/deploy
+        run: |
+          set -euo pipefail
+          archive=$DRILL/backups/anyplay-cloud-20261027T040000Z.tar.gz
+          (cd "$DRILL/backups" && sha256sum -c "$(basename "$archive").sha256")
+          start=$SECONDS
+          ./restore.sh "$archive" | tee "$DRILL/restore.log"
+          echo "restore_seconds=$((SECONDS - start))" >> "$GITHUB_ENV"
+          grep -q 'integrity_check=ok' "$DRILL/restore.log"
+          grep -q 'accounts=3' "$DRILL/restore.log"
+      - name: Start a clean cloud on the restored data and ask it
+        working-directory: cloud
+        env:
+          ANYPLAY_DRILL: verify
+        run: |
+          set -euo pipefail
+          mkdir -p "$DRILL/restored"
+          tar -xzf "$DRILL/backups/anyplay-cloud-20261027T040000Z.tar.gz" -C "$DRILL/restored"
+          ls -la "$DRILL/restored"
+          export ANYPLAY_DRILL_DATA=$DRILL/restored ANYPLAY_DRILL_STATE=$DRILL/state.json
+          start=$SECONDS
+          cargo test -p anyplay-cloud --test restore_drill drill_verify -- --nocapture
+          echo "verify_seconds=$((SECONDS - start))" >> "$GITHUB_ENV"
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Restore drill"
+            echo
+            echo "| Step | Seconds |"
+            echo "|---|---|"
+            echo "| seed, with the online snapshot | ${seed_seconds:-n/a} |"
+            echo "| restore.sh into a scratch volume (manifest, integrity_check, row count) | ${restore_seconds:-n/a} |"
+            echo "| unpack, start a clean cloud, sign in, friends, party | ${verify_seconds:-n/a} |"
+            echo
+            echo "A tiny database on a CI runner: the figures show the steps run, not how long production takes (docs/restore.md)."
+          } >> "$GITHUB_STEP_SUMMARY"

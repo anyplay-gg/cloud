@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Backs up the cloud-data volume (the SQLite database, signing.key and ban.key) into one archive.
 #
-#   cloud/deploy/backup.sh [--dir DIR] [--keep N] [--max-age-days D] [--volume NAME] [--no-stop]
+#   cloud/deploy/backup.sh [--dir DIR] [--keep N] [--max-age-days D] [--volume NAME] [--no-stop | --online]
 #
 # The cloud container stops for the copy, so the SQLite write-ahead log is checkpointed and the
 # archive is consistent, and starts again afterwards, also when the copy failed. The archive is
@@ -17,6 +17,9 @@
 #   --max-age-days D  remove archives older than D days (default $ANYPLAY_BACKUP_RETAIN_DAYS, else 90)
 #   --volume NAME   the volume to copy (default $ANYPLAY_CLOUD_VOLUME, else anyplay_cloud-data)
 #   --no-stop       do not stop the cloud; only for a volume that nothing writes to (tests)
+#   --online        do not stop the cloud: snapshot.py copies the database with SQLite's online
+#                   backup API (a consistent state while the cloud keeps writing, checked with
+#                   integrity_check), no downtime. Same archive layout, restore.sh takes it as is.
 #
 # The copy runs in a throwaway container of $ANYPLAY_BACKUP_IMAGE (default python:3.13-alpine,
 # which has tar and sha256sum, pinned by digest); the cloud image needs no extra tool. The image is
@@ -25,7 +28,7 @@ set -Eeuo pipefail
 
 main() {
   local here dir=${ANYPLAY_BACKUP_DIR:-} keep=${ANYPLAY_BACKUP_KEEP:-14} retain=${ANYPLAY_BACKUP_RETAIN_DAYS:-90} \
-    volume=${ANYPLAY_CLOUD_VOLUME:-anyplay_cloud-data} stop=1 \
+    volume=${ANYPLAY_CLOUD_VOLUME:-anyplay_cloud-data} stop=1 online=0 \
     image=${ANYPLAY_BACKUP_IMAGE:-python:3.13-alpine@sha256:bf12ecc0bea3f171d55145dd02c78b5eeb09f30ee2ac9cc2b4c9e4e8f5e30741}
   wait=${ANYPLAY_BACKUP_TIMEOUT:-120} # wait, tmp, stopped: global, the EXIT trap runs after main has returned
   here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -41,7 +44,8 @@ main() {
       --max-age-days) retain=${2:?--max-age-days needs a number}; shift 2 ;;
       --volume) volume=${2:?--volume needs a name}; shift 2 ;;
       --no-stop) stop=0; shift ;;
-      -h|--help) sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
+      --online) stop=0; online=1; shift ;;
+      -h|--help) sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
       *) echo "unknown argument: $1 (see --help)" >&2; return 2 ;;
     esac
   done
@@ -112,16 +116,27 @@ main() {
   fi
 
   log "copying volume $volume"
-  docker run --rm --network none -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
-    -v "$volume":/data:ro -v "$dir":/backup "$image" sh -c '
-      set -e
-      tar -czf "/backup/$1" -C /data .
-      chown "$HOST_UID:$HOST_GID" "/backup/$1"
-      chmod 0600 "/backup/$1"
-      sync
-    ' sh ".$name.partial" || die "the copy failed; nothing was kept"
-  [ -s "$tmp" ] || die "the archive is empty"
-  mv "$tmp" "$dir/$name"
+  if [ "$online" = 1 ]; then
+    # The volume is mounted writable because a reader of a WAL database must be able to use its -shm file; snapshot.py
+    # only reads the database, through SQLite's backup API.
+    docker run --rm --network none -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)"       -v "$volume":/data -v "$dir":/backup -v "$here/snapshot.py":/snapshot.py:ro "$image" sh -c '
+        set -e
+        python3 /snapshot.py /data "/backup/$1" >/dev/null
+        chown "$HOST_UID:$HOST_GID" "/backup/$1" "/backup/$1.sha256"
+        sync
+      ' sh "$name" || die "the online snapshot failed; nothing was kept"
+    [ -s "$dir/$name" ] || die "the archive is empty"
+  else
+    docker run --rm --network none -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)"       -v "$volume":/data:ro -v "$dir":/backup "$image" sh -c '
+        set -e
+        tar -czf "/backup/$1" -C /data .
+        chown "$HOST_UID:$HOST_GID" "/backup/$1"
+        chmod 0600 "/backup/$1"
+        sync
+      ' sh ".$name.partial" || die "the copy failed; nothing was kept"
+    [ -s "$tmp" ] || die "the archive is empty"
+    mv "$tmp" "$dir/$name"
+  fi
   local did_stop=$stopped
   restart_cloud || die "the cloud did not come back; look at 'docker compose logs cloud'"
   [ "$did_stop" = 0 ] || log "the cloud was down for about $((SECONDS - t0))s, from the stop until its health check passed again"

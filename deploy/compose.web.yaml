@@ -47,6 +47,8 @@ services:
   cloud:
     environment:
       ANYPLAY_CLOUD_PORTAL_EXTERNAL: "true"
+      # GET /v1/status asks the website here whether it answers.
+      ANYPLAY_CLOUD_STATUS_WEB_URL: http://web:3000/
 
   caddy:
     depends_on:

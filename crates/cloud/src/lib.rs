@@ -42,6 +42,7 @@ pub mod routes;
 pub mod share;
 pub mod social;
 pub mod state;
+pub mod status;
 pub mod util;
 pub mod visibility;
 pub mod web;
@@ -179,6 +180,7 @@ pub async fn open(
         played_with_at: std::sync::atomic::AtomicI64::new(0),
         writer,
         push,
+        status: status::StatusCache::default(),
     });
     // The first heartbeat, so that other nodes count this one as alive from the start.
     state
