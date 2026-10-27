@@ -118,6 +118,36 @@ check "the archives just written stay" test "$(find "$dir" -name 'anyplay-cloud-
 refuses "--max-age-days 0 is refused" "$here/backup.sh" --no-stop --volume "$vol" --dir "$dir" --max-age-days 0
 rm -f "$dir/$pre_name" "$dir/$pre_name.sha256"
 
+# --- 3b. online backup (no stop) and the off-server copy ---------------------------------------
+docker run --rm -v "$vol":/data "$image" python3 -c '
+import sqlite3
+con = sqlite3.connect("/data/anyplay-cloud.db")
+con.executemany("INSERT INTO accounts (handle) VALUES (?)", [("w",), ("x",), ("y",), ("z",)])
+con.commit()
+con.close()
+'
+sleep 1
+online=$("$here/backup.sh" --online --volume "$vol" --dir "$dir" --keep 50 | tail -n 1)
+check "an online backup wrote an archive and a manifest" test -s "$online" -a -s "$online.sha256"
+check "the online archive is mode 0600" test "$(stat -c %a "$online")" = 600
+check "the online manifest verifies" manifest_ok "$dir" "$(basename "$online").sha256"
+if out=$("$here/restore.sh" "$online" --volume "$scratch" 2>&1); then
+  case $out in *integrity_check=ok*accounts=4* | *accounts=4*integrity_check=ok*) ok "the online archive restores with its 4 accounts" ;; *) fail "the online archive holds 4 accounts"; echo "$out" >&2 ;; esac
+else
+  fail "restore of the online archive"; echo "$out" >&2
+fi
+check "signing.key came back from the online archive" docker run --rm -v "$scratch":/data:ro "$image" sh -c 'grep -q signing-key /data/signing.key'
+if command -v rsync >/dev/null; then
+  mkdir -p "$work/offsite"
+  check "offsite.sh copies the newest archive" "$here/offsite.sh" --dir "$dir" --target "$work/offsite"
+  check "the copy is the newest archive" cmp -s "$online" "$work/offsite/$(basename "$online")"
+  check "the manifest travels with it" manifest_ok "$work/offsite" "$(basename "$online").sha256"
+  refuses "offsite.sh refuses without a target" env -u ANYPLAY_OFFSITE_TARGET "$here/offsite.sh" --dir "$dir"
+else
+  echo "     (rsync is not installed: the off-server copy is not tested)"
+fi
+rm -f "$online" "$online.sha256"
+
 : >"$work/afile"
 refuses "an unwritable backup directory fails" "$here/backup.sh" --no-stop --volume "$vol" --dir "$work/afile/sub"
 refuses "a missing volume fails" "$here/backup.sh" --no-stop --volume anyplay_backuptest_nope_$id --dir "$dir"
