@@ -170,7 +170,7 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
         }
         views
     };
-    Ok(json!({
+    let mut export = json!({
         "exported": now(),
         "account": me_of(&account),
         "devices": devices.iter().map(|d| json!({
@@ -203,8 +203,6 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
         "public_profile": db::public_profile(&state.db, account_id).await?,
         "remember_played_with": remember_played_with,
         "played_with": played_with,
-        "scores": scores,
-        "scores_shown_to": score_audience,
         "linked_accounts": linked.iter().map(|l| json!({
             "provider": l.provider, "external_id": l.external_id,
             "display_name": l.display_name, "visibility": l.audience,
@@ -246,7 +244,11 @@ pub async fn export_json(state: &AppState, account_id: u64) -> Result<Value> {
             "conversation": m.conversation, "seq": m.seq, "text": m.text, "created": m.created,
             "edited": m.edited, "unsent": m.deleted, "reply": m.reply,
         })).collect::<Vec<_>>(),
-    }))
+    });
+    // Added outside the macro, which has reached its recursion limit.
+    export["scores"] = json!(scores);
+    export["scores_shown_to"] = json!(score_audience);
+    Ok(export)
 }
 
 pub async fn by_id(
