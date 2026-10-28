@@ -66,7 +66,7 @@ async fn friends_blocks_and_the_friend_list() {
     let cloud = cloud().await;
     let ann = cloud.sign_up_patiently("Ann").await;
     let ben = cloud.sign_up_patiently("Ben").await;
-    let cy = cloud.sign_up_patiently("Cy").await;
+    let cy = cloud.sign_up_patiently("Cyn").await;
     call(&cloud, Method::GET, "/v1/me", ann.token(), None)
         .await
         .ok(200);
@@ -193,6 +193,24 @@ async fn a_session_is_created_joined_and_left() {
     let cloud = cloud().await;
     let ann = cloud.sign_up_patiently("Ann").await;
     let ben = cloud.sign_up_patiently("Ben").await;
+    call(
+        &cloud,
+        Method::POST,
+        "/v1/friends/requests",
+        ann.token(),
+        Some(json!({"handle": ben.handle})),
+    )
+    .await
+    .ok(200);
+    call(
+        &cloud,
+        Method::POST,
+        &format!("/v1/friends/requests/{}/accept", ann.id),
+        ben.token(),
+        None,
+    )
+    .await
+    .ok(204);
     let created = call(
         &cloud,
         Method::POST,
@@ -200,7 +218,7 @@ async fn a_session_is_created_joined_and_left() {
         ann.token(),
         Some(
             json!({"title_id": "GAME00001", "title": "Test Game", "version": "01.000",
-                    "build": "0.1.3", "max_members": 4, "visibility": "public",
+                    "build": "0.1.3", "max_members": 4, "visibility": "friends",
                     "properties": "", "endpoint": endpoint(1)}),
         ),
     )
