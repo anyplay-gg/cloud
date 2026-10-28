@@ -373,6 +373,23 @@ Tables `feed_items`, `feed_members`, `feed_reactions`, `feed_firsts` (0017). Ite
 
 **Privacy page:** the privacy notice names it (web `privacy.tsx`).
 
+### 7.4b Leaderboard scores
+
+| What | Detail |
+|---|---|
+| Tables | `scores` (title ID, board ID, account, score as a signed 64-bit number, `achieved` time, and a removal mark: `removed_at`, `removed_by`, `removed_reason`; one row per account and board), `score_privacy` (account, audience, default `friends`) and `boards` (title ID, board ID, order, lowest and highest accepted score, status, `made_by`, created), migration 0033. |
+| Purpose | Rank players of a game against each other: a time trial, a high score, a weekly board. The game reports the score; the cloud keeps no history, only the best score and when it was reached. |
+| Basis (proposed) | Art. 6(1)(b) for the feature; the audience limits who sees it. |
+| How | The net service submits a score for the running title (60 per account per 10 minutes). A better score replaces the row, an equal one keeps the earlier time. A board is made on the first accepted score (at most 64 boards per title, 16 made by one account, a score kept on at most 1,000). A score outside the board's bounds is refused. The cloud does not check the game ([ADR 0041](https://github.com/anyplaynet/network/blob/main/docs/adr/0041-leaderboards-are-boards-of-best-scores-named-by-the-game.md)). |
+| Who sees it | The owner always. A friend, unless the owner's audience is `nobody`. Anyone else, including signed-out visitors on the web board page (handle, score, time), only if the audience is `everyone`. A block in either direction hides the two accounts from each other and a banned account is in no view. Ranks are counted among the entries the viewer may see, so a hidden entry leaves no gap. Moderators can remove and restore entries. |
+| Setting | `scores` audience: `GET`/`PUT /v1/me/score-privacy` (also works while the feature is off). Neither the launcher nor the account web shows it yet (G12). |
+| Kept | The score row for the life of the account. A moderator's removal stays on the row (so the same account cannot post the score again) until a moderator restores it. A board row stays when its last entry goes, because it holds the moderator's order and bounds; it keeps no personal data (`made_by` is set to null with the account). |
+| On deletion | `scores` and `score_privacy` cascade with the account, the removal mark with the row. |
+| Export | `scores` (title ID, board, score, achieved, removed_at, removed_reason) and `scores_shown_to`. |
+| Flag | Off by default (`leaderboards_enabled`, [configuration](../configuration.md)): every score route answers `forbidden`, the web `not_found`. A public cloud turns it on when the privacy notice names scores. |
+
+**Privacy page:** the privacy notice names it (web `privacy.tsx`, "Leaderboard scores").
+
 ### 7.5 Presence and "Appear offline"
 
 `presence` holds online, activity (title ID, title, version), `last_seen_ms` (never sent to anyone) and a revision; one row per account, overwritten; the activity is cleared when going offline. `accounts.appear_offline` (0020) makes friends see the account as offline and stops "first played" items. Presence is not in the export.
@@ -389,7 +406,7 @@ Reports, actions, appeals, bans and the audit log are described in [moderation.m
 
 Deletion has a 30-day grace period (`deletion_at`). `DELETE /v1/me` and the web both schedule it, sign out every device, mail a notice, and can be cancelled. **For those 30 days the account stays visible and usable**; nothing hides it. The sweep then deletes the account and cascades; the account ID and the time go into the deletion ledger (section 1.10), nothing else. Left behind: the moderation records above, party feed items owned by others (up to 90 days), relay tickets (up to 24 hours), cached avatars (up to a year), log lines, and backups (see section 5).
 
-The export (`GET /v1/me/export`, `/web/api/v1/account/export`) covers the account, devices, friends, requests, own blocks, reports filed, the 500 newest actions against the player, ban (without the hash), sessions, trophies, run reports, privacy, linked accounts, notification devices, passkeys (name and dates), consent, profile, avatar, playtime, own feed items, party, conversations and own messages. It lacks presence, `feed_firsts`, missed calls, invitations, the join code, web sessions, messages received from others and records others hold about the player (see G6).
+The export (`GET /v1/me/export`, `/web/api/v1/account/export`) covers the account, devices, friends, requests, own blocks, reports filed, the 500 newest actions against the player, ban (without the hash), sessions, trophies, run reports, privacy, linked accounts, notification devices, passkeys (name and dates), consent, profile, avatar, playtime, own feed items, party, the people played with, leaderboard scores with their audience, conversations and own messages. It lacks presence, `feed_firsts`, missed calls, invitations, the join code, web sessions, messages received from others and records others hold about the player (see G6).
 
 ## Gaps
 
@@ -408,3 +425,4 @@ Ordered by how much they matter. The IDs are used in the other documents.
 | G9 | **Age and terms record: done in migration 0008.** `age_confirmed_at`, `terms_version` and `terms_accepted_at` are stored on the account (no birth date); the account web names the age (16 in the EU unless the country sets a lower one) and asks again when `terms_version` changes. Accounts made before the migration have no record; the API's own sign-up records the age only. | `routes/auth.rs` (`create_account`), `web/flow.rs` | Decide whether older accounts are asked once (O-question for the lawyer); the privacy notice should name the cookie and the passkeys. |
 | G10 | **Partly closed** (backup change). `deploy/backup.sh` archives the whole `cloud-data` volume (database, `signing.key`, `ban.key`) before every update and keeps the newest 14 (mode 0600, SHA256 manifest); `deploy/restore.sh` proves an archive in a scratch volume (integrity check, account count) and is the documented restore path ([deploy.md](../deploy.md#backups)). **Open:** no encryption of the archives at rest, no off-machine copy, an erasure period for backups is not decided (a restore brings back accounts deleted since; `restore.sh` replays them from the deletion ledger, built; `backup.sh` keeps by count, not age, so the 90 days the privacy notice names are not enforced for regular archives), and processor contracts for a backup provider. | `deploy/backup.sh`, `deploy/restore.sh`, `docs/deploy.md` | Decide the retention period and the off-machine target; see [open-questions.md](open-questions.md). |
 | G11 | **A stable endpoint ID and handle in sessions** let members recognise each other across sessions. | `members` | Document it; consider a per-session endpoint pseudonym later. |
+| G12 | **The leaderboard audience has no screen.** `PUT /v1/me/score-privacy` works, but neither the launcher nor the account web offers the choice, so every player stays at `friends`. | `routes/boards.rs`, web account privacy page | Add a "Scores" row to the Privacy page and the launcher before many players use boards; `everyone` and `nobody` are unreachable until then. |
