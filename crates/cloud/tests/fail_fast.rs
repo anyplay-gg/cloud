@@ -6,6 +6,24 @@ use std::time::{Duration, Instant};
 
 use common::TestCloud;
 
+/// Takes both connections of the two-connection pool, waiting for the cloud's own background
+/// work to give them back first. From here on the pool is empty by the test's own doing, not by
+/// luck of timing.
+async fn hold(cloud: &TestCloud) -> Vec<sqlx::pool::PoolConnection<sqlx::Any>> {
+    let mut held = Vec::new();
+    let until = Instant::now() + Duration::from_secs(30);
+    while held.len() < 2 {
+        match cloud.state.db.acquire().await {
+            Ok(connection) => held.push(connection),
+            Err(error) => {
+                assert!(Instant::now() < until, "cannot take the pool: {error}");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+    held
+}
+
 /// A cloud with a two-connection pool whose connections the test can hold. Runs on PostgreSQL
 /// when `ANYPLAY_TEST_DATABASE_URL` is set, else on SQLite.
 async fn starved(acquire_ms: u64, request_secs: u64) -> TestCloud {
@@ -23,11 +41,8 @@ async fn starved(acquire_ms: u64, request_secs: u64) -> TestCloud {
 #[tokio::test]
 async fn a_starved_pool_answers_429_with_retry_after_within_the_acquire_timeout() {
     let cloud = starved(500, 30).await;
-    let a = cloud.sign_up("Alec").await;
-    let held = (
-        cloud.state.db.acquire().await.unwrap(),
-        cloud.state.db.acquire().await.unwrap(),
-    );
+    let a = cloud.sign_up_patiently("Alec").await;
+    let held = hold(&cloud).await;
     let started = Instant::now();
     let reply = cloud.get("/v1/friends", a.token()).await;
     let took = started.elapsed();
@@ -69,11 +84,8 @@ async fn a_starved_pool_answers_429_with_retry_after_within_the_acquire_timeout(
 async fn the_request_timeout_answers_503_with_retry_after() {
     // The pool would wait 10 s; the request gives up after 1.
     let cloud = starved(10_000, 1).await;
-    let a = cloud.sign_up("Alec").await;
-    let _held = (
-        cloud.state.db.acquire().await.unwrap(),
-        cloud.state.db.acquire().await.unwrap(),
-    );
+    let a = cloud.sign_up_patiently("Alec").await;
+    let _held = hold(&cloud).await;
     let started = Instant::now();
     let reply = cloud.get("/v1/friends", a.token()).await;
     let took = started.elapsed();
@@ -85,7 +97,7 @@ async fn the_request_timeout_answers_503_with_retry_after() {
 #[tokio::test]
 async fn the_event_connection_is_not_cut_by_the_request_timeout() {
     let cloud = starved(5000, 1).await;
-    let a = cloud.sign_up("Alec").await;
+    let a = cloud.sign_up_patiently("Alec").await;
     let mut events = cloud.events(a.token()).await;
     // Past the request timeout the socket is still open: it only ends by a close frame.
     let ended = events.next_within(Duration::from_millis(2500)).await;
@@ -104,11 +116,8 @@ async fn requests_over_the_cap_are_shed_with_503() {
         |_| {},
     )
     .await;
-    let a = cloud.sign_up("Alec").await;
-    let _held = (
-        cloud.state.db.acquire().await.unwrap(),
-        cloud.state.db.acquire().await.unwrap(),
-    );
+    let a = cloud.sign_up_patiently("Alec").await;
+    let _held = hold(&cloud).await;
     // The first request takes the one place and waits for the pool; the second is turned away.
     let slow = tokio::spawn({
         let (base, token) = (cloud.base.clone(), a.token().to_owned());
@@ -141,11 +150,8 @@ async fn the_health_checks_answer_when_the_cap_is_full() {
         |_| {},
     )
     .await;
-    let a = cloud.sign_up("Alec").await;
-    let _held = (
-        cloud.state.db.acquire().await.unwrap(),
-        cloud.state.db.acquire().await.unwrap(),
-    );
+    let a = cloud.sign_up_patiently("Alec").await;
+    let _held = hold(&cloud).await;
     let slow = tokio::spawn({
         let (base, token) = (cloud.base.clone(), a.token().to_owned());
         async move {
@@ -186,11 +192,8 @@ async fn the_health_checks_answer_when_the_cap_is_full() {
 async fn a_write_that_ran_into_the_request_timeout_still_finishes() {
     // The pool would wait 10 s for the write; the request gives up after 1 s, the write does not.
     let cloud = starved(10_000, 1).await;
-    let a = cloud.sign_up("Alec").await;
-    let held = (
-        cloud.state.db.acquire().await.unwrap(),
-        cloud.state.db.acquire().await.unwrap(),
-    );
+    let a = cloud.sign_up_patiently("Alec").await;
+    let held = hold(&cloud).await;
     let started = Instant::now();
     let reply = cloud
         .put(
