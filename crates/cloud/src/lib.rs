@@ -26,6 +26,7 @@ pub mod discord_sdk;
 pub mod feed;
 pub mod http;
 pub mod joins;
+pub mod leaderboards;
 pub mod lfg;
 pub mod limits;
 pub mod links;

@@ -94,6 +94,9 @@ pub struct Rates {
     /// Shares one account may start per `share_window`.
     pub share_starts: u32,
     pub share_window: Duration,
+    /// Scores one account may submit per `score_window`.
+    pub score_submits: u32,
+    pub score_window: Duration,
 }
 
 impl Default for Rates {
@@ -154,6 +157,8 @@ impl Default for Rates {
             media_window: Duration::from_secs(60 * 60),
             share_starts: 10,
             share_window: Duration::from_secs(60 * 60),
+            score_submits: 60,
+            score_window: Duration::from_secs(10 * 60),
         }
     }
 }

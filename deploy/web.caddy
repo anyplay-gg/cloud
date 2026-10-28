@@ -5,7 +5,7 @@
 # page sends people to the new one. /sw.js (the service worker for notifications),
 # /manifest.webmanifest and /icons/* (the installable app) must stay on the root of this host
 # name: a service worker only controls the paths below its own.
-@website path / /download /status /sign-in /create /link /legal /privacy /terms /account /account/* /u/* /compatibility /join/* /_next/* /icon.svg /favicon.ico /sw.js /manifest.webmanifest /icons/*
+@website path / /download /status /sign-in /create /link /legal /privacy /terms /account /account/* /u/* /compatibility /boards/* /join/* /_next/* /icon.svg /favicon.ico /sw.js /manifest.webmanifest /icons/*
 handle @website {
 	reverse_proxy web:3000
 }

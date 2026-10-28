@@ -120,6 +120,9 @@ pub struct Config {
     /// Whether the cloud offers share play (network `spec/share-play.md`). Off by default: every
     /// share request is answered `forbidden` until the legal review is done.
     pub share_enabled: bool,
+    /// Whether the cloud offers leaderboards (network ADR 0041). Off by default: every route
+    /// answers `forbidden` (the portal's reads `not_found`) until it is set.
+    pub leaderboards_enabled: bool,
     /// The most a relayed share should stream, in kbit/s; announced in `GET /v1/info`.
     pub share_relay_kbps: u32,
     /// Minutes per UTC day one host's shares may be relayed; a share past it ends with `quota`.
@@ -224,6 +227,7 @@ impl Default for Config {
             feed_retention_days: 90,
             join_code_minutes: 120,
             share_enabled: false,
+            leaderboards_enabled: false,
             share_relay_kbps: 6000,
             share_relay_minutes_per_day: 120,
             ban_secret: None,
@@ -417,6 +421,9 @@ impl Config {
         }
         if let Some(v) = get("JOIN_CODE_MINUTES") {
             self.join_code_minutes = parse("JOIN_CODE_MINUTES", &v)?;
+        }
+        if let Some(v) = get("LEADERBOARDS_ENABLED") {
+            self.leaderboards_enabled = parse("LEADERBOARDS_ENABLED", &v)?;
         }
         if let Some(v) = get("SHARE_ENABLED") {
             self.share_enabled = parse("SHARE_ENABLED", &v)?;
