@@ -152,7 +152,7 @@ jobs:
         run: for f in *.sh; do bash -n "$f"; done
       - name: ShellCheck
         # Preinstalled on the runner; -x follows the sourced backup-env.sh.
-        run: shellcheck -x *.sh
+        run: shellcheck -x *.sh anyplay-deploy
       - name: Backup and restore tests
         run: ./test-backup.sh
 

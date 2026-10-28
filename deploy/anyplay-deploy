@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# The forced command of the CI deploy key (docs/adr/0008-ci-deploys-through-a-forced-command.md).
+# Installed as /usr/local/sbin/anyplay-deploy, owned by root, and named in authorized_keys:
+#
+#   restrict,command="/usr/local/sbin/anyplay-deploy",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding ssh-ed25519 AAAA...
+#
+# The key can run exactly two requests (ssh passes the line in SSH_ORIGINAL_COMMAND), nothing else:
+#
+#   web   sha256:<64 hex>                                        swap the website container only
+#   cloud <40 hex commit> sha256:<64 hex> sha256:<64 hex> [sha256:<64 hex>]
+#                                       the cloud and relay digests (and the website's, by default the one running)
+#
+# Every digest must carry an attestation that anyplaynet/<repo>'s workflow built it on main; for the
+# cloud and relay the attestation must also name the commit. Only then is it pulled and update.sh run.
+set -Eeuo pipefail
+umask 077
+
+ROOT=${ANYPLAY_ROOT:-/opt/anyplay}
+REGISTRY=ghcr.io/anyplaynet
+LOGFILE=${ANYPLAY_DEPLOY_LOG:-/var/log/anyplay-deploy.log}
+D='sha256:[0-9a-f]{64}'
+
+say() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*"; }
+refuse() { say "refused: $*" >&2; printf '%s refused (%s): %q\n' "$(date -u +%FT%TZ)" "${SSH_CLIENT:-local}" "${SSH_ORIGINAL_COMMAND:-}" >> "$LOGFILE" 2>/dev/null || true; exit 2; }
+
+cmd=${SSH_ORIGINAL_COMMAND:-}
+case $cmd in *$'\n'* | *$'\r'*) refuse "the request has more than one line" ;; esac
+
+mode='' commit='' cloud='' relay='' web=''
+if   [[ $cmd =~ ^web\ ($D)$ ]]; then mode=web web=${BASH_REMATCH[1]}
+elif [[ $cmd =~ ^cloud\ ([0-9a-f]{40})\ ($D)\ ($D)(\ ($D))?$ ]]; then
+  mode=cloud commit=${BASH_REMATCH[1]} cloud=${BASH_REMATCH[2]} relay=${BASH_REMATCH[3]} web=${BASH_REMATCH[5]:-}
+else
+  refuse "expected 'web sha256:<64 hex>' or 'cloud <40 hex commit> sha256:<64 hex> sha256:<64 hex> [sha256:<64 hex>]'"
+fi
+
+command -v gh >/dev/null || { say "gh is not installed on this server" >&2; exit 1; }
+printf '%s %s (%s): %s\n' "$(date -u +%FT%TZ)" "$mode" "${SSH_CLIENT%% *}" "${cmd:0:200}" >> "$LOGFILE" 2>/dev/null || true
+
+# The attestation is read from the registry, so gh needs no login, only a token that exists.
+attested() { # image repo workflow digest [commit]
+  local extra=()
+  [ -z "${5:-}" ] || extra=(--source-digest "$5")
+  GH_TOKEN=unused gh attestation verify "oci://$REGISTRY/$1@$4" --repo "anyplaynet/$2" --bundle-from-oci \
+    --signer-workflow "anyplaynet/$2/.github/workflows/$3" --source-ref refs/heads/main "${extra[@]}" >/dev/null 2>&1 \
+    || refuse "$REGISTRY/$1@$4 has no attestation of anyplaynet/$2 ($3 on main${5:+, commit $5})"
+  say "attestation ok: $1@${4:0:19}"
+}
+
+pull() { # image digest
+  local i
+  for i in 1 2 3 4 5; do
+    docker pull --quiet "$REGISTRY/$1@$2" >/dev/null 2>&1 && return 0
+    say "pull of $1 failed (try $i of 5)" >&2
+    sleep 15
+  done
+  say "cannot pull $1@${2:0:19}; nothing was changed" >&2
+  exit 1
+}
+
+cd "$ROOT/cloud/deploy"
+if [ "$mode" = web ]; then
+  grep -q -- '--web-only' update.sh || { say "this server's update.sh has no --web-only yet: deploy the cloud once first" >&2; exit 1; }
+  attested web web docker.yml "$web"
+  pull web "$web"
+  exec ./update.sh --web-only --web-image "$web" --no-attestation
+fi
+
+# The website that is running stays: update.sh would otherwise build it from a checkout.
+if [ -z "$web" ]; then
+  web=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' anyplay-web 2>/dev/null \
+    | sed -n "s|^$REGISTRY/web@||p" | head -n 1)
+  [[ $web =~ ^$D$ ]] || { say "cannot tell which website image is running; pass its digest as the last argument" >&2; exit 1; }
+fi
+attested cloud cloud image.yml "$cloud" "$commit"
+attested relay cloud image.yml "$relay" "$commit"
+attested web web docker.yml "$web"
+pull cloud "$cloud"; pull relay "$relay"; pull web "$web"
+exec ./update.sh --cloud "$commit" --image "$cloud" --relay-image "$relay" --web-image "$web" --no-attestation

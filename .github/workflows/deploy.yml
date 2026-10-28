@@ -1,0 +1,86 @@
+name: deploy
+
+# Puts a commit of main live on the test cloud (https://anyplaynet.com): one ssh call to the forced
+# command on the server (docs/adr/0008-ci-deploys-through-a-forced-command.md). On demand only,
+# because the cloud is down for about 30 s while the backup runs:
+#
+#   gh workflow run deploy.yml -R anyplaynet/cloud                  # the head of main
+#   gh workflow run deploy.yml -R anyplaynet/cloud -f commit=<sha>  # a given commit of main
+#
+# The website keeps the image it runs; the web repository deploys it on every merge.
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Commit of main to deploy (default - the head of main)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      INPUT_COMMIT: ${{ inputs.commit }}
+    steps:
+      - name: Find the images of the commit
+        id: images
+        run: |
+          set -euo pipefail
+          commit=${INPUT_COMMIT:-$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)}
+          [[ $commit =~ ^[0-9a-f]{40}$ ]] || { echo "commit must be a full 40-character sha" >&2; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/compare/main...${commit}" --jq '.status' | grep -qE '^(identical|behind)$' \
+            || { echo "$commit is not on main" >&2; exit 1; }
+          digest() { # image tag
+            local t
+            t=$(curl -fsS "https://ghcr.io/token?scope=repository:anyplaynet/$1:pull&service=ghcr.io" | jq -r .token)
+            curl -sI -H "Authorization: Bearer $t" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' \
+              "https://ghcr.io/v2/anyplaynet/$1/manifests/$2" | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" {print $2}'
+          }
+          # The image workflow of a fresh merge may still be running; wait for it.
+          cloud='' relay=''
+          for i in $(seq 1 60); do
+            cloud=$(digest cloud "$commit"); relay=$(digest relay "$commit")
+            [ -n "$cloud" ] && [ -n "$relay" ] && break
+            sleep 30
+          done
+          [[ $cloud =~ ^sha256:[0-9a-f]{64}$ && $relay =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no images for $commit" >&2; exit 1; }
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "cloud=$cloud" >> "$GITHUB_OUTPUT"
+          echo "relay=$relay" >> "$GITHUB_OUTPUT"
+      - name: Deploy
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ vars.DEPLOY_HOST }}
+          HOST_KEY: ${{ vars.DEPLOY_HOST_KEY }}
+          COMMIT: ${{ steps.images.outputs.commit }}
+          CLOUD: ${{ steps.images.outputs.cloud }}
+          RELAY: ${{ steps.images.outputs.relay }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=15 "root@${HOST}" "cloud ${COMMIT} ${CLOUD} ${RELAY}"
+          rm -f ~/.ssh/deploy_key
+      - name: The cloud and the site answer
+        run: |
+          fail=0
+          for p in /v1/info / /download /status /sign-in; do
+            code=000
+            for i in 1 2 3 4 5 6; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://anyplaynet.com$p") && [ "$code" = 200 ] && break
+              sleep 5
+            done
+            echo "$p $code"; [ "$code" = 200 ] || fail=1
+          done
+          exit $fail

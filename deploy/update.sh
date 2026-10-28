@@ -6,6 +6,7 @@
 #                          [--no-rollback] [--no-backup] [--dry-run]
 #   cloud/deploy/update.sh --cloud COMMIT --image sha256:... --relay-image sha256:... [--web-image sha256:...]
 #                          [--no-attestation] [the options above]
+#   cloud/deploy/update.sh --web-only --web-image sha256:... [--no-attestation] [--timeout SECONDS] [--no-rollback]
 #
 # REF is a commit, tag or branch (a branch means its state on `origin`). --cloud defaults to
 # origin/main; --network defaults to the commit in `network.ref` of the cloud commit being deployed.
@@ -14,6 +15,8 @@
 # With --image the cloud and relay images are pulled from ghcr.io (built by CI, checked against their
 # attestation) instead of built here; --web-image does the same for the website (anyplaynet/web).
 # Caddy is still built here.
+# --web-only swaps the website container and nothing else: no checkout, no build, no backup, the cloud
+# keeps running. It rolls back to the previous website image when the new one does not come up.
 # Details, what "near-zero downtime" means and how to roll back by hand: docs/deploy.md.
 set -Eeuo pipefail
 
@@ -21,7 +24,7 @@ set -Eeuo pipefail
 # very file, and bash reads a script while it runs.
 main() {
   local cloud_ref=origin/main network_ref='' hook=${ANYPLAY_UPDATE_HOOK:-} \
-    timeout=${ANYPLAY_UPDATE_TIMEOUT:-180} rollback=1 dry=0 backup=1 
+    timeout=${ANYPLAY_UPDATE_TIMEOUT:-180} rollback=1 dry=0 backup=1 web_only=0 \
     image='' relay_image='' web_image='' attest=1 registry=${ANYPLAY_IMAGE_REGISTRY:-ghcr.io/anyplaynet}
   while [ $# -gt 0 ]; do
     case $1 in
@@ -34,9 +37,10 @@ main() {
       --image) image=${2:?--image needs the digest of the cloud image (sha256:...)}; shift 2 ;;
       --relay-image) relay_image=${2:?--relay-image needs the digest of the relay image (sha256:...)}; shift 2 ;;
       --web-image) web_image=${2:?--web-image needs the digest of the web image (sha256:...)}; shift 2 ;;
+      --web-only) web_only=1; shift ;;
       --no-attestation) attest=0; shift ;;
       --dry-run) dry=1; shift ;;
-      -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
+      -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
       *) echo "unknown argument: $1 (see --help)" >&2; return 2 ;;
     esac
   done
@@ -51,6 +55,11 @@ main() {
   fi
   if [ -n "$web_image" ]; then
     [[ $web_image =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "--web-image takes a digest, sha256:<64 hex characters>" >&2; return 2; }
+  fi
+
+  if [ "$web_only" = 1 ]; then
+    [ -n "$web_image" ] || { echo "--web-only needs --web-image" >&2; return 2; }
+    { [ -z "$image$relay_image" ] && [ "$cloud_ref" = origin/main ] && [ -z "$network_ref" ]; }       || { echo "--web-only changes the website only; it cannot go with --cloud, --network, --image or --relay-image" >&2; return 2; }
   fi
 
   local here root deploy
@@ -73,6 +82,7 @@ main() {
   flock -n 9 || die "another update is running"
 
   cd "$deploy"
+  if [ "$web_only" = 1 ]; then update_web_only "$deploy" "$registry" "$web_image" "$attest" "$timeout" "$rollback"; return; fi
   # shellcheck source=backup-env.sh
   . "$deploy/backup-env.sh"
   anyplay_backup_env "$deploy"
@@ -186,7 +196,7 @@ main() {
     if [ "$attest" = 0 ]; then
       log "WARNING: --no-attestation: $ref is not checked against its attestation"
     elif command -v gh >/dev/null; then
-      if ! gh attestation verify "oci://$ref" --repo "anyplaynet/$2" >/dev/null; then
+      if ! attestation_ok "$ref" "$2"; then
         log "no valid attestation for $ref (gh attestation verify failed; --no-attestation skips the check); restoring the previous sources, the running version was not touched"
         restore_sources
         return 1
@@ -295,6 +305,45 @@ main() {
   else
     log "  restore with deploy/restore.sh <archive>; no backup was taken in this run"
   fi
+  return 1
+}
+
+# The attestation of an image is read from the registry (--bundle-from-oci), so gh needs no login; it
+# only wants a token to exist. It must name the repository and a build on its main branch.
+attestation_ok() { # ref repo
+  GH_TOKEN=${GH_TOKEN:-unused} gh attestation verify "oci://$1" --repo "anyplaynet/$2" --bundle-from-oci     --source-ref refs/heads/main >/dev/null
+}
+
+# --web-only: pull and check the website image, swap the web container, check, else put the old one back.
+update_web_only() { # deploy registry digest attest timeout rollback
+  local registry=$2 digest=$3 attest=$4 timeout=$5 rollback=$6 ref prev free_gb
+  ref=$registry/web@$digest
+  docker compose config --services | grep -qx web || die "the compose files have no web service (COMPOSE_FILE in .env needs compose.web.yaml)"
+  free_gb=$(df -BG --output=avail "$1" | tail -1 | tr -dc 0-9)
+  [ "${free_gb:-0}" -ge 3 ] || die "less than 3 GB free"
+  docker pull --quiet "$ref" >/dev/null || die "cannot pull $ref; the running version was not touched"
+  if [ "$attest" = 0 ]; then
+    log "WARNING: --no-attestation: $ref is not checked against its attestation"
+  elif command -v gh >/dev/null; then
+    attestation_ok "$ref" web || die "no valid attestation for $ref; the running version was not touched"
+    log "attestation ok: $ref"
+  else
+    log "WARNING: gh is not installed, so $ref is not checked against its attestation"
+  fi
+  prev=$(docker image inspect --format '{{.Id}}' anyplay-web 2>/dev/null || true)
+  [ -z "$prev" ] || docker tag "$prev" anyplay-rollback/anyplay-web:previous
+  docker tag "$ref" anyplay-web
+  log "swapping the web container (cloud, relay and Caddy keep running)"
+  if docker compose up -d --no-build --no-deps --wait --wait-timeout "$timeout" web && verify "$timeout"; then
+    log "update ok: web ${digest:0:19}"
+    docker image prune -f >/dev/null 2>&1 || true
+    return 0
+  fi
+  log "the new website did not come up"
+  if [ "$rollback" = 0 ] || [ -z "$prev" ]; then log "not rolling back"; return 1; fi
+  docker tag anyplay-rollback/anyplay-web:previous anyplay-web
+  docker compose up -d --no-build --no-deps --wait --wait-timeout "$timeout" web || true
+  if verify "$timeout"; then log "rolled back; the previous website is serving again"; else log "ROLLBACK FAILED: look at 'docker compose ps' and 'docker compose logs web'"; fi
   return 1
 }
 

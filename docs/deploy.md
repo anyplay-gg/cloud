@@ -19,6 +19,7 @@ cloud/deploy/update.sh --dry-run                         # show what would chang
 | `--dry-run` | Fetch and resolve the refs, print them, stop. |
 | `--image DIGEST`, `--relay-image DIGEST` | Deploy the prebuilt images of these digests (`sha256:...`) instead of building them; needs `--cloud COMMIT`. See [Deploying a prebuilt image](#deploying-a-prebuilt-image). |
 | `--web-image DIGEST` | Pull the website's prebuilt image (`ghcr.io/anyplaynet/web`, built by the web repository's CI) instead of building it; needs the website enabled (`compose.web.yaml`, see [The website](#the-website)). Can be combined with `--image` or used alone. |
+| `--web-only` | With `--web-image`: swap only the website container. No checkout, build or backup; the cloud keeps running. |
 | `--no-attestation` | With `--image` or `--web-image`: do not check the images against their attestation. Prints a warning. |
 
 `ANYPLAY_UPDATE_URL` replaces the address that is checked (default `https://<CLOUD_DOMAIN>/v1/info`).
@@ -54,6 +55,10 @@ Caddy is still built on the server (a few cached layers), and so is the website 
 To find the digests of the latest build: the job summary of the newest `image` run on `main`, or `docker buildx imagetools inspect ghcr.io/anyplaynet/cloud:main` (likewise `.../web:main`). To check an image by hand: `gh attestation verify oci://ghcr.io/anyplaynet/cloud@sha256:... --repo anyplaynet/cloud`.
 
 **One-time setup on the server:** the packages must be readable. If `docker pull ghcr.io/anyplaynet/cloud:main` is denied, either make the packages (cloud, relay and, for `--web-image`, web) public (GitHub: the package's settings, "Change visibility") or run `docker login ghcr.io` with a token that has only `read:packages`. Without `--image` nothing changes: the build path is the fallback, for example when the `image` workflow is red. See [ADR 0007](adr/0007-images-are-built-in-ci-and-pulled.md).
+
+## Deploying from CI
+
+A merge to the website's `main` goes live by itself: its `docker` workflow builds the image, then calls the server's forced command with `web <digest>`. That swaps only the web container (`update.sh --web-only --web-image sha256:...`: no backup, no cloud restart, rollback to the previous image), and the job checks `/`, `/download`, `/status` and `/sign-in`. The cloud is deployed on demand with `gh workflow run deploy.yml -R anyplaynet/cloud [-f commit=<sha>]`; it waits for the images of the commit and calls the same command with `cloud <commit> <cloud digest> <relay digest>`. The trust model, the key and what a leaked key can do: [ADR 0008](adr/0008-ci-deploys-through-a-forced-command.md). Setup on a new server: copy `deploy/anyplay-deploy` to `/usr/local/sbin/`, install `gh`, add the public key to `authorized_keys` with the options in the script header, and set `DEPLOY_SSH_KEY`, `DEPLOY_HOST` and `DEPLOY_HOST_KEY` in both repositories.
 
 ## Which network revision
 
