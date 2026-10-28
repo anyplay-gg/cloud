@@ -217,14 +217,20 @@ async fn equal_scores_share_a_rank_and_the_next_rank_skips() {
     .await;
     let viewer = cloud.sign_up("Eve").await;
     let page = read(&cloud, &viewer, "7").await;
-    assert_eq!(handles(&page), ["Alec", "Bob", "Cleo", "Dana"]);
+    // Account IDs are not in sign-up order, so the two equal scores may come either way round.
+    let names = handles(&page);
+    assert_eq!((names[0], names[3]), ("Alec", "Dana"));
+    let mut middle = [names[1], names[2]];
+    middle.sort_unstable();
+    assert_eq!(middle, ["Bob", "Cleo"]);
     assert_eq!(ranks(&page), [1, 2, 2, 4]);
     assert_eq!(page.total, 4);
     assert!(page.me.is_none());
 
     // Pages: from position 1, two entries.
     let page = read(&cloud, &viewer, "7?start=1&count=2").await;
-    assert_eq!(handles(&page), ["Bob", "Cleo"]);
+    assert_eq!(page.entries.len(), 2);
+    assert_eq!(ranks(&page), [2, 2]);
     assert_eq!((page.start, page.total), (1, 4));
     let page = read(&cloud, &viewer, "7?start=3&count=10").await;
     assert_eq!(handles(&page), ["Dana"]);
