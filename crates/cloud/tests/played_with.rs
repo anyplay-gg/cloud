@@ -151,8 +151,15 @@ async fn a_pair_is_remembered_only_after_the_minimum_time() {
         .execute(&cloud.state.db)
         .await
         .unwrap();
-    cloud.state.played_with_at.store(0, Ordering::Relaxed);
-    sweep(&cloud).await;
+    // The background sweep may hold the throttle for the same step and still be writing, so
+    // the explicit sweep can return early: look until the pair shows (the write is what counts).
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while list(&cloud, &a).await.people.is_empty() {
+        assert!(std::time::Instant::now() < until, "the pair was never recorded");
+        cloud.state.played_with_at.store(0, Ordering::Relaxed);
+        sweep(&cloud).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     assert_eq!(list(&cloud, &a).await.people.len(), 1);
 }
 

@@ -361,6 +361,9 @@ async fn meet_and_play(alice_relay: AliceRelay) -> Link {
         relays: vec![relay_url],
         // The players sign up a moment before they befriend each other.
         new_account_hours: 0,
+        // A busy store answers "Too many requests"; a loaded runner (Windows, six tests and four
+        // relays at once) keeps a call waiting for its turn longer than the 5 s of production.
+        database_acquire_timeout_ms: 60_000,
         ..Config::default()
     };
     let state = open(config, Tuning::default(), mail.clone()).await.unwrap();
@@ -689,6 +692,9 @@ async fn friends_play_together_by_broadcast_and_the_session_ends_with_its_host()
         name: "End-to-end cloud".into(),
         relays: vec![relay_url],
         new_account_hours: 0,
+        // A busy store answers "Too many requests"; a loaded runner (Windows, six tests and four
+        // relays at once) keeps a call waiting for its turn longer than the 5 s of production.
+        database_acquire_timeout_ms: 60_000,
         ..Config::default()
     };
     let state = open(config, Tuning::default(), mail.clone()).await.unwrap();
@@ -865,6 +871,9 @@ async fn start_cloud(share_enabled: bool) -> Running {
         relays: vec![relay_url],
         new_account_hours: 0,
         share_enabled,
+        // A busy store answers "Too many requests"; a loaded runner (Windows, six tests and four
+        // relays at once) keeps a call waiting for its turn longer than the 5 s of production.
+        database_acquire_timeout_ms: 60_000,
         ..Config::default()
     };
     let state = open(config, Tuning::default(), mail.clone()).await.unwrap();
