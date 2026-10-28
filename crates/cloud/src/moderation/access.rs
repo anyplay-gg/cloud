@@ -46,6 +46,10 @@ impl FromRequestParts<AppState> for Staff {
         {
             return Err(AppError::forbidden("This account is not a moderator."));
         }
+        // The connection goes back before the next read asks the pool: holding one while asking
+        // for another stops the node when as many moderators call at once as the pool has
+        // connections (tests/one_connection.rs).
+        drop(conn);
         let account = db::account(&state.db, auth.account)
             .await?
             .ok_or_else(AppError::not_found)?;
