@@ -646,9 +646,11 @@ pub async fn restore(
     Ok(done.rows_affected() == 1)
 }
 
+type ScoreRow = (String, String, i64, i64, Option<i64>, Option<String>);
+
 /// For the export: the account's entries, with the removal mark an entry carries.
 pub async fn export(conn: &mut Conn, account: u64) -> sqlx::Result<Vec<serde_json::Value>> {
-    let rows: Vec<(String, String, i64, i64, Option<i64>, Option<String>)> = sqlx::query_as(
+    let rows: Vec<ScoreRow> = sqlx::query_as(
         "SELECT title_id, board, score, achieved, removed_at, removed_reason FROM scores \
          WHERE account_id = $1 ORDER BY title_id, board",
     )
