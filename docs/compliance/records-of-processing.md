@@ -136,6 +136,7 @@ Built (see [inventory section 7](data-inventory.md#7-the-social-layer)). One act
 | Looking for group | Find players for a game | Players | Handle, game, mode, language, a short note, requests | Players with the same game, not blocked | 1 hour, deleted a day after |
 | Screenshots and clips to a friend | Share a capture with one friend | Players | The file, type, size, length, times | The chosen friend; moderators when reported | 30 days; 7 days if unsent; held while a report is open |
 | Played with recently | Let a player find again people they played with | Players | The other account, time of the last meeting, game title ID and title | The player themselves only; the other person is never told | 30 days, at most 50 people; cleared on request; with either account |
+| Leaderboard scores | Rank players of a game against each other | Players | Title ID, board ID, best score, time reached, audience | Friends by default; everyone or nobody as the player chooses (signed-out visitors see only `everyone`); a block hides both ways | Life of the account |
 | Notifications | Push notices | Players who switch them on | Push address and keys | The browser maker's push service | Until switched off |
 
 ## Security measures, general (Art. 30(1)(g))
