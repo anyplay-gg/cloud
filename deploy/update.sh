@@ -24,7 +24,8 @@ set -Eeuo pipefail
 # very file, and bash reads a script while it runs.
 main() {
   local cloud_ref=origin/main network_ref='' hook=${ANYPLAY_UPDATE_HOOK:-} \
-    timeout=${ANYPLAY_UPDATE_TIMEOUT:-180} rollback=1 dry=0 backup=1 web_only=0 \n    image='' relay_image='' web_image='' attest=1 registry=${ANYPLAY_IMAGE_REGISTRY:-ghcr.io/anyplaynet}
+    timeout=${ANYPLAY_UPDATE_TIMEOUT:-180} rollback=1 dry=0 backup=1 web_only=0 \
+    image='' relay_image='' web_image='' attest=1 registry=${ANYPLAY_IMAGE_REGISTRY:-ghcr.io/anyplaynet}
   while [ $# -gt 0 ]; do
     case $1 in
       --cloud) cloud_ref=${2:?--cloud needs a ref}; shift 2 ;;
