@@ -210,7 +210,7 @@ async fn the_order_of_a_board_is_data_and_changes_the_ranking_at_once() {
 #[tokio::test]
 async fn equal_scores_share_a_rank_and_the_next_rank_skips() {
     let cloud = cloud().await;
-    let players = public_players(
+    public_players(
         &cloud,
         &[("Alec", 300), ("Bob", 200), ("Cleo", 200), ("Dana", 100)],
     )
